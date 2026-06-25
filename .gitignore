@@ -1,0 +1,27 @@
+# =================================================================
+# 🛡️ FSD-car 统一主干仓库 Git 忽略契约
+# =================================================================
+
+# --- 1. 系统与通用临时文件 ---
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# --- 2. 阶段一 (mujoco-nmpc-car) 忽略项 ---
+mujoco-nmpc-car/__pycache__/
+mujoco-nmpc-car/*.py[cod]
+mujoco-nmpc-car/*$py.class
+mujoco-nmpc-car/c_generated_code/
+mujoco-nmpc-car/acados_ocp.json
+mujoco-nmpc-car/acados/
+mujoco-nmpc-car/*.log
+mujoco-nmpc-car/MUJOCO_LOG.TXT
+
+# --- 3. 阶段二 (zenoh-rs) 忽略项 ---
+# 必须忽略 Rust 编译生成的 target 文件夹（动辄几百MB，严禁提交！）
+zenoh-rs/target/
+
+# 如果你希望在 GitHub 上保留 Cargo 依赖锁定文件，请保持下面这行注释状态
+# 如果不想提交它，可以取消注释
+# zenoh-rs/Cargo.lock

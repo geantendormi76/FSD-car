@@ -1,0 +1,13 @@
+# 1. 忽略 Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 2. 忽略 acados 自动生成的 C 代码与临时编译文件
+c_generated_code/
+acados_ocp.json
+acados/
+
+# 3. 忽略本地产生的仿真日志与临时调试文件
+*.log
+MUJOCO_LOG.TXT

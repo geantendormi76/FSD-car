@@ -1,0 +1,13 @@
+[package]
+name = "zenoh_brain"
+version = "0.1.0"
+edition = "2021" # 兼容当前主流稳定版
+
+[dependencies]
+# 神经通路：Zenoh 核心库
+zenoh = "0.11.0"
+# 异步大脑：Tokio 运行时
+tokio = { version = "1.36", features = ["full"] }
+# 契约序列化：Serde 与 Postcard (专为单片机设计的极简二进制协议)
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.0", features = ["alloc"] }
