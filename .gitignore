@@ -10,6 +10,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
+repomix.config.json
+repomix-output.xml
 
 # --- 2. 阶段一 (mujoco-nmpc-car) 忽略项 ---
 mujoco-nmpc-car/__pycache__/
