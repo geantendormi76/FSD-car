@@ -43,7 +43,7 @@ mujoco-nmpc-car/MUJOCO_LOG.TXT
 **/lib_dylib/
 
 # 严禁提交 4MB 的 ONNX 深度学习模型权重文件（model 目录下所有内容都会被无条件拦截）
-**/model/
+# **/model/
 
 # 忽略我们在链路排查中手动编译产生的探针测试临时文件
 **/test_link
