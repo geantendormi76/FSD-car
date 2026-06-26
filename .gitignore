@@ -1,12 +1,15 @@
 # =================================================================
-# 🛡️ FSD-car 统一主干仓库 Git 忽略契约
+# 🛡️ FSD-car 统一主干仓库 Git 忽略契约 (2026 纯净智驾版)
 # =================================================================
 
-# --- 1. 系统与通用临时文件 ---
+# --- 1. 系统、编译与 IDE 通用临时文件 ---
 .DS_Store
 Thumbs.db
 *.tmp
 *.bak
+.vscode/
+.idea/
+*.user
 
 # --- 2. 阶段一 (mujoco-nmpc-car) 忽略项 ---
 mujoco-nmpc-car/__pycache__/
@@ -18,10 +21,31 @@ mujoco-nmpc-car/acados/
 mujoco-nmpc-car/*.log
 mujoco-nmpc-car/MUJOCO_LOG.TXT
 
-# --- 3. 阶段二 (zenoh-rs) 忽略项 ---
-# 必须忽略 Rust 编译生成的 target 文件夹（动辄几百MB，严禁提交！）
-zenoh-rs/target/
+# --- 3. 仿生视觉与智驾阶段通用 Rust 拦截规则 ---
+# 强制忽略所有 Rust 子项目下的 target 编译缓存目录（动辄几百MB，严禁提交！）
+**/target/
 
-# 如果你希望在 GitHub 上保留 Cargo 依赖锁定文件，请保持下面这行注释状态
-# 如果不想提交它，可以取消注释
-# zenoh-rs/Cargo.lock
+# 忽略依赖版本锁定文件（根据负责人要求，保持代码库极度纯净，只保留 Cargo.toml）
+**/Cargo.lock
+
+# 拦截所有可能在编译/运行期产生的二进制文件和系统动态库
+*.so
+*.so.*
+*.tgz
+*.onnx
+*.a
+*.lib
+*.dll
+*.dylib
+
+# --- 4. 阶段三 (amr_bionic_eye) 与 阶段三.五 (xfeatc) 专属拦截 ---
+# 严禁提交微软官方下载的 15MB 动态链接库（lib_dylib 目录下所有内容都会被无条件拦截）
+**/lib_dylib/
+
+# 严禁提交 4MB 的 ONNX 深度学习模型权重文件（model 目录下所有内容都会被无条件拦截）
+**/model/
+
+# 忽略我们在链路排查中手动编译产生的探针测试临时文件
+**/test_link
+**/test_link.c
+**/diagnose_linker.py
