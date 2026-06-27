@@ -1,0 +1,61 @@
+# =================================================================
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
+# 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
+# =================================================================
+name: fsd-car-vision-twin
+
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    custom:
+      source: python
+      args: simulation-env/isaac_dora_node.py
+    outputs:
+      # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
+      - camera_rgb
+
+  # ---------------------------------------------------------------
+  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
+  # ---------------------------------------------------------------
+  - id: fast_brain_nmpc
+    # 指向编译后的 Rust 二进制文件
+    path: target/release/fast_brain_node
+    # DORA 自动化构建契约：启动前自动执行 cargo build
+    build: cargo build -p core-control --release --bin fast_brain_node
+    env:
+      # 注入日志级别与运行时类型检查
+      RUST_LOG: info
+      DORA_RUNTIME_TYPE_CHECK: warn
+    inputs:
+      # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
+      image: isaac_sim_env/camera_rgb
+    outputs:
+      # 输出运动指令契约 (v, w)
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🧠 3. 慢系统：XFeat 拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 🛡️ 架构师高光：多节点订阅同一输出。
+      # DORA 共享内存支持多读单写 (MRSW)，慢系统读取图像绝不会导致二次内存拷贝！
+      image: isaac_sim_env/camera_rgb
+
+  # ---------------------------------------------------------------
+  # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
+  # ---------------------------------------------------------------
+  - id: zenoh_bridge
+    path: target/release/zenoh_bridge_node
+    build: cargo build -p showcase --release --bin zenoh_bridge_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
+      cmd: fast_brain_nmpc/control_cmd
