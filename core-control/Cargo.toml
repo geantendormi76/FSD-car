@@ -1,0 +1,14 @@
+[package]
+name = "core-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 继承自根目录 Workspace 的统一定义
+opencv = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
+
+[build-dependencies]
+cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
