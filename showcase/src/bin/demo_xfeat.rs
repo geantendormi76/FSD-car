@@ -1,5 +1,3 @@
-mod perception;
-
 use opencv::{
     prelude::*,
     core::{self, Mat, Point, Scalar},
@@ -7,11 +5,13 @@ use opencv::{
     highgui,
     videoio::{VideoCapture, CAP_ANY},
 };
-use perception::xfeat_engine::仿生特征提取器;
-use perception::matcher::仿生匹配器;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+// 🛡️ 核心并网：直接从工作空间的核心算法库中，引入感知器和匹配器
+use core_perception::perception::xfeat_engine::仿生特征提取器;
+use core_perception::perception::matcher::仿生匹配器;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🛡️  启动【WSL2 仿生视觉 XFeat 纠偏与双通道画线验证沙盘 v2.5】");
     println!("{}", "=".repeat(80));
 
-    // 1. 加载本地下载的标准 640x640 ONNX 模型权重 [cite: 1.1.4]
+    // 1. 加载本地下载的标准 640x640 ONNX 模型权重
     let model_path = "model/xfeat_640x640.onnx";
     let 提取器 = Arc::new(仿生特征提取器::new(model_path)?);
     println!("✓ [ONNX] XFeat 神经网络推理引擎加载成功！");
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let 手机视频流地址 = "http://192.168.5.19:8080/video";
     let mut 视频源 = VideoCapture::from_file(手机视频流地址, CAP_ANY)?;
     if !VideoCapture::is_opened(&视频源)? {
-        println!("❌ [并网失败] 物理视频并网失败，请检查手机网络！");
+        println!("❌ [并网失败] 物理视频并网失败，请检查手机网络与 IP 端口状态！");
         return Ok(());
     }
     println!("✓ [并网成功] 手机视频通路并网成功！正在启动 Mailbox 高频抓取...");
@@ -37,10 +37,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let 帧宽 = 视频源.get(opencv::videoio::CAP_PROP_FRAME_WIDTH)? as i32;
     let 帧高 = 视频源.get(opencv::videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
     println!("✓ [分辨率对齐] 对齐参数: {}x{}", 帧宽, 帧高);
-
-    // 在堆中创建我们的仿生青蛙眼，并完成零拷贝预分配
-    let _青蛙眼 = 仿生特征提取器::new(model_path)?; // 用于零拷贝初始化验证
-    println!("✓ [零拷贝] 仿生感受野零拷贝预分配完成！");
 
     // 3. 构建多线程 Single-Element Mailbox 信箱
     let 共享信箱 = Arc::new(Mutex::new(None));
@@ -58,11 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 4. 等待 2 秒，小车开机并就位。然后“睁眼拍照”，保存基准帧与基准特征点 [cite: 1.1.8]
+    // 4. 等待 2 秒，小车开机并就位。然后“睁眼拍照”，保存基准帧与基准特征点
     println!("⏳ [系统初始化] 小车开机自检中，请将手机摄像头对准一处静止场景（地标站牌）...");
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // ✓ 格式化纠偏：将大写_Mat 纠正为标准 Snake Case 下划线命名 `基准帧_mat` [cite: 1.1.2]
     let (基准帧_mat, 基准地标快照) = loop {
         let 当前帧 = {
             let mut lock = 共享信箱.lock().unwrap();
@@ -101,7 +96,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(帧) = 当前帧 {
             let 提取器_ref = 提取器.clone();
             let 基准_ref = 基准地标快照.clone();
-            // ✓ 格式化纠偏：将大写_Mat 纠正为标准 Snake Case 下划线命名 `基准帧_mat_ref` [cite: 1.1.2]
             let 基准帧_mat_ref = 基准帧_mat.clone();
             let 帧_copy = 帧.clone();
 
@@ -110,18 +104,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 初始化双通道大画布 [宽 = 帧宽 * 2, 高 = 帧高]
                 let mut 画布 = Mat::new_rows_cols_with_default(帧高, 帧宽 * 2, core::CV_8UC3, Scalar::all(0.0)).unwrap();
                 
-                // 🛡️ 极速顺序物理拷贝机制：通过局部作用域隔离借用周期，100% 绕开 Rust 双重可变借用红线 [cite: 1.1.2]！
+                // 🛡️ 极速顺序物理拷贝机制：通过局部作用域隔离借用周期，100% 绕开 Rust 双重可变借用红线！
                 {
                     let mut row_slice = 画布.row_bounds_mut(0, 帧高).unwrap();
                     let mut 左画布 = row_slice.col_bounds_mut(0, 帧宽).unwrap();
                     帧_copy.copy_to(&mut 左画布).unwrap();
-                } // 左可变借用生命周期在此处被 Drop 彻底释放 [cite: 1.1.2]
+                }
 
                 {
                     let mut row_slice = 画布.row_bounds_mut(0, 帧高).unwrap();
                     let mut 右画布 = row_slice.col_bounds_mut(帧宽, 帧宽 * 2).unwrap();
                     基准帧_mat_ref.copy_to(&mut 右画布).unwrap();
-                } // 右可变借用生命周期在此处被 Drop 彻底释放 [cite: 1.1.2]
+                }
 
                 let 实时特征 = match 提取器_ref.提取特征(&帧_copy, 200) {
                     Ok(f) => f,

@@ -1,0 +1,11 @@
+[package]
+name = "core-decision"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zenoh = { workspace = true }

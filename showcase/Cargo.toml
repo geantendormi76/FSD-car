@@ -1,0 +1,26 @@
+[package]
+name = "showcase"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 继承自根目录 Workspace 的其她依赖
+opencv = { workspace = true }
+ort = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+zenoh = { workspace = true }
+postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
+
+# 核心并网：引入感知引擎包与决策大脑包
+core-perception = { path = "../core-perception" }
+core-decision = { path = "../core-decision" } # 🛡️ 新增：决策大脑包引用
+
+# 🛡️ 显式契约绑定：配置四个独立的一键启动展示大屏
+[[bin]]
+name = "demo_xfeat"
+path = "src/bin/demo_xfeat.rs"
+
+[[bin]]
+name = "demo_frog"
+path = "src/bin/demo_frog.rs"

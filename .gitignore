@@ -1,8 +1,8 @@
 # =================================================================
-# 🛡️ FSD-car 统一主干仓库 Git 忽略契约 (2026 纯净智驾版)
+# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生版)
 # =================================================================
 
-# --- 1. 系统、编译与 IDE 通用临时文件 ---
+# --- 1. 系统、Python 虚拟环境与 IDE 临时文件 ---
 .DS_Store
 Thumbs.db
 *.tmp
@@ -10,27 +10,16 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
-repomix.config.json
-repomix-output.xml
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
 
-# --- 2. 阶段一 (mujoco-nmpc-car) 忽略项 ---
-mujoco-nmpc-car/__pycache__/
-mujoco-nmpc-car/*.py[cod]
-mujoco-nmpc-car/*$py.class
-mujoco-nmpc-car/c_generated_code/
-mujoco-nmpc-car/acados_ocp.json
-mujoco-nmpc-car/acados/
-mujoco-nmpc-car/*.log
-mujoco-nmpc-car/MUJOCO_LOG.TXT
+# --- 2. Rust 工作空间全局编译缓存 ---
+# 强制忽略工作空间下的物理全局编译产物
+/target/
 
-# --- 3. 仿生视觉与智驾阶段通用 Rust 拦截规则 ---
-# 强制忽略所有 Rust 子项目下的 target 编译缓存目录（动辄几百MB，严禁提交！）
-**/target/
-
-# 忽略依赖版本锁定文件（根据负责人要求，保持代码库极度纯净，只保留 Cargo.toml）
-**/Cargo.lock
-
-# 拦截所有可能在编译/运行期产生的二进制文件和系统动态库
+# 拦截所有临时和系统动态链接库
 *.so
 *.so.*
 *.tgz
@@ -40,14 +29,10 @@ mujoco-nmpc-car/MUJOCO_LOG.TXT
 *.dll
 *.dylib
 
-# --- 4. 阶段三 (amr_bionic_eye) 与 阶段三.五 (xfeatc) 专属拦截 ---
-# 严禁提交微软官方下载的 15MB 动态链接库（lib_dylib 目录下所有内容都会被无条件拦截）
-**/lib_dylib/
-
-# 严禁提交 4MB 的 ONNX 深度学习模型权重文件（model 目录下所有内容都会被无条件拦截）
-# **/model/
-
-# 忽略我们在链路排查中手动编译产生的探针测试临时文件
-**/test_link
-**/test_link.c
-**/diagnose_linker.py
+# --- 3. 仿真环境产生的临时物理日志与求解器 C 缓存 ---
+simulation-env/c_generated_code/
+simulation-env/acados_ocp.json
+simulation-env/acados/
+simulation-env/*.log
+simulation-env/MUJOCO_LOG.TXT
+simulation-env/nmpc_telemetry.log

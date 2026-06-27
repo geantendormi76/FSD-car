@@ -5,18 +5,36 @@ import numpy as np
 import time
 import os
 from acados_template import AcadosOcpSolver
+import sys
 
-# 物理模型：保持高抓地力轮胎
+# 物理模型：保持高抓地力轮胎并注入虚拟相机与视觉特征地标 [cite: 1.1.3]
 xml_model = """
 <mujoco>
   <option timestep="0.01"/>
   <worldbody>
     <light diffuse=".5 .5 .5" pos="0 0 3" dir="0 0 -1"/>
+    <!-- 物理地表 -->
     <geom type="plane" size="15 15 0.1" rgba=".9 .9 .9 1"/>
+    
+    <!-- 🛡️ 为 XFeat 注入高对比度物理地标（圆柱、方箱），用作视觉纠偏的站牌 -->
+    <body name="landmark_red_pillar" pos="3.0 1.2 0.4">
+      <geom type="cylinder" size="0.15 0.4" rgba="1.0 0.0 0.0 1.0"/>
+    </body>
+    <body name="landmark_blue_box" pos="4.5 -1.0 0.4">
+      <geom type="box" size="0.25 0.25 0.4" rgba="0.0 0.0 1.0 1.0"/>
+    </body>
+    <body name="landmark_green_pillar" pos="1.5 -1.5 0.4">
+      <geom type="cylinder" size="0.1 0.4" rgba="0.0 1.0 0.0 1.0"/>
+    </body>
+
     <body name="car" pos="0 0 0.08">
       <freejoint/>
       <!-- 车身半宽度缩窄为 0.11 米，拉开物理间隙 -->
       <geom type="box" size="0.2 0.11 0.05" rgba="0 0.5 0.8 1"/>
+      
+      <!-- 🛡️ 注入虚拟单目摄像头：使用标准的 xyaxes 规定右和上朝向，让镜头笔直向前看 -->
+      <camera name="front_camera" pos="0.2 0.0 0.06" xyaxes="0 -1 0 0 0 1" fovy="70"/>
+      
       <geom type="sphere" size="0.03" pos="-0.15 0 -0.05" condim="1" friction="0 0 0"/>
       <!-- 左轮 -->
       <body name="wheel_left" pos="0.0 0.18 0">
@@ -162,13 +180,17 @@ for k in range(N + 1):
 for k in range(N):
     acados_solver.set(k, "u", np.zeros(nu))
 
-# 容错获取底盘电机和传感器索引
+# 🛡️ 架构师升级：直接从刚才新建的 XML 盘面中读取中国楼盘小区与 Scout Mini 车体
+model = mujoco.MjModel.from_xml_path("china_residential_estate.xml")
+data = mujoco.MjData(model)
+
+# 容错获取底盘电机索引（Scout Mini 是四驱结构）
 try:
-    joint_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "hinge_left")
-    joint_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "hinge_right")
+    joint_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "hinge_lf")
+    joint_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "hinge_rf")
 except:
-    joint_left_id = model.joint("hinge_left").id
-    joint_right_id = model.joint("hinge_right").id
+    joint_left_id = model.joint("hinge_lf").id
+    joint_right_id = model.joint("hinge_rf").id
 
 qvel_left_idx = model.jnt_dofadr[joint_left_id]
 qvel_right_idx = model.jnt_dofadr[joint_right_id]
@@ -272,10 +294,24 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         v_left_motor = (v_cmd - w_cmd * L / 2.0) / R
         v_right_motor = (v_cmd + w_cmd * L / 2.0) / R
         
-        # 通过动态获取的通道索引控制电机
-        data.ctrl[actuator_left_id] = v_left_motor
-        data.ctrl[actuator_right_id] = v_right_motor
+        # 🛡️ 差速动力学：四轮差速动力同步输出给前、后桥电机通道
+        data.ctrl[0] = v_left_motor   # motor_lf
+        data.ctrl[1] = v_right_motor  # motor_rf
+        data.ctrl[2] = v_left_motor   # motor_lr
+        data.ctrl[3] = v_right_motor  # motor_rr
         
+        # 🛡️ 离屏视网膜捕获：每隔 3 步 (仿照物理 33Hz)，对物理相机渲染并推送至通信神经网
+        if step % 3 == 0:
+            try:
+                # 渲染 front_camera 挂载点的当前场景图像 [cite: 1.1.3]
+                renderer.update_scene(data, camera="front_camera")
+                rgb_frame = renderer.render()  # 返回 (480, 640, 3) 的 np.ndarray
+                # 转换成连续的 C 语言裸字节数组并高速写入 Zenoh 管道
+                raw_bytes = rgb_frame.tobytes()
+                camera_pub.put(raw_bytes)
+            except Exception as e:
+                pass
+
         mujoco.mj_step(model, data)
         viewer.sync()
         
