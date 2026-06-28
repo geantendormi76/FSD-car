@@ -717,6 +717,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-bridge"
+version = "0.1.0"
+dependencies = [
+ "core-decision",
+ "dora-node-api",
+ "eyre",
+ "postcard",
+ "serde",
+ "tokio",
+ "zenoh",
+]
+
+[[package]]
 name = "core-control"
 version = "0.1.0"
 dependencies = [
@@ -735,6 +748,10 @@ dependencies = [
 name = "core-decision"
 version = "0.1.0"
 dependencies = [
+ "core-perception",
+ "dora-node-api",
+ "eyre",
+ "opencv",
  "serde",
  "serde_json",
  "tokio",

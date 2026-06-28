@@ -2,20 +2,16 @@
 # 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
 # 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
 # =================================================================
-name: fsd-car-vision-twin
-
 nodes:
   # ---------------------------------------------------------------
   # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
   # ---------------------------------------------------------------
   - id: isaac_sim_env
-    custom:
-      source: python
-      args: simulation-env/isaac_dora_node.py
+    path: uv
+    args: run --with numpy --with pyarrow --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
     outputs:
       # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
       - camera_rgb
-
   # ---------------------------------------------------------------
   # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
   # ---------------------------------------------------------------
@@ -28,6 +24,8 @@ nodes:
       # 注入日志级别与运行时类型检查
       RUST_LOG: info
       DORA_RUNTIME_TYPE_CHECK: warn
+      # 🛡️ 架构师指令：将 acados 动态库路径直接硬编码注入节点环境，彻底免去手动 export 的烦恼！
+      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib
     inputs:
       # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
       image: isaac_sim_env/camera_rgb
@@ -53,7 +51,7 @@ nodes:
   # ---------------------------------------------------------------
   - id: zenoh_bridge
     path: target/release/zenoh_bridge_node
-    build: cargo build -p showcase --release --bin zenoh_bridge_node
+    build: cargo build -p core-bridge --release
     env:
       RUST_LOG: info
     inputs:

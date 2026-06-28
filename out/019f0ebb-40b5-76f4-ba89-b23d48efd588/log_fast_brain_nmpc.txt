@@ -1,0 +1,1 @@
+/home/zhz/fsd-car/target/release/fast_brain_node: error while loading shared libraries: /home/zhz/fsd-car/simulation-env/acados/lib/libblasfeo.so.0: file too short

@@ -9,3 +9,9 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zenoh = { workspace = true }
+
+# 🛡️ 新增：并网所需的视觉与通信底座
+opencv = { workspace = true }
+dora-node-api = "0.3.3"
+eyre = "0.6"
+core-perception = { path = "../core-perception" }

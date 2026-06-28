@@ -1,0 +1,8 @@
+Downloading dora-rs (15.1MiB)
+ Downloaded dora-rs
+Installed 4 packages in 30ms
+⚠️ [降级自愈] 未检测到 Isaac Sim 环境，已切换为高性能 Mock 视频流发生器！
+ℹ️ [显存主权] 未安装 PyTorch/dora.cuda，通信管道锁定为极速 CPU 共享内存 (SHM)
+🚀 虚拟物理界代理已启动，正在向 DORA 共享内存注入物理法则...
+🚀 [管道状态] 开启: Apache Arrow CPU Shared Memory (SHM) 零拷贝
+🛑 接收到 DORA 全局停止指令，安全关闭物理引擎...

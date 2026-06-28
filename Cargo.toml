@@ -3,16 +3,27 @@ resolver = "2"
 
 # 声明工作空间下的所有物理子包
 members = [
-    "core-perception",  # 视觉感知引擎 (青蛙眼 + XFeat)
-    "core-control",     # 规控引擎 (NMPC 求解器)
-    "core-decision",    # 决策大脑 (行为树 + 拓扑图)
-    "showcase",         # 📺 专门用于存放可视化验证程序的展示厅包
+    "core-perception", # 视觉感知引擎 (青蛙眼 + XFeat)
+    "core-control",    # 规控引擎 (NMPC 求解器)
+    "core-decision",   # 决策大脑 (行为树 + 拓扑图)
+    "core-bridge",     # 🔗 生产级物理并网桥接网关 (Spinal Cord)
+    "showcase",        # 📺 专门用于存放可视化验证程序的展示厅包
 ]
 
 [workspace.dependencies]
 # 视觉与 AI 引擎
-opencv = { version = "0.93", default-features = false, features = ["imgproc", "calib3d", "features2d", "videoio", "highgui"] }
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "tls-rustls", "load-dynamic"] }
+opencv = { version = "0.93", default-features = false, features = [
+    "imgproc",
+    "calib3d",
+    "features2d",
+    "videoio",
+    "highgui",
+] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "tls-rustls",
+    "load-dynamic",
+] }
 
 # 异步与并发底座
 tokio = { version = "1.38", features = ["full"] }

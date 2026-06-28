@@ -1,0 +1,23 @@
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+[package]
+name = "core-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "zenoh_bridge_node"
+path = "src/main.rs"
+
+[dependencies]
+# 🛡️ 完备继承自工作空间统一依赖，绝不产生多重宇宙冲突
+tokio = { workspace = true }
+serde = { workspace = true }
+zenoh = { workspace = true }
+postcard = { workspace = true }
+
+# 🛡️ DORA 节点 API 与错误自愈底座
+dora-node-api = "0.3.3"
+eyre = "0.6"
+
+# 🛡️ 引入决策大脑，复用中文运动指令契约
+core-decision = { path = "../core-decision" }

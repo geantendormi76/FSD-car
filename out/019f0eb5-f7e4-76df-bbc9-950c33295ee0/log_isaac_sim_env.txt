@@ -1,0 +1,9 @@
+Downloading numpy (15.9MiB)
+Downloading pyarrow (46.6MiB)
+ Downloaded numpy
+ Downloaded pyarrow
+Installed 2 packages in 16ms
+Traceback (most recent call last):
+  File "/home/zhz/fsd-car/simulation-env/isaac_dora_node.py", line 15, in <module>
+    from dora import Node
+ModuleNotFoundError: No module named 'dora'

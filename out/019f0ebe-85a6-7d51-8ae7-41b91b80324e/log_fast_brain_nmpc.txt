@@ -1,0 +1,7 @@
+🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...
+
+thread 'tokio-rt-worker' (162757) panicked at core-control/src/bin/fast_brain_node.rs:41:50:
+❌ NMPC 求解器初始化失败: "❌ NMPC 求解器 C 内存胶囊分配失败！请检查动态库链接。"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+✅ [快系统] 感受野初始化完成 (640x480)
+🛑 [快系统] 接收到 DORA 全局停止信号，安全释放 C 语言内存胶囊并退出...

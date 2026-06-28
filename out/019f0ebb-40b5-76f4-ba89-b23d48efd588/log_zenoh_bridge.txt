@@ -1,0 +1,8 @@
+🔗 [神经通路] 核心并网网关已启动，等待 DORA 共享内存注入...
+Error: failed to init event stream
+
+Caused by:
+    subscribe failed: Node fast_brain_nmpc exited before initializing dora. For more information, run `dora logs 019f0ebb-40b5-76f4-ba89-b23d48efd588 fast_brain_nmpc`.
+
+Location:
+    /home/zhz/.cargo/registry/src/mirrors.ustc.edu.cn-38d0e5eb5da2abae/dora-node-api-0.3.13/src/event_stream/mod.rs:161:17
