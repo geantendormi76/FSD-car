@@ -1,9 +1,0 @@
-🧠 [慢系统] 语义大脑与拓扑建图节点已启动，等待 DORA 共享内存注入...
-Error: failed to init event stream
-
-Caused by:
-   0: failed to register node with dora-daemon
-   1: version mismatch: message format v0.6.0 is not compatible with expected message format v0.8.0
-
-Location:
-    /home/zhz/.cargo/registry/src/mirrors.ustc.edu.cn-38d0e5eb5da2abae/dora-node-api-0.3.13/src/daemon_connection/mod.rs:71:30
