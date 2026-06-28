@@ -14,6 +14,7 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *$py.class
+out/
 
 # --- 2. Rust 工作空间全局编译缓存 ---
 # 强制忽略工作空间下的物理全局编译产物
