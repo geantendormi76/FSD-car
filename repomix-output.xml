@@ -49,7 +49,12 @@ The content is organized as follows:
 <directory_structure>
 core-control/
   src/
+    bin/
+      fast_brain_node.rs
+    ffi.rs
     lib.rs
+    solver.rs
+  build.rs
   Cargo.toml
 core-decision/
   src/
@@ -79,6 +84,7 @@ showcase/
 simulation-env/
   diagnose.py
   generate_solver.py
+  isaac_dora_node.py
   mujoco_nmpc_run.py
   network_check.py
   nmpc_model.py
@@ -92,7 +98,297 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
+<file path="core-control/src/bin/fast_brain_node.rs">
+// 🛡️ 极速并网：使用 DORA 内部重导出的 arrow
+use dora_node_api::arrow::array::Float32Array;
+use core_control::预测控制求解器;
+use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
+// 🛡️ 架构师修正：直接引入 DORA 原生导出的 Parameter 枚举，消除不稳定的 metadata 模块依赖
+use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
+use eyre::{eyre, Context};
+use opencv::core::{Mat, CV_8UC3};
+use std::ffi::c_void;
+
+fn main() -> eyre::Result<()> {
+    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
+
+    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+
+    // 2. 初始化全简体中文业务逻辑主权对象
+    let mut 青蛙眼 = 仿生青蛙眼::new();
+    let mut 规控大脑 = 预测控制求解器::new().map_err(|e| eyre!(e))?;
+    
+    let mut 物理主权已初始化 = false;
+
+    // 3. 事件驱动循环 (由底层 epoll 极速唤醒，避免线程死锁)
+    while let Some(event) = events.recv() {
+        match event {
+            Event::Input { id, metadata, data } => {
+                // 拦截来自 Isaac Sim 的图像输入
+                if id.as_str() == "image" {
+                    // ---------------------------------------------------------
+                    // [阶段 A]：元数据解析与状态金库初始化
+                    // ---------------------------------------------------------
+                    // 🛡️ 架构师修正：利用原生 Match 模式匹配提取参数，0 上游兼容风险，极限性能
+                    let 宽度 = match metadata.parameters.get("width") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 640,
+                    };
+                    let 高度 = match metadata.parameters.get("height") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 480,
+                    };
+
+                    if !物理主权已初始化 {
+                        青蛙眼.初始化(宽度, 高度).map_err(|e| eyre!(e))?;
+                        规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0).map_err(|e| eyre!(e))?;
+                        物理主权已初始化 = true;
+                        println!("✅ [快系统] 感受野与 NMPC 求解器初始化完成 ({}x{})", 宽度, 高度);
+                    }
+
+                    // ---------------------------------------------------------
+                    // [阶段 B]：物理级零拷贝 (Arrow -> OpenCV Mat)
+                    // ---------------------------------------------------------
+                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转 &[u8] 失败")?;
+
+                    // 调用 new_rows_cols_with_data_unsafe 显式声明我们在操作裸指针
+                    let 视网膜帧 = unsafe {
+                        Mat::new_rows_cols_with_data_unsafe(
+                            高度,
+                            宽度,
+                            CV_8UC3,
+                            裸内存切片.as_ptr() as *mut c_void,
+                            opencv::core::Mat_AUTO_STEP,
+                        ).context("❌ OpenCV Mat 映射失败")?
+                    };
+
+                    // ---------------------------------------------------------
+                    // [阶段 C]：仿生感知与规控解算
+                    // ---------------------------------------------------------
+                    let 势场 = 青蛙眼.处理图像帧(&视网膜帧, 0.0).map_err(|e| eyre!(e))?;
+
+                    // 2. 势场梯度转化为 NMPC 参考轨迹偏移
+                    let 期望_x = 0.3 + 势场.逃逸方向.0 as f64;
+                    let 期望_y = 0.0 + 势场.逃逸方向.1 as f64;
+                    
+                    for k in 0..=20 {
+                        规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3).map_err(|e| eyre!(e))?;
+                    }
+                    
+                    let (线速度_v, 角速度_w) = 规控大脑.求解最优控制量(0.0).map_err(|e| eyre!(e))?;
+
+                    // ---------------------------------------------------------
+                    // [阶段 D]：零拷贝输出指令
+                    // ---------------------------------------------------------
+                    let 运动指令 = Float32Array::from(vec![线速度_v as f32, 角速度_w as f32]);
+                    
+                    node.send_output(
+                        "control_cmd".to_string().into(),
+                        MetadataParameters::default(),
+                        运动指令,
+                    ).context("❌ 控制指令发送失败")?;
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [快系统] 接收到 DORA 全局停止信号，安全释放 C 语言内存胶囊并退出...");
+                break;
+            }
+            _ => {} 
+        }
+    }
+    
+    Ok(())
+}
+</file>
+
+<file path="simulation-env/isaac_dora_node.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+=================================================================
+🛡️ FSD-car V3.0: 虚拟物理界 (The Matrix) - Isaac Sim DORA 接入点
+架构哲学: 物理级零拷贝 | 域随机化 (Domain Randomization) | 软硬绝对解耦
+=================================================================
+"""
+
+import time
+import numpy as np
+import pyarrow as pa
+from dora import Node
+
+# 尝试导入 Isaac Sim 核心库 (如果运行在普通 Python 环境则自动降级为 Mock 模式)
+try:
+    from omni.isaac.core import World
+    from omni.isaac.sensor import Camera
+    ISAAC_SIM_AVAILABLE = True
+    print("✅ [物理主权] 检测到 NVIDIA Isaac Sim 环境，已挂载真实物理法则引擎！")
+except ImportError:
+    ISAAC_SIM_AVAILABLE = False
+    print("⚠️ [降级自愈] 未检测到 Isaac Sim 环境，已自动切换为高保真 Mock 视频流发生器！")
+
+class 虚拟物理界代理:
+    def __init__(self):
+        # 1. 初始化 DORA 节点契约
+        self.node = Node()
+        
+        # 2. 物理相机参数对齐 (严格对齐真实小车的广角单目摄像头)
+        self.宽度 = 640
+        self.高度 = 480
+        self.通道数 = 3
+        
+        # 3. 仿真环境初始化
+        if ISAAC_SIM_AVAILABLE:
+            self.world = World()
+            self.camera = Camera(
+                prim_path="/World/Car/front_camera",
+                resolution=(self.宽度, self.高度),
+            )
+            self.world.reset()
+        else:
+            # Mock 模式下的测试画面状态
+            self.帧计数器 = 0
+
+    def 获取物理视网膜帧(self) -> np.ndarray:
+        """
+        获取当前物理世界的 RGB 渲染帧
+        """
+        if ISAAC_SIM_AVAILABLE:
+            # 步进物理引擎
+            self.world.step(render=True)
+            # 获取无畸变或带物理畸变的 RGB 图像 (RGBA -> RGB)
+            rgba_image = self.camera.get_rgba()
+            return rgba_image[:, :, :3].astype(np.uint8)
+        else:
+            # 🛡️ 降级自愈：生成移动的彩色条纹，模拟小车运动，用于验证 Rust 端的 XFeat 特征提取
+            self.帧计数器 += 1
+            偏移量 = (self.帧计数器 * 5) % self.宽度
+            
+            # 创建纯黑背景
+            mock_frame = np.zeros((self.高度, self.宽度, self.通道数), dtype=np.uint8)
+            
+            # 绘制三条高对比度的垂直彩条 (模拟物理地标)
+            mock_frame[:, 偏移量:偏移量+50] = [255, 0, 0]       # 红色站牌
+            mock_frame[:, (偏移量+200)%self.宽度:(偏移量+250)%self.宽度] = [0, 255, 0] # 绿色站牌
+            mock_frame[:, (偏移量+400)%self.宽度:(偏移量+450)%self.宽度] = [0, 0, 255] # 蓝色站牌
+            
+            # 模拟 30Hz 的物理渲染耗时
+            time.sleep(0.033)
+            return mock_frame
+
+    def 驱动物理底盘(self, v: float, w: float):
+        """
+        接收来自 Rust 规控大脑的指令，驱动虚拟轮胎
+        """
+        if ISAAC_SIM_AVAILABLE:
+            # TODO: 将 (v, w) 转换为左右轮速，调用 Isaac Sim 的 ArticulationController
+            # left_speed = v - w * 轴距 / 2
+            # right_speed = v + w * 轴距 / 2
+            pass
+        else:
+            # Mock 模式下仅打印探针日志
+            if self.帧计数器 % 30 == 0:
+                print(f"🏎️ [底盘执行器] 接收到 Rust 规控指令 -> 线速度: {v:.3f} m/s, 角速度: {w:.3f} rad/s")
+
+    def 启动生命循环(self):
+        print("🚀 虚拟物理界代理已启动，正在向 DORA 共享内存注入物理法则...")
+        
+        try:
+            while True:
+                # ---------------------------------------------------------
+                # 1. 视网膜捕获与零拷贝注入 (The Output Path)
+                # ---------------------------------------------------------
+                rgb_frame = self.获取物理视网膜帧()
+                
+                # 🛡️ 物理级零拷贝核心：将 numpy 数组展平并转换为 Apache Arrow 格式。
+                # pyarrow 会直接接管 numpy 的底层 C 内存，不发生任何数据复制！
+                arrow_array = pa.array(rgb_frame.ravel())
+                
+                # 携带空间元数据，注入 DORA 共享内存总线
+                self.node.send_output(
+                    output_id="camera_rgb",
+                    data=arrow_array,
+                    metadata={
+                        "width": self.宽度,
+                        "height": self.高度,
+                        "channels": self.通道数,
+                        "encoding": "bgr8" # 契合 OpenCV 的默认色彩空间
+                    }
+                )
+
+                # ---------------------------------------------------------
+                # 2. 神经反射弧监听 (The Input Path)
+                # ---------------------------------------------------------
+                # 设置 1 毫秒的非阻塞超时，确保不会卡死 30Hz 的物理渲染循环
+                event = self.node.next(timeout=0.001)
+                
+                if event is not None:
+                    if event["type"] == "INPUT" and event["id"] == "control_cmd":
+                        # 🛡️ 契约解析：Rust 端发来的是包含 2 个 f32 的 Arrow Array [v, w]
+                        cmd_array = event["value"].to_numpy()
+                        if len(cmd_array) >= 2:
+                            v, w = cmd_array[0], cmd_array[1]
+                            self.驱动物理底盘(v, w)
+                            
+                    elif event["type"] == "STOP":
+                        print("🛑 接收到 DORA 全局停止指令，正在安全关闭物理引擎...")
+                        break
+                        
+        except KeyboardInterrupt:
+            print("\n🛑 用户手动中断，安全退出...")
+
+if __name__ == "__main__":
+    代理 = 虚拟物理界代理()
+    代理.启动生命循环()
+</file>
+
+<file path="core-control/src/ffi.rs">
+#![allow(non_camel_case_types)]
+use libc::{c_char, c_int, c_void};
+
+/// 🛡️ 不透明结构体：代表 acados 内部的求解器内存胶囊
+#[repr(C)]
+pub struct diff_drive_car_solver_capsule {
+    _unused: [u8; 0],
+}
+
+// 声明外部 C 函数符号
+extern "C" {
+    // 生命周期管理
+    pub fn diff_drive_car_acados_create() -> *mut diff_drive_car_solver_capsule;
+    pub fn diff_drive_car_acados_solve(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+
+    // 内部组件指针获取
+    pub fn diff_drive_car_acados_get_nlp_in(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_out(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_config(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_dims(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+
+    // 通用数据注入与提取算子
+    pub fn ocp_nlp_in_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    pub fn ocp_nlp_out_get(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_out: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+}
+</file>
+
 <file path="core-control/src/lib.rs">
+// <<<<<<< SEARCH
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
@@ -107,6 +403,237 @@ mod tests {
         assert_eq!(result, 4);
     }
 }
+// =======
+pub mod ffi;
+pub mod solver;
+
+// 🛡️ 向上层暴露安全的规控接口
+pub use solver::预测控制求解器;
+// >>>>>>> REPLACE
+</file>
+
+<file path="core-control/src/solver.rs">
+use super::ffi::*;
+use std::ffi::CString;
+use std::os::raw::c_void;
+
+/// 🛡️ 规控大脑：NMPC 求解器安全封装金库
+/// 彻底隔离 C 语言的裸指针，对外提供 100% 内存安全的 Rust 接口
+pub struct 预测控制求解器 {
+    capsule: *mut diff_drive_car_solver_capsule,
+}
+
+// 🛡️ 架构师指令：显式声明线程安全。
+// 只要我们保证在 Rust 层以 `&mut self` 独占借用的方式调用，C 求解器在多线程间传递就是安全的。
+unsafe impl Send for 预测控制求解器 {}
+
+impl 预测控制求解器 {
+    /// 构造函数：在堆内存中分配 C 求解器
+    pub fn new() -> Result<Self, String> {
+        let capsule = unsafe { diff_drive_car_acados_create() };
+        if capsule.is_null() {
+            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！请检查动态库链接。".to_string());
+        }
+        Ok(Self { capsule })
+    }
+
+    /// 注入当前物理状态 (对应 Python 中的 lbx, ubx)
+    pub fn 设置当前状态(&mut self, x: f64, y: f64, yaw: f64, v: f64) -> Result<(), String> {
+        let state = [x, y, yaw, v];
+        let field_lbx = CString::new("lbx").unwrap();
+        let field_ubx = CString::new("ubx").unwrap();
+        
+        unsafe {
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+
+            let status_lbx = ocp_nlp_in_set(config, dims, nlp_in, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
+            let status_ubx = ocp_nlp_in_set(config, dims, nlp_in, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
+
+            if status_lbx != 0 || status_ubx != 0 {
+                return Err("❌ NMPC 初始状态 (x0) 注入失败！".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// 注入未来预测步的参考轨迹点 (对应 Python 中的 yref)
+    pub fn 设置参考轨迹点(&mut self, 预测步: i32, ref_x: f64, ref_y: f64, ref_yaw: f64, ref_v: f64) -> Result<(), String> {
+        let field_yref = CString::new("yref").unwrap();
+        
+        unsafe {
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+
+            let status = if 预测步 == 20 { 
+                // 终端步 (Terminal Stage): ny_e = 4
+                let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
+                ocp_nlp_in_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
+            } else {
+                // 中间步 (Intermediate Stage): ny = 6 (补齐 a 和 omega 的参考值 0.0)
+                let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
+                ocp_nlp_in_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
+            };
+
+            if status != 0 {
+                return Err(format!("❌ NMPC 第 {} 步参考轨迹注入失败！", 预测步));
+            }
+        }
+        Ok(())
+    }
+
+    /// 执行 RTI-SQP 求解，并返回平滑处理后的 (线速度, 角速度)
+    pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
+        unsafe {
+            let status = diff_drive_car_acados_solve(self.capsule);
+            if status != 0 {
+                return Err(format!("⚠️ NMPC 求解器发散或失败，状态码: {}", status));
+            }
+
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
+
+            let field_u = CString::new("u").unwrap();
+            let mut u_opt = [0.0f64; 2]; // [a, omega]
+
+            let get_status = ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
+            if get_status != 0 {
+                return Err("❌ NMPC 无法提取最优控制输出！".to_string());
+            }
+
+            let a_opt = u_opt[0];
+            let w_cmd_raw = u_opt[1];
+
+            // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
+            let mut v_cmd = 当前线速度 + a_opt * 0.01;
+            if v_cmd < 0.0 { v_cmd = 0.0; } // 限制不能倒车
+            if v_cmd > 0.3 { v_cmd = 0.3; } // 最大速度限制
+
+            // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
+            let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);
+
+            Ok((v_cmd, w_cmd))
+        }
+    }
+}
+
+// 🛡️ 内存守卫：RAII 机制。当 `预测控制求解器` 离开作用域时，自动调用 C 语言的 free 释放内存，彻底杜绝内存泄漏！
+impl Drop for 预测控制求解器 {
+    fn drop(&mut self) {
+        unsafe {
+            diff_drive_car_acados_free(self.capsule);
+        }
+    }
+}
+</file>
+
+<file path="core-control/build.rs">
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+fn main() {
+    // 1. 获取当前 crate (core-control) 的绝对物理路径
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    
+    // 2. 溯源至多包工作空间的物理根目录 (FSD-car)
+    let workspace_root = match manifest_dir.parent() {
+        Some(parent) => parent.to_path_buf(),
+        None => {
+            println!("cargo:warning=❌ 无法向上溯源工作空间根目录，回退至当前目录！");
+            manifest_dir.clone()
+        }
+    };
+    
+    // 3. 定位全局资产总库 lib_dylib 的绝对物理路径
+    let lib_dylib_dir = workspace_root.join("lib_dylib");
+    if !lib_dylib_dir.exists() {
+        fs::create_dir_all(&lib_dylib_dir).expect("❌ 无法创建 lib_dylib 资产库！");
+    }
+
+    // 4. 定义规控底层库（C 语言动态链接库）的标准绝对物理路径
+    let acados_lib_src = workspace_root.join("simulation-env/acados/lib/libacados.so");
+    let solver_lib_src = workspace_root.join("simulation-env/c_generated_code/libacados_solver_diff_drive_car.so");
+
+    // 5. 🛡️ 【智能侦察机制】：如果标准路径缺失，深度遍历工作空间自动搜寻底层库，彻底干掉硬编码
+    let mut actual_acados_path = if acados_lib_src.exists() {
+        Some(acados_lib_src)
+    } else {
+        println!("cargo:warning=🔍 [智能侦察] 未在标准路径下找到 libacados.so，启动工作空间深度检索...");
+        let scouted = scout_library(&workspace_root, "libacados.so");
+        if scouted.is_none() {
+            println!("cargo:warning=⚠️ [智能侦察] 深度检索也未能定位 libacados.so，请确保 acados 已正确编译！");
+        }
+        scouted
+    };
+
+    let actual_solver_path = if solver_lib_src.exists() {
+        Some(solver_lib_src)
+    } else {
+        println!("cargo:warning=🔍 [智能侦察] 未在标准路径下找到求解器，启动工作空间深度检索...");
+        let scouted = scout_library(&workspace_root, "libacados_solver_diff_drive_car.so");
+        if scouted.is_none() {
+            println!("cargo:warning=⚠️ [智能侦察] 未能定位求解器，请确保在 simulation-env 下运行了 python generate_solver.py！");
+        }
+        scouted
+    };
+
+    // 6. 执行【编译期资产并网契约】：将侦察到的底层 .so 动态库自动同步同步到全局资产库 lib_dylib 中
+    if let Some(src_path) = actual_acados_path {
+        let dest = lib_dylib_dir.join("libacados.so");
+        if fs::copy(&src_path, &dest).is_ok() {
+            println!("cargo:warning=✓ [资产并网成功] 成功同步 {} 到 lib_dylib", src_path.display());
+        }
+    }
+
+    if let Some(src_path) = actual_solver_path {
+        let dest = lib_dylib_dir.join("libacados_solver_diff_drive_car.so");
+        if fs::copy(&src_path, &dest).is_ok() {
+            println!("cargo:warning=✓ [资产并网成功] 成功同步 {} 到 lib_dylib", src_path.display());
+        }
+    }
+
+    // 7. 告诉 Cargo 唯一受信任的物理链接搜寻路径：全局资产总库 lib_dylib (绝对路径)
+    println!("cargo:rustc-link-search=native={}", lib_dylib_dir.display());
+
+    // 8. 强力绑定 C 语言底层动力符号
+    println!("cargo:rustc-link-lib=dylib=acados");
+    println!("cargo:rustc-link-lib=dylib=acados_solver_diff_drive_car");
+
+    // 9. 编译防腐哨兵：如果底层的 C 代码发生重构，自动触发 Rust 规控模块重新编译
+    let c_solver_source = workspace_root.join("simulation-env/c_generated_code/acados_solver_diff_drive_car.c");
+    if c_solver_source.exists() {
+        println!("cargo:rerun-if-changed={}", c_solver_source.display());
+    }
+}
+
+/// 🛡️ 工作空间深度检索算法
+/// 自动过滤大文件目录和环境目录，秒级定位物理资产，杜绝路径写死
+fn scout_library(dir: &Path, target_lib_name: &str) -> Option<PathBuf> {
+    if dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    // 避开编译产物目录、虚拟环境与 Conda 目录，防止无限递归与编译延迟
+                    if name == "target" || name.starts_with('.') || name == "miniconda3" || name == ".venv" || name == "node_modules" {
+                        continue;
+                    }
+                    if let Some(found) = scout_library(&path, target_lib_name) {
+                        return Some(found);
+                    }
+                } else if path.file_name().and_then(|s| s.to_str()) == Some(target_lib_name) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
 </file>
 
 <file path="core-control/Cargo.toml">
@@ -120,6 +647,21 @@ edition = "2021"
 opencv = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
+
+# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
+dora-node-api = "0.3.3"
+# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
+eyre = "0.6"
+
+# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
+chrono = "=0.4.39"
+
+# 🛡️ 新增：引入感知引擎，实现快系统闭环
+core-perception = { path = "../core-perception" }
+
+[build-dependencies]
+cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
 </file>
 
 <file path="core-decision/src/topo_graph/graph.rs">
@@ -2123,66 +2665,179 @@ print("\n==================================================")
 </file>
 
 <file path="4.py">
-import os, sys
-from pathlib import Path
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-print("==================================================")
-print("🕵️‍♂️  FSD-car 全局环境与编译幽灵泄漏排查探针 V3.8")
-print("==================================================")
+"""
+=================================================================
+🛡️ FSD-car: WSL2 + Zsh + Rust 终端与编译性能深度诊断探针
+=================================================================
+"""
 
-# 1. 检查全局 ~/.cargo/config.toml
-global_cargo = Path("~/.cargo/config.toml").expanduser()
-global_cargo_alt = Path("~/.cargo/config").expanduser()
+import os
+import sys
+import time
+import subprocess
+import socket
 
-found_any = False
+def print_header(title):
+    print("\n" + "="*60)
+    print(f" 🔍 {title}")
+    print("="*60)
 
-for p in [global_cargo, global_cargo_alt]:
-    if p.exists():
-        print(f"🔍 发现全局 Cargo 配置文件: {p}")
-        try:
-            content = p.read_text()
-            if "ORT" in content or "lib_dylib" in content or "xfeatc" in content:
-                print(f"  ⚠️ 警告！在全局 Cargo 配置中发现了硬编码代理/链接设置！")
-                lines = content.split('\n')
-                for idx, line in enumerate(lines):
-                    if "proxy" in line.lower() or "lib_dylib" in line or "xfeatc" in line:
-                        print(f"    🚩 第 {idx+1} 行线索: {line.strip()}")
-                found_any = True
-        except Exception as e:
-            print(f"    无法读取: {e}")
+def test_filesystem():
+    print_header("1. 文件系统与虚拟化检测")
+    cwd = os.getcwd()
+    print(f"当前工作目录: {cwd}")
+    
+    # 检测是否在 /mnt/ 下
+    if cwd.startswith("/mnt/"):
+        print("🔴 [致命红线] 检测到项目存储在 Windows 盘区 (如 /mnt/c/ 或 /mnt/d/)！")
+        print("   👉 危害：WSL2 访问 Windows 文件需要经过 9P 虚拟文件系统，速度比原生 ext4 慢 10-20 倍。")
+        print("   💡 修复建议：请立即将项目移至 Linux 原生家目录下（如：/home/zhz/FSD-car）进行编译！")
+    else:
+        print("🟢 [安全] 检测到项目已存储在 Linux 原生 ext4 盘区，文件系统路径正常。")
 
-# 2. 扫描所有可能缓存 libonnxruntime 的用户目录
-print('\n[2] 正在扫描用户全局 `.curlrc` 或其他全局物理缓存...')
-user_files = [
-    '~/.curlrc',
-    '~/.gitconfig',
-    '~/.zshrc',
-    '~/.bashrc'
-]
+    # 检测 WSL 版本
+    try:
+        release = os.uname().release
+        if "microsoft-standard" in release:
+            print("🟢 [确认] 当前运行环境为 WSL2。")
+        else:
+            print("🟡 [警告] 无法确认是否为 WSL2，可能是 WSL1 或原生 Linux。")
+    except Exception:
+        pass
 
-for f_path in user_files:
-    p = Path(os.path.expanduser(f_path))
-    if p.exists():
-        try:
-            content = p.read_text(errors='ignore')
-            lines = content.split('\n')
-            for idx, line in enumerate(lines):
-                # 寻找可能强行设置的旧环境变量
-                if "ORT_LIB_PATH" in line or "LD_LIBRARY_PATH" in line:
-                    print(f"  🚩 发现全局 Zsh/Bash 环境残留 ({f_path}):")
-                    print(f"    第 {idx+1} 行: {line.strip()}")
-                    found_any = True
-        except: pass
+def test_io_performance():
+    print_header("2. 磁盘 I/O 压力测试 (排查 Windows Defender 拦截)")
+    temp_file = "diag_temp_test_file.bin"
+    chunk_size = 1024 * 1024 # 1MB
+    chunks = 50 # 50MB
+    
+    data = b"0" * chunk_size
+    
+    print(f"正在向磁盘高速写入 {chunks}MB 临时数据...")
+    start_time = time.time()
+    try:
+        with open(temp_file, "wb") as f:
+            for _ in range(chunks):
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+        elapsed = time.time() - start_time
+        speed = chunks / elapsed
+        
+        print(f"磁盘写入完成！耗时: {elapsed:.2f} 秒 | 平均速度: {speed:.2f} MB/s")
+        
+        if speed < 80.0:
+            print("🔴 [致命红线] 磁盘写入速度极慢（低于 80MB/s）！")
+            print("   👉 危害：这几乎 100% 意味着 Windows Defender 在后台强力拦截扫描你的 ext4.vhdx 或临时编译文件。")
+            print("   💡 修复建议：请在 Windows 安全中心中，将 `ext4.vhdx` (WSL磁盘文件) 所在目录和整个 Rust 编译 Target 目录加入【排除项】！")
+        elif speed < 250.0:
+            print("🟡 [中度警告] 磁盘速度一般（低于 250MB/s），Windows Defender 可能存在轻度扫描干扰。")
+        else:
+            print("🟢 [健康] 磁盘写入速度正常，Windows Defender 干扰较小。")
+            
+    except Exception as e:
+        print(f"❌ 写入测试失败: {e}")
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
-print("\n📊 终极诊断结论 (SOTA Diagnostic Summary):")
-if found_files := [f for f in [Path(os.path.expanduser(p)) for p in ['~/.cargo/config.toml', '~/.cargo/config']] if f.exists()]:
-    print("  👉 请检查上述打印出的全局配置文件线索。若是全局配置文件中强行写入了已删掉的旧路径，")
-    print("     编译器就会无视你的本地 unset，强行读取已失效的地址。")
-else:
-    print("  ✓ 系统全局 Cargo 配置文件无污染。")
-    print("  👉 如果上述所有排查均未发现异常，这表明当前编译终端仍未刷新，旧变量被缓存在了 IDE 终端进程中。")
-    print("     请尝试：‘关闭 VS Code/终端 -> 重新打开终端 -> 重新编译’ 以强行刷新环境变量！")
-print("==================================================")
+def test_git_latency():
+    print_header("3. Git 状态延迟测试 (排查 Zsh 回车粘手卡顿)")
+    print("正在评估 Zsh 终端回车触发 Git 查询的渲染延迟...")
+    
+    start_time = time.time()
+    try:
+        # 执行 git status 并丢弃输出
+        subprocess.run(["git", "status", "--porcelain"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elapsed = (time.time() - start_time) * 1000 # 毫秒
+        
+        print(f"Git 状态查询耗时: {elapsed:.2f} 毫秒")
+        
+        if elapsed > 100.0:
+            print("🔴 [中度红线] `git status` 耗时超过 100 毫秒！")
+            print("   👉 危害：这会导致你在 Zsh 中每次按下回车或输入命令时，都会感到明显的粘手和卡顿。")
+            print("   💡 修复建议：在你的 `~/.zshrc` 中加入 `DISABLE_UNTRACKED_FILES_DIRTY=\"true\"`，")
+            print("              或者使用 `git config --global core.preloadindex true` 来提速。")
+        else:
+            print("🟢 [健康] Git 查询延迟极低，终端“粘手”与此无关。")
+    except Exception as e:
+        print(f"❌ Git 测试失败 (可能未初始化 Git 仓): {e}")
+
+def test_network_and_proxy():
+    print_header("4. 神经通路与代理延迟测试")
+    print("正在排查环境变量中是否存在失效的 Windows 宿主机代理...")
+    
+    # 检查环境变量
+    proxy_vars = {k: v for k, v in os.environ.items() if 'proxy' in k.lower()}
+    if proxy_vars:
+        print("检测到当前活动的代理设置:")
+        for k, v in proxy_vars.items():
+            print(f"  {k} = {v}")
+    else:
+        print("🟢 [安全] 未检测到任何全局代理环境变量。")
+        
+    # 测试连接中科大 Rust 镜像源
+    target_host = "mirrors.ustc.edu.cn"
+    print(f"正在测试与中科大 Rust 镜像源 ({target_host}) 的物理通路连接...")
+    start_time = time.time()
+    try:
+        socket.setdefaulttimeout(3)
+        socket.gethostbyname(target_host)
+        elapsed = (time.time() - start_time) * 1000
+        print(f"🟢 [连通] 解析成功！物理延迟: {elapsed:.2f} 毫秒")
+    except Exception as e:
+        print(f"🔴 [致命红线] 无法解析或连通 Rust 镜像源！")
+        print(f"   👉 危害：这意味着你的网络连接超时（可能是代理配置指向了死 IP），Cargo 每次编译前尝试更新索引时都会卡死数分钟。")
+        print("   💡 修复建议：检查代理并关闭，或者重置 `/etc/resolv.conf`。")
+
+def test_system_resources():
+    print_header("5. WSL 宿主机系统资源评估")
+    try:
+        # 读取 Load Average
+        with open("/proc/loadavg", "r") as f:
+            load = f.read().strip()
+        print(f"WSL 当前系统负载平均值 (1, 5, 15分钟): {load}")
+        
+        # 读取内存
+        with open("/proc/meminfo", "r") as f:
+            mem_lines = f.readlines()
+        mem_total = 0
+        mem_free = 0
+        for line in mem_lines:
+            if "MemTotal" in line:
+                mem_total = int(line.split()[1]) // 1024 # MB
+            if "MemAvailable" in line:
+                mem_free = int(line.split()[1]) // 1024 # MB
+                
+        print(f"WSL 内存分配状态: 剩余可用 {mem_free}MB / 共分配 {mem_total}MB")
+        
+        if mem_free < 1024:
+            print("🔴 [致命红线] WSL 剩余内存严重不足（低于 1GB）！")
+            print("   👉 危害：Rust 编译器（尤其是 Release 编译）是内存吞噬者，内存不足会导致严重的 OOM 换页，使电脑卡死。")
+            print("   💡 修复建议：在 Windows 的用户目录下创建 `.wslconfig` 文件，为 WSL 增加内存配额（如 `memory=12GB`），并执行 `wsl --shutdown` 重启。")
+        else:
+            print("🟢 [健康] 物理可用内存充足。")
+            
+    except Exception as e:
+        print(f"❌ 系统资源读取失败: {e}")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🕵️‍♂️ FSD-car WSL2 物理性能诊断探针开始工作...")
+    print("=" * 60)
+    
+    test_filesystem()
+    test_io_performance()
+    test_git_latency()
+    test_network_and_proxy()
+    test_system_resources()
+    
+    print("\n" + "="*60)
+    print("🕵️‍♂️ 诊断结束！请根据上方带有 [🔴 致命红线] 的提示进行针对性修复。")
+    print("="*60)
 </file>
 
 <file path="Cargo.toml">

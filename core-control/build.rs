@@ -1,103 +1,65 @@
+// core-control/build.rs
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn main() {
     // 1. 获取当前 crate (core-control) 的绝对物理路径
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    
-    // 2. 溯源至多包工作空间的物理根目录 (FSD-car)
-    let workspace_root = match manifest_dir.parent() {
-        Some(parent) => parent.to_path_buf(),
-        None => {
-            println!("cargo:warning=❌ 无法向上溯源工作空间根目录，回退至当前目录！");
-            manifest_dir.clone()
-        }
-    };
-    
-    // 3. 定位全局资产总库 lib_dylib 的绝对物理路径
-    let lib_dylib_dir = workspace_root.join("lib_dylib");
-    if !lib_dylib_dir.exists() {
-        fs::create_dir_all(&lib_dylib_dir).expect("❌ 无法创建 lib_dylib 资产库！");
-    }
 
-    // 4. 定义规控底层库（C 语言动态链接库）的标准绝对物理路径
-    let acados_lib_src = workspace_root.join("simulation-env/acados/lib/libacados.so");
-    let solver_lib_src = workspace_root.join("simulation-env/c_generated_code/libacados_solver_diff_drive_car.so");
+    // 2. 向上自适应溯源至工作空间根目录 (FSD-car)，彻底告别任何硬编码
+    let workspace_root = manifest_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or(manifest_dir);
 
-    // 5. 🛡️ 【智能侦察机制】：如果标准路径缺失，深度遍历工作空间自动搜寻底层库，彻底干掉硬编码
-    let mut actual_acados_path = if acados_lib_src.exists() {
-        Some(acados_lib_src)
+    // 3. 动态解析并定位 acados 底层 C 库的物理路径 (优先读取环境变量，否则使用工作空间自适应沙盘路径)
+    let acados_lib_dir = if let Ok(acados_source) = env::var("ACADOS_SOURCE_DIR") {
+        PathBuf::from(acados_source).join("lib")
     } else {
-        println!("cargo:warning=🔍 [智能侦察] 未在标准路径下找到 libacados.so，启动工作空间深度检索...");
-        let scouted = scout_library(&workspace_root, "libacados.so");
-        if scouted.is_none() {
-            println!("cargo:warning=⚠️ [智能侦察] 深度检索也未能定位 libacados.so，请确保 acados 已正确编译！");
-        }
-        scouted
+        workspace_root.join("simulation-env/acados/lib")
     };
 
-    let actual_solver_path = if solver_lib_src.exists() {
-        Some(solver_lib_src)
+    // 4. 定位 NMPC 自动生成的 OCP 求解器动态库物理路径
+    let solver_lib_dir = workspace_root.join("simulation-env/c_generated_code");
+
+    // -------------------------------------------------------------------------
+    // 🛡️ 工业级 RPATH 链接保障契约
+    // -------------------------------------------------------------------------
+
+    // A. 绑定链接并注入 RPATH：libacados.so
+    if acados_lib_dir.exists() {
+        // 告诉 Cargo 编译期去哪里寻找 libacados.so
+        println!("cargo:rustc-link-search=native={}", acados_lib_dir.display());
+        // SOTA 核心：将动态库路径硬烧录进生成的二进制 ELF 文件（RPATH 机制） [cite: 1.2.8]
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", acados_lib_dir.display());
     } else {
-        println!("cargo:warning=🔍 [智能侦察] 未在标准路径下找到求解器，启动工作空间深度检索...");
-        let scouted = scout_library(&workspace_root, "libacados_solver_diff_drive_car.so");
-        if scouted.is_none() {
-            println!("cargo:warning=⚠️ [智能侦察] 未能定位求解器，请确保在 simulation-env 下运行了 python generate_solver.py！");
-        }
-        scouted
-    };
-
-    // 6. 执行【编译期资产并网契约】：将侦察到的底层 .so 动态库自动同步同步到全局资产库 lib_dylib 中
-    if let Some(src_path) = actual_acados_path {
-        let dest = lib_dylib_dir.join("libacados.so");
-        if fs::copy(&src_path, &dest).is_ok() {
-            println!("cargo:warning=✓ [资产并网成功] 成功同步 {} 到 lib_dylib", src_path.display());
-        }
+        println!(
+            "cargo:warning=⚠️ [build.rs] 未找到 acados 核心动态库路径：{}，请检查 acados 是否正确编译安装。", 
+            acados_lib_dir.display()
+        );
     }
 
-    if let Some(src_path) = actual_solver_path {
-        let dest = lib_dylib_dir.join("libacados_solver_diff_drive_car.so");
-        if fs::copy(&src_path, &dest).is_ok() {
-            println!("cargo:warning=✓ [资产并网成功] 成功同步 {} 到 lib_dylib", src_path.display());
-        }
+    // B. 绑定链接并注入 RPATH：libacados_ocp_solver_diff_drive_car.so
+    if solver_lib_dir.exists() {
+        // 编译期搜索
+        println!("cargo:rustc-link-search=native={}", solver_lib_dir.display());
+        // 运行时 RPATH 路径嵌入 [cite: 1.2.8]
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", solver_lib_dir.display());
+    } else {
+        println!(
+            "cargo:warning=⚠️ [build.rs] 未找到自动生成求解器代码路径：{}，请确保在 simulation-env 目录下运行过 Python 生成器。", 
+            solver_lib_dir.display()
+        );
     }
 
-    // 7. 告诉 Cargo 唯一受信任的物理链接搜寻路径：全局资产总库 lib_dylib (绝对路径)
-    println!("cargo:rustc-link-search=native={}", lib_dylib_dir.display());
-
-    // 8. 强力绑定 C 语言底层动力符号
+    // 5. 声明需要动态链接的库名称
     println!("cargo:rustc-link-lib=dylib=acados");
-    println!("cargo:rustc-link-lib=dylib=acados_solver_diff_drive_car");
+    // 🛡️ 对齐实际物理生成的动态库名称（带 _ocp_ 命名极性）
+    println!("cargo:rustc-link-lib=dylib=acados_ocp_solver_diff_drive_car");
 
-    // 9. 编译防腐哨兵：如果底层的 C 代码发生重构，自动触发 Rust 规控模块重新编译
-    let c_solver_source = workspace_root.join("simulation-env/c_generated_code/acados_solver_diff_drive_car.c");
+    // 6. 编译防腐哨兵：如果 C 求解器源文件被重新生成，强制触发 Rust 重新编译
+    let c_solver_source = solver_lib_dir.join("acados_solver_diff_drive_car.c");
     if c_solver_source.exists() {
         println!("cargo:rerun-if-changed={}", c_solver_source.display());
     }
-}
-
-/// 🛡️ 工作空间深度检索算法
-/// 自动过滤大文件目录和环境目录，秒级定位物理资产，杜绝路径写死
-fn scout_library(dir: &Path, target_lib_name: &str) -> Option<PathBuf> {
-    if dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    // 避开编译产物目录、虚拟环境与 Conda 目录，防止无限递归与编译延迟
-                    if name == "target" || name.starts_with('.') || name == "miniconda3" || name == ".venv" || name == "node_modules" {
-                        continue;
-                    }
-                    if let Some(found) = scout_library(&path, target_lib_name) {
-                        return Some(found);
-                    }
-                } else if path.file_name().and_then(|s| s.to_str()) == Some(target_lib_name) {
-                    return Some(path);
-                }
-            }
-        }
-    }
-    None
 }

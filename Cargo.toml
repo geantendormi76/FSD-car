@@ -12,7 +12,7 @@ members = [
 [workspace.dependencies]
 # 视觉与 AI 引擎
 opencv = { version = "0.93", default-features = false, features = ["imgproc", "calib3d", "features2d", "videoio", "highgui"] }
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "copy-dylibs", "tls-rustls", "download-binaries"] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "tls-rustls", "load-dynamic"] }
 
 # 异步与并发底座
 tokio = { version = "1.38", features = ["full"] }
