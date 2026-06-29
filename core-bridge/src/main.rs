@@ -15,9 +15,12 @@ async fn main() -> eyre::Result<()> {
     // 2. 初始化 Zenoh 客户端 (Client 模式)
     // 🛡️ 架构师指令：必须使用 Client 模式，防止与 DORA 底层的 Zenoh Router 产生端口冲突！
     let mut z_config = Config::default();
+    // 🛡️ 架构师修正：使用 Peer 模式防止启动时因找不到 Router 而超时；同时禁用 listen 端口以 100% 避让 DORA 占用的 7447 端口！
+    z_config.set_mode(Some(WhatAmI::Peer))
+        .expect("❌ Zenoh 设置 Peer 模式失败");
     z_config
-        .set_mode(Some(WhatAmI::Client))
-        .expect("❌ Zenoh 客户端模式设置失败");
+        .insert_json5("listen", "[]")
+        .expect("❌ Zenoh 禁用监听配置失败");
     
     // Zenoh 0.11.0 引入了 Builder 模式，调用 .res().await 执行异步操作
     let z_session = zenoh::open(z_config)

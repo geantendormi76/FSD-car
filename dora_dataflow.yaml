@@ -8,7 +8,11 @@ nodes:
   # ---------------------------------------------------------------
   - id: isaac_sim_env
     path: uv
-    args: run --with numpy --with pyarrow --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
+    # 🛡️ 架构师一键并网：注入 torch 依赖，uv 将自动探针宿主机 GPU 并下载最高效的 PyTorch 运行时！
+    args: run --with numpy --with pyarrow --with torch --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
+    inputs:
+      # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
+      control_cmd: fast_brain_nmpc/control_cmd
     outputs:
       # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
       - camera_rgb
@@ -24,8 +28,8 @@ nodes:
       # 注入日志级别与运行时类型检查
       RUST_LOG: info
       DORA_RUNTIME_TYPE_CHECK: warn
-      # 🛡️ 架构师指令：将 acados 动态库路径直接硬编码注入节点环境，彻底免去手动 export 的烦恼！
-      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib
+      # 🛡️ 架构师指令：必须将 acados 核心库目录与 NMPC 生成的 C 求解器库目录同时并网，彻底解决加载期断链！
+      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
       # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
       image: isaac_sim_env/camera_rgb

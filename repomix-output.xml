@@ -47,6 +47,10 @@ The content is organized as follows:
 </user_provided_header>
 
 <directory_structure>
+core-bridge/
+  src/
+    main.rs
+  Cargo.toml
 core-control/
   src/
     bin/
@@ -58,6 +62,8 @@ core-control/
   Cargo.toml
 core-decision/
   src/
+    bin/
+      slow_brain_node.rs
     topo_graph/
       graph.rs
       mod.rs
@@ -88,6 +94,7 @@ simulation-env/
   mujoco_nmpc_run.py
   network_check.py
   nmpc_model.py
+  probe_acados_env.py
   probe_proxy.py
 .gitignore
 4.py
@@ -99,108 +106,206 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="core-control/src/bin/fast_brain_node.rs">
-// 🛡️ 极速并网：使用 DORA 内部重导出的 arrow
-use dora_node_api::arrow::array::Float32Array;
-use core_control::预测控制求解器;
-use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
-// 🛡️ 架构师修正：直接引入 DORA 原生导出的 Parameter 枚举，消除不稳定的 metadata 模块依赖
-use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
+<file path="simulation-env/probe_acados_env.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import ctypes
+import os
+
+
+def probe():
+    print("=" * 70)
+    print("🛰️  FSD-Car & Acados 动态库装载链深度检测探针")
+    print("=" * 70)
+
+    # 1. 检查 ACADOS_SOURCE_DIR 变量
+    acados_source = os.environ.get(
+        "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
+    )
+    print(f"📌 [环境变量] ACADOS_SOURCE_DIR -> {acados_source}")
+    if not os.path.exists(acados_source):
+        print("❌ [路径失效] 找不到指定的 acados 物理目录！")
+        return
+
+    # 2. 检测动态链接库完整性
+    lib_dir = os.path.join(acados_source, "lib")
+    print(f"📌 [动态库目录] 正在扫描: {lib_dir}")
+
+    required_libs = ["libacados.so", "libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]
+    missing_libs = []
+
+    if os.path.exists(lib_dir):
+        files_in_lib = os.listdir(lib_dir)
+        for lib in required_libs:
+            match = [f for f in files_in_lib if f.startswith(lib)]
+            if match:
+                print(f"  ✅ 发现物理库: {match[0]}")
+            else:
+                print(f"  ❌ 缺失核心依赖库: {lib}")
+                missing_libs.append(lib)
+    else:
+        print(f"❌ [致命] 找不到 lib 文件夹: {lib_dir}")
+        return
+
+    # 3. 检查 LD_LIBRARY_PATH 环境变量并网状态
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    print(f"📌 [环境变量] LD_LIBRARY_PATH -> {ld_path}")
+    is_joined = lib_dir in ld_path
+    print(
+        f"  💡 并网评估: {'✅ acados 路径已并网' if is_joined else '⚠️ 未检测到并网 (会导致 ld-linux 加载失败)'}"
+    )
+
+    # 4. 执行 ctypes 装载实验
+    print("\n⚡ [符号沙盘演练] 正在尝试通过操作系统 C-Linker 装载动态库...")
+    if not missing_libs:
+        # 尝试直接装载依赖库以对全局符号表进行内存预热
+        for lib in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
+            lib_path = os.path.join(lib_dir, lib)
+            try:
+                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                print(f"  💎 预装载 {lib} -> ✅ 成功入驻进程空间")
+            except Exception as e:
+                print(f"  ⚠️ 预装载 {lib} -> ❌ 失败: {e}")
+
+        # 核心加载测试
+        libacados_path = os.path.join(lib_dir, "libacados.so")
+        try:
+            ctypes.CDLL(libacados_path)
+            print("  🏆 [终极载入测试] libacados.so -> 🎉 成功！系统已完全自愈！")
+        except Exception as e:
+            print(f"  🔥 [终极载入测试] libacados.so -> ❌ 失败，底层链接断链: {e}")
+    else:
+        print("❌ 核心动态库文件残缺，请在 simulation-env 目录下重新编译 acados 源码。")
+
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    probe()
+</file>
+
+<file path="core-bridge/src/main.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+use dora_node_api::{DoraNode, Event, into_vec};
 use eyre::{eyre, Context};
-use opencv::core::{Mat, CV_8UC3};
-use std::ffi::c_void;
+use core_decision::messages::运动指令;
+use zenoh::config::{Config, WhatAmI};
+use zenoh::prelude::r#async::*; // 🛡️ 引入 Zenoh 异步解析特质
 
-fn main() -> eyre::Result<()> {
-    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🔗 [神经通路] 核心并网网关已启动，等待 DORA 共享内存注入...");
 
-    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+    // 1. 接入 DORA 数据流网络
+    let (mut _node, mut events) = DoraNode::init_from_env()?;
 
-    // 2. 初始化全简体中文业务逻辑主权对象
-    let mut 青蛙眼 = 仿生青蛙眼::new();
-    let mut 规控大脑 = 预测控制求解器::new().map_err(|e| eyre!(e))?;
+    // 2. 初始化 Zenoh 客户端 (Client 模式)
+    // 🛡️ 架构师指令：必须使用 Client 模式，防止与 DORA 底层的 Zenoh Router 产生端口冲突！
+    let mut z_config = Config::default();
+    // 🛡️ 架构师修正：使用 Peer 模式防止启动时因找不到 Router 而超时；同时禁用 listen 端口以 100% 避让 DORA 占用的 7447 端口！
+    z_config.set_mode(Some(WhatAmI::Peer));
+    z_config
+        .insert_json5("listen", "[]")
+        .expect("❌ Zenoh 禁用监听配置失败");
     
-    let mut 物理主权已初始化 = false;
+    // Zenoh 0.11.0 引入了 Builder 模式，调用 .res().await 执行异步操作
+    let z_session = zenoh::open(z_config)
+        .res()
+        .await
+        .map_err(|e| eyre!("❌ Zenoh 会话打开失败: {}", e))?;
+    
+    // 3. 声明 Zenoh 发布者 (Publisher)
+    let 发布主题 = "fsd/spinal_cord/cmd_vel";
+    let publisher = z_session
+        .declare_publisher(发布主题)
+        .res()
+        .await
+        .map_err(|e| eyre!("❌ Zenoh 发布者声明失败: {}", e))?;
+        
+    println!("✅ [神经通路] 物理并网连接成功！下发通道 -> 主题 [{}]", 发布主题);
 
-    // 3. 事件驱动循环 (由底层 epoll 极速唤醒，避免线程死锁)
-    while let Some(event) = events.recv() {
+    // 4. 异步事件驱动循环
+    while let Some(event) = events.recv_async().await {
         match event {
-            Event::Input { id, metadata, data } => {
-                // 拦截来自 Isaac Sim 的图像输入
-                if id.as_str() == "image" {
+            Event::Input { id, data, .. } => {
+                if id.as_str() == "cmd" {
                     // ---------------------------------------------------------
-                    // [阶段 A]：元数据解析与状态金库初始化
+                    // [阶段 A]：从 DORA 零拷贝提取 Arrow 浮点数组
                     // ---------------------------------------------------------
-                    // 🛡️ 架构师修正：利用原生 Match 模式匹配提取参数，0 上游兼容风险，极限性能
-                    let 宽度 = match metadata.parameters.get("width") {
-                        Some(Parameter::Integer(val)) => *val as i32,
-                        _ => 640,
-                    };
-                    let 高度 = match metadata.parameters.get("height") {
-                        Some(Parameter::Integer(val)) => *val as i32,
-                        _ => 480,
-                    };
-
-                    if !物理主权已初始化 {
-                        青蛙眼.初始化(宽度, 高度).map_err(|e| eyre!(e))?;
-                        规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0).map_err(|e| eyre!(e))?;
-                        物理主权已初始化 = true;
-                        println!("✅ [快系统] 感受野与 NMPC 求解器初始化完成 ({}x{})", 宽度, 高度);
+                    let 控制量: Vec<f32> = into_vec(&data).context("❌ Arrow 数组解析失败")?;
+                    if 控制量.len() < 2 {
+                        eprintln!("⚠️ 接收到的控制指令长度不足 2");
+                        continue;
                     }
 
-                    // ---------------------------------------------------------
-                    // [阶段 B]：物理级零拷贝 (Arrow -> OpenCV Mat)
-                    // ---------------------------------------------------------
-                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转 &[u8] 失败")?;
-
-                    // 调用 new_rows_cols_with_data_unsafe 显式声明我们在操作裸指针
-                    let 视网膜帧 = unsafe {
-                        Mat::new_rows_cols_with_data_unsafe(
-                            高度,
-                            宽度,
-                            CV_8UC3,
-                            裸内存切片.as_ptr() as *mut c_void,
-                            opencv::core::Mat_AUTO_STEP,
-                        ).context("❌ OpenCV Mat 映射失败")?
+                    let 指令 = 运动指令 {
+                        v: 控制量[0],
+                        w: 控制量[1],
                     };
 
                     // ---------------------------------------------------------
-                    // [阶段 C]：仿生感知与规控解算
+                    // [阶段 B]：极致压缩序列化 (Postcard)
                     // ---------------------------------------------------------
-                    let 势场 = 青蛙眼.处理图像帧(&视网膜帧, 0.0).map_err(|e| eyre!(e))?;
-
-                    // 2. 势场梯度转化为 NMPC 参考轨迹偏移
-                    let 期望_x = 0.3 + 势场.逃逸方向.0 as f64;
-                    let 期望_y = 0.0 + 势场.逃逸方向.1 as f64;
-                    
-                    for k in 0..=20 {
-                        规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3).map_err(|e| eyre!(e))?;
-                    }
-                    
-                    let (线速度_v, 角速度_w) = 规控大脑.求解最优控制量(0.0).map_err(|e| eyre!(e))?;
+                    let 序列化字节 = postcard::to_allocvec(&指令).context("❌ Postcard 序列化失败")?;
 
                     // ---------------------------------------------------------
-                    // [阶段 D]：零拷贝输出指令
+                    // [阶段 C]：通过 Zenoh 下发至 ESP32-C6 脊髓
                     // ---------------------------------------------------------
-                    let 运动指令 = Float32Array::from(vec![线速度_v as f32, 角速度_w as f32]);
-                    
-                    node.send_output(
-                        "control_cmd".to_string().into(),
-                        MetadataParameters::default(),
-                        运动指令,
-                    ).context("❌ 控制指令发送失败")?;
+                    publisher
+                        .put(序列化字节)
+                        .res()
+                        .await
+                        .map_err(|e| eyre!("❌ Zenoh 消息发送失败: {}", e))?;
                 }
             }
             Event::Stop(_) => {
-                println!("🛑 [快系统] 接收到 DORA 全局停止信号，安全释放 C 语言内存胶囊并退出...");
+                println!("🛑 [神经通路] 接收到 DORA 停止信号，安全关闭 Zenoh 桥接器...");
                 break;
             }
-            _ => {} 
+            _ => {}
         }
     }
-    
+
+    // ---------------------------------------------------------
+    // [阶段 D]：优雅退出与生命周期安全回收
+    // ---------------------------------------------------------
+    drop(publisher);
+
+    z_session
+        .close()
+        .res()
+        .await
+        .map_err(|e| eyre!("❌ Zenoh 会话关闭异常: {}", e))?;
+        
+    println!("🔌 [神经通路] 会话已安全释放，并网网关优雅退出。");
     Ok(())
 }
+</file>
+
+<file path="core-bridge/Cargo.toml">
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+[package]
+name = "core-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "zenoh_bridge_node"
+path = "src/main.rs"
+
+[dependencies]
+# 🛡️ 完备继承自工作空间统一依赖，绝不产生多重宇宙冲突
+tokio = { workspace = true }
+serde = { workspace = true }
+zenoh = { workspace = true }
+postcard = { workspace = true }
+
+# 🛡️ DORA 节点 API 与错误自愈底座
+dora-node-api = "0.3.3"
+eyre = "0.6"
+
+# 🛡️ 引入决策大脑，复用中文运动指令契约
+core-decision = { path = "../core-decision" }
 </file>
 
 <file path="core-control/src/ffi.rs">
@@ -387,6 +492,137 @@ impl Drop for 预测控制求解器 {
             diff_drive_car_acados_free(self.capsule);
         }
     }
+}
+</file>
+
+<file path="core-decision/src/bin/slow_brain_node.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+use dora_node_api::{DoraNode, Event, Parameter};
+use eyre::{eyre, Context};
+use opencv::core::{Mat, CV_8UC3};
+use std::ffi::c_void;
+use std::sync::Arc;
+
+use core_decision::topo_graph::graph::TopologicalGraph;
+use core_decision::topo_graph::node::{Pose, TopologicalNode};
+use core_perception::perception::xfeat_engine::仿生特征提取器;
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🧠 [慢系统] 语义大脑与拓扑建图节点已启动，等待 DORA 共享内存注入...");
+
+    // 1. 接入 DORA 数据流网络
+    let (mut _node, mut events) = DoraNode::init_from_env()?;
+
+    // 2. 初始化 XFeat 引擎 (使用 Arc 包装以便跨线程安全传递)
+    // 注意：请确保在运行目录下存在 model/xfeat_640x640.onnx
+    let model_path = "model/xfeat_640x640.onnx";
+    // 🛡️ 架构师修正：String 未实现 Error Trait，需使用 map_err 配合 eyre! 宏手动转换为标准 Report
+    let 提取器 = Arc::new(
+        仿生特征提取器::new(model_path).map_err(|e| eyre!("❌ XFeat 模型加载失败: {}", e))?,
+    );
+
+    // 3. 初始化全简体中文业务逻辑主权对象：拓扑地图
+    let mut 拓扑地图 = TopologicalGraph::new();
+    let mut 节点计数器 = 0;
+
+    // 4. 异步事件驱动循环
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, metadata, data } => {
+                if id.as_str() == "image" {
+                    let 宽度 = match metadata.parameters.get("width") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 640,
+                    };
+                    let 高度 = match metadata.parameters.get("height") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 480,
+                    };
+
+                    // 物理级零拷贝 (Arrow -> OpenCV Mat)
+                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转失败")?;
+                    let 视网膜帧 = unsafe {
+                        Mat::new_rows_cols_with_data_unsafe(
+                            高度,
+                            宽度,
+                            CV_8UC3,
+                            裸内存切片.as_ptr() as *mut c_void,
+                            opencv::core::Mat_AUTO_STEP,
+                        )
+                        .context("❌ OpenCV Mat 映射失败")?
+                    };
+
+                    // ---------------------------------------------------------
+                    // 🛡️ 架构师指令：异步隔离与生命周期自愈
+                    // ---------------------------------------------------------
+                    let 提取器_clone = 提取器.clone();
+
+                    // 为什么这里要 clone 图像？
+                    // 因为 spawn_blocking 要求闭包内的变量具有 'static 生命周期。
+                    // 视网膜帧借用了 data (Arrow 内存)，而 data 会在当前循环结束时销毁。
+                    // 作为 1Hz 的慢系统，单次深拷贝图像的开销微乎其微，却能换来绝对的并发安全！
+                    let 帧_copy = 视网膜帧.clone();
+
+                    // 将 CPU 密集型推理推入 Tokio 阻塞线程池
+                    let 特征结果 = tokio::task::spawn_blocking(move || {
+                        提取器_clone.提取特征(&帧_copy, 200)
+                    })
+                    .await?
+                    .map_err(|e| eyre!("❌ XFeat 特征提取失败: {}", e))?;
+
+                    println!(
+                        "✅ [慢系统] 成功提取 {} 个 XFeat 骨干特征点",
+                        特征结果.len()
+                    );
+
+                    // ---------------------------------------------------------
+                    // 🗺️ 拓扑建图逻辑：将当前帧特征存入记忆金库
+                    // ---------------------------------------------------------
+                    节点计数器 += 1;
+
+                    let mut descriptors = Vec::with_capacity(特征结果.len() * 64);
+                    let mut keypoints = Vec::with_capacity(特征结果.len() * 2);
+
+                    for pt in 特征结果 {
+                        keypoints.push(pt.x);
+                        keypoints.push(pt.y);
+                        descriptors.extend(pt.描述子);
+                    }
+
+                    let 新地标 = TopologicalNode {
+                        id: 节点计数器,
+                        name: format!("自动探索地标_{}", 节点计数器),
+                        pose: Pose {
+                            x: 0.0,
+                            y: 0.0,
+                            yaw: 0.0,
+                        }, // 实际应由里程计/SLAM提供
+                        descriptors,
+                        keypoints,
+                    };
+
+                    拓扑地图.add_node(新地标);
+                    println!(
+                        "🗺️ [慢系统] 拓扑地图已更新，当前脑海记忆节点数: {}",
+                        拓扑地图.nodes.len()
+                    );
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [慢系统] 接收到 DORA 停止信号，正在将拓扑记忆持久化到硬盘...");
+                if let Err(e) = 拓扑地图.save_to_file("topo_memory.json") {
+                    eprintln!("❌ 拓扑地图保存失败: {}", e);
+                } else {
+                    println!("💾 拓扑地图已安全保存至 topo_memory.json");
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 </file>
 
@@ -582,20 +818,6 @@ pub struct 运动指令 {
     pub v: f32, // 线速度 (m/s)
     pub w: f32, // 角速度 (rad/s)
 }
-</file>
-
-<file path="core-decision/Cargo.toml">
-[package]
-name = "core-decision"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-zenoh = { workspace = true }
 </file>
 
 <file path="core-perception/src/perception/frog_eye.rs">
@@ -1628,35 +1850,6 @@ fn main() {
 }
 </file>
 
-<file path="showcase/Cargo.toml">
-[package]
-name = "showcase"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 继承自根目录 Workspace 的其她依赖
-opencv = { workspace = true }
-ort = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-zenoh = { workspace = true }
-postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
-
-# 核心并网：引入感知引擎包与决策大脑包
-core-perception = { path = "../core-perception" }
-core-decision = { path = "../core-decision" } # 🛡️ 新增：决策大脑包引用
-
-# 🛡️ 显式契约绑定：配置四个独立的一键启动展示大屏
-[[bin]]
-name = "demo_xfeat"
-path = "src/bin/demo_xfeat.rs"
-
-[[bin]]
-name = "demo_frog"
-path = "src/bin/demo_frog.rs"
-</file>
-
 <file path="simulation-env/diagnose.py">
 # diagnose.py
 import os
@@ -1750,11 +1943,32 @@ if __name__ == "__main__":
 
 <file path="simulation-env/generate_solver.py">
 # generate_solver.py
+# generate_solver.py
+import ctypes
 import os
+
 import numpy as np
+
+# 🛡️ 进程空间内存预热自愈：在加载 acados 之前，预先把依赖的 .so 库强行读入当前 Python 进程的内存。
+# 这能彻底免疫因为缺少宿主机 LD_LIBRARY_PATH 导致的 `OSError: libqpOASES_e.so not found` 崩溃
+acados_source = os.environ.get(
+    "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
+)
+if acados_source and os.path.exists(acados_source):
+    acados_lib = os.path.join(acados_source, "lib")
+    # RTLD_GLOBAL 标志会让加载进来的符号对后续装载的 libacados.so 自动全局可见
+    for lib_name in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
+        lib_path = os.path.join(acados_lib, lib_name)
+        if os.path.exists(lib_path):
+            try:
+                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                # 兼容不同系统的库加载失败情况，防止进程硬卡死
+                pass
+
 from acados_template import AcadosOcp, AcadosOcpSolver
 from nmpc_model import setup_car_model
-import casadi as ca
+
 
 def generate_nmpc_solver():
     ocp = AcadosOcp()
@@ -1762,22 +1976,22 @@ def generate_nmpc_solver():
     ocp.model = model
 
     # 1. 设定时域参数
-    N = 20          # 预测步长 (Horizon)
-    T_pred = 1.0    # 预测总时间 (1秒)
+    N = 20  # 预测步长 (Horizon)
+    T_pred = 1.0  # 预测总时间 (1秒)
     ocp.dims.N = N
     ocp.solver_options.tf = T_pred
 
     # 2. 设定代价函数 (Q 权重增加，R 控制惩罚加大以获得极致平顺感) [cite: 21]
     Q = np.diag([20.0, 20.0, 2.0, 1.0])
     # 🛡️ 架构师修正：释放底层动力。NMPC 本身已具备平滑约束，过大的 R 会导致转弯迟钝、轨迹漂移。
-    R = np.diag([0.1, 0.05]) 
-    
+    R = np.diag([0.1, 0.05])
+
     nx = model.x.size()[0]
     nu = model.u.size()[0]
     ny = nx + nu
 
-    ocp.cost.cost_type = 'LINEAR_LS'
-    ocp.cost.cost_type_e = 'LINEAR_LS'
+    ocp.cost.cost_type = "LINEAR_LS"
+    ocp.cost.cost_type_e = "LINEAR_LS"
 
     Vx = np.zeros((ny, nx))
     Vx[:nx, :nx] = np.eye(nx)
@@ -1798,179 +2012,56 @@ def generate_nmpc_solver():
 
     # 3. 设定约束条件 [cite: 24]
     # 我们将最大转向角速度硬限制收紧到 [-0.6, 0.6] rad/s，彻底杜绝原地打转 [cite: 24]
-    ocp.constraints.lbu = np.array([-1.0, -0.6]) # 限制角速度在 [-0.6, 0.6] [cite: 24]
-    ocp.constraints.ubu = np.array([1.0, 0.6])   # [cite: 24]
+    ocp.constraints.lbu = np.array([-1.0, -0.6])  # 限制角速度在 [-0.6, 0.6] [cite: 24]
+    ocp.constraints.ubu = np.array([1.0, 0.6])  # [cite: 24]
     ocp.constraints.idxbu = np.array([0, 1])
 
     # 4. 初始状态设定
     ocp.constraints.x0 = np.array([0.0, 0.0, 0.0, 0.0])
 
     # 5. 配置求解器参数 [cite: 3, 9]
-    ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
-    ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
-    ocp.solver_options.integrator_type = 'ERK'
-    ocp.solver_options.nlp_solver_type = 'SQP_RTI'
+    ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
+    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
+    ocp.solver_options.integrator_type = "ERK"
+    ocp.solver_options.nlp_solver_type = "SQP_RTI"
 
     # 一键自动编译生成 C 代码 [cite: 8]
-    json_file = os.path.join('./', 'acados_ocp.json')
+    json_file = os.path.join("./", "acados_ocp.json")
     solver = AcadosOcpSolver(ocp, json_file=json_file)
     return solver
+
 
 if __name__ == "__main__":
     generate_nmpc_solver()
     print("====== acados C代码求解器生成并编译成功！ ======")
 </file>
 
-<file path="simulation-env/isaac_dora_node.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-=================================================================
-🛡️ FSD-car V3.0: 虚拟物理界 (The Matrix) - Isaac Sim DORA 接入点
-架构哲学: 物理级零拷贝 | 域随机化 (Domain Randomization) | 软硬绝对解耦
-=================================================================
-"""
-
-import time
-import numpy as np
-import pyarrow as pa
-from dora import Node
-
-# 尝试导入 Isaac Sim 核心库 (如果运行在普通 Python 环境则自动降级为 Mock 模式)
-try:
-    from omni.isaac.core import World
-    from omni.isaac.sensor import Camera
-    ISAAC_SIM_AVAILABLE = True
-    print("✅ [物理主权] 检测到 NVIDIA Isaac Sim 环境，已挂载真实物理法则引擎！")
-except ImportError:
-    ISAAC_SIM_AVAILABLE = False
-    print("⚠️ [降级自愈] 未检测到 Isaac Sim 环境，已自动切换为高保真 Mock 视频流发生器！")
-
-class 虚拟物理界代理:
-    def __init__(self):
-        # 1. 初始化 DORA 节点契约
-        self.node = Node()
-        
-        # 2. 物理相机参数对齐 (严格对齐真实小车的广角单目摄像头)
-        self.宽度 = 640
-        self.高度 = 480
-        self.通道数 = 3
-        
-        # 3. 仿真环境初始化
-        if ISAAC_SIM_AVAILABLE:
-            self.world = World()
-            self.camera = Camera(
-                prim_path="/World/Car/front_camera",
-                resolution=(self.宽度, self.高度),
-            )
-            self.world.reset()
-        else:
-            # Mock 模式下的测试画面状态
-            self.帧计数器 = 0
-
-    def 获取物理视网膜帧(self) -> np.ndarray:
-        """
-        获取当前物理世界的 RGB 渲染帧
-        """
-        if ISAAC_SIM_AVAILABLE:
-            # 步进物理引擎
-            self.world.step(render=True)
-            # 获取无畸变或带物理畸变的 RGB 图像 (RGBA -> RGB)
-            rgba_image = self.camera.get_rgba()
-            return rgba_image[:, :, :3].astype(np.uint8)
-        else:
-            # 🛡️ 降级自愈：生成移动的彩色条纹，模拟小车运动，用于验证 Rust 端的 XFeat 特征提取
-            self.帧计数器 += 1
-            偏移量 = (self.帧计数器 * 5) % self.宽度
-            
-            # 创建纯黑背景
-            mock_frame = np.zeros((self.高度, self.宽度, self.通道数), dtype=np.uint8)
-            
-            # 绘制三条高对比度的垂直彩条 (模拟物理地标)
-            mock_frame[:, 偏移量:偏移量+50] = [255, 0, 0]       # 红色站牌
-            mock_frame[:, (偏移量+200)%self.宽度:(偏移量+250)%self.宽度] = [0, 255, 0] # 绿色站牌
-            mock_frame[:, (偏移量+400)%self.宽度:(偏移量+450)%self.宽度] = [0, 0, 255] # 蓝色站牌
-            
-            # 模拟 30Hz 的物理渲染耗时
-            time.sleep(0.033)
-            return mock_frame
-
-    def 驱动物理底盘(self, v: float, w: float):
-        """
-        接收来自 Rust 规控大脑的指令，驱动虚拟轮胎
-        """
-        if ISAAC_SIM_AVAILABLE:
-            # TODO: 将 (v, w) 转换为左右轮速，调用 Isaac Sim 的 ArticulationController
-            # left_speed = v - w * 轴距 / 2
-            # right_speed = v + w * 轴距 / 2
-            pass
-        else:
-            # Mock 模式下仅打印探针日志
-            if self.帧计数器 % 30 == 0:
-                print(f"🏎️ [底盘执行器] 接收到 Rust 规控指令 -> 线速度: {v:.3f} m/s, 角速度: {w:.3f} rad/s")
-
-    def 启动生命循环(self):
-        print("🚀 虚拟物理界代理已启动，正在向 DORA 共享内存注入物理法则...")
-        
-        try:
-            while True:
-                # ---------------------------------------------------------
-                # 1. 视网膜捕获与零拷贝注入 (The Output Path)
-                # ---------------------------------------------------------
-                rgb_frame = self.获取物理视网膜帧()
-                
-                # 🛡️ 物理级零拷贝核心：将 numpy 数组展平并转换为 Apache Arrow 格式。
-                # pyarrow 会直接接管 numpy 的底层 C 内存，不发生任何数据复制！
-                arrow_array = pa.array(rgb_frame.ravel())
-                
-                # 携带空间元数据，注入 DORA 共享内存总线
-                self.node.send_output(
-                    output_id="camera_rgb",
-                    data=arrow_array,
-                    metadata={
-                        "width": self.宽度,
-                        "height": self.高度,
-                        "channels": self.通道数,
-                        "encoding": "bgr8" # 契合 OpenCV 的默认色彩空间
-                    }
-                )
-
-                # ---------------------------------------------------------
-                # 2. 神经反射弧监听 (The Input Path)
-                # ---------------------------------------------------------
-                # 设置 1 毫秒的非阻塞超时，确保不会卡死 30Hz 的物理渲染循环
-                event = self.node.next(timeout=0.001)
-                
-                if event is not None:
-                    if event["type"] == "INPUT" and event["id"] == "control_cmd":
-                        # 🛡️ 契约解析：Rust 端发来的是包含 2 个 f32 的 Arrow Array [v, w]
-                        cmd_array = event["value"].to_numpy()
-                        if len(cmd_array) >= 2:
-                            v, w = cmd_array[0], cmd_array[1]
-                            self.驱动物理底盘(v, w)
-                            
-                    elif event["type"] == "STOP":
-                        print("🛑 接收到 DORA 全局停止指令，正在安全关闭物理引擎...")
-                        break
-                        
-        except KeyboardInterrupt:
-            print("\n🛑 用户手动中断，安全退出...")
-
-if __name__ == "__main__":
-    代理 = 虚拟物理界代理()
-    代理.启动生命循环()
-</file>
-
 <file path="simulation-env/mujoco_nmpc_run.py">
 # mujoco_nmpc_run.py
+import ctypes
+import os
+
+import numpy as np
+
+# 🛡️ 进程空间内存预热自愈：保障 MuJoCo 仿真跑道上的 acados 模型加载符号链安全完整
+acados_source = os.environ.get(
+    "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
+)
+if acados_source and os.path.exists(acados_source):
+    acados_lib = os.path.join(acados_source, "lib")
+    for lib_name in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
+        lib_path = os.path.join(acados_lib, lib_name)
+        if os.path.exists(lib_path):
+            try:
+                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                pass
+
+import time
+
 import mujoco
 import mujoco.viewer
-import numpy as np
-import time
-import os
 from acados_template import AcadosOcpSolver
-import sys
 
 # 物理模型：保持高抓地力轮胎并注入虚拟相机与视觉特征地标 [cite: 1.1.3]
 xml_model = """
@@ -2021,6 +2112,7 @@ xml_model = """
 </mujoco>
 """
 
+
 # ====================================================
 #  武器库武装 1：高保真 Mahony 6轴姿态滤波器 (C++ 1:1 移植)
 # ====================================================
@@ -2028,13 +2120,13 @@ class MahonyAHRS:
     def __init__(self, sample_freq=100.0, kp=1.5, ki=0.005):
         self.twoKp = 2.0 * kp
         self.twoKi = 2.0 * ki
-        self.q = np.array([1.0, 0.0, 0.0, 0.0]) # q0, q1, q2, q3
-        self.integralFB = np.zeros(3)           # 零偏积分反馈
+        self.q = np.array([1.0, 0.0, 0.0, 0.0])  # q0, q1, q2, q3
+        self.integralFB = np.zeros(3)  # 零偏积分反馈
         self.invSampleFreq = 1.0 / sample_freq
 
     def update_imu(self, gx, gy, gz, ax, ay, az):
         # 1. 加速度计归一化
-        norm_a = np.sqrt(ax*ax + ay*ay + az*az)
+        norm_a = np.sqrt(ax * ax + ay * ay + az * az)
         if norm_a < 1e-6:
             return
         ax /= norm_a
@@ -2049,14 +2141,14 @@ class MahonyAHRS:
         q3q3 = q3 * q3
 
         # 3. 估计重力方向 (由当前姿态推算)
-        halfvx = q1*q3 - q0*q2
-        halfvy = q0*q1 + q2*q3
+        halfvx = q1 * q3 - q0 * q2
+        halfvy = q0 * q1 + q2 * q3
         halfvz = q0q0 - 0.5 + q3q3
 
         # 4. 计算重力估计方向与实际测量方向的叉积误差
-        halfex = (ay * halfvz - az * halfvy)
-        halfey = (az * halfvx - ax * halfvz)
-        halfez = (ax * halfvy - ay * halfvx)
+        halfex = ay * halfvz - az * halfvy
+        halfey = az * halfvx - ax * halfvz
+        halfez = ax * halfvy - ay * halfvx
 
         # 5. 计算并应用积分反馈
         if self.twoKi > 0.0:
@@ -2075,14 +2167,14 @@ class MahonyAHRS:
         gz += self.twoKp * halfez
 
         # 7. 积分四元数变率
-        gx *= (0.5 * self.invSampleFreq)
-        gy *= (0.5 * self.invSampleFreq)
-        gz *= (0.5 * self.invSampleFreq)
+        gx *= 0.5 * self.invSampleFreq
+        gy *= 0.5 * self.invSampleFreq
+        gz *= 0.5 * self.invSampleFreq
         qa, qb, qc = q0, q1, q2
-        self.q[0] += (-qb * gx - qc * gy - q3 * gz)
-        self.q[1] += (qa * gx + qc * gz - q3 * gy)
-        self.q[2] += (qa * gy - qb * gz + q3 * gx)
-        self.q[3] += (qa * gz + qb * gy - qc * gx)
+        self.q[0] += -qb * gx - qc * gy - q3 * gz
+        self.q[1] += qa * gx + qc * gz - q3 * gy
+        self.q[2] += qa * gy - qb * gz + q3 * gx
+        self.q[3] += qa * gz + qb * gy - qc * gx
 
         # 8. 归一化四元数
         norm_q = np.sqrt(np.sum(self.q**2))
@@ -2091,7 +2183,10 @@ class MahonyAHRS:
     def get_estimated_yaw(self):
         # 从解算出的姿态四元数中提取偏航角 (Yaw)
         q = self.q
-        return np.arctan2(2*(q[1]*q[2] + q[0]*q[3]), 1 - 2*(q[2]**2 + q[3]**2))
+        return np.arctan2(
+            2 * (q[1] * q[2] + q[0] * q[3]), 1 - 2 * (q[2] ** 2 + q[3] ** 2)
+        )
+
 
 # ====================================================
 #  3. 武器库武装 2：极简 PT1 低通滤波器 (C++ 1:1 移植)
@@ -2108,17 +2203,20 @@ class PT1Filter:
         self.state = self.alpha * input_val + (1.0 - self.alpha) * self.state
         return self.state
 
+
 # ====================================================
 #  4. 轨迹配置与决策参数准备
 # ====================================================
 total_steps = 1500
 t_points = np.linspace(0, 15, total_steps)
 ref_x = 0.3 * t_points
-ref_y = 0.3 * np.sin(0.4 * t_points) # 采用优雅的小幅度正弦弯
+ref_y = 0.3 * np.sin(0.4 * t_points)  # 采用优雅的小幅度正弦弯
 
 model = mujoco.MjModel.from_xml_string(xml_model)
 data = mujoco.MjData(model)
-acados_solver = AcadosOcpSolver(None, json_file="acados_ocp.json", generate=False, build=False)
+acados_solver = AcadosOcpSolver(
+    None, json_file="acados_ocp.json", generate=False, build=False
+)
 
 N = 20
 nx = 4
@@ -2162,42 +2260,59 @@ qvel_right_idx = model.jnt_dofadr[joint_right_id]
 
 # 动态获取电机的执行通道控制索引
 try:
-    actuator_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "motor_left")
-    actuator_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "motor_right")
+    actuator_left_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_ACTUATOR, "motor_left"
+    )
+    actuator_right_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_ACTUATOR, "motor_right"
+    )
 except:
     actuator_left_id = 0
     actuator_right_id = 1
 
 log_file_path = "nmpc_telemetry.log"
 log_file = open(os.path.join("./", log_file_path), "w")
-log_file.write("Time,Current_X,Current_Y,Ref_X,Ref_Y,L2_Error_m,Cmd_v,Cmd_w,Est_Yaw,True_Yaw,SolveTime_ms\n")
+log_file.write(
+    "Time,Current_X,Current_Y,Ref_X,Ref_Y,L2_Error_m,Cmd_v,Cmd_w,Est_Yaw,True_Yaw,SolveTime_ms\n"
+)
 
-print("\n" + "="*60)
+print("\n" + "=" * 60)
 print("🚀 FSD-car 数字化智驾仿真启动 [进入 V2.2 极致平顺与强劲动力调优]")
 print(f"   本地数据日志已建立: {log_file_path}")
-print("="*60)
+print("=" * 60)
 
 with mujoco.viewer.launch_passive(model, data) as viewer:
     step = 0
-    
+
     while viewer.is_running() and step < len(t_points) - N:
         step_start = time.time()
-        
+
         true_q = data.qpos[3:7]
-        true_yaw = np.arctan2(2*(true_q[0]*true_q[3] + true_q[1]*true_q[2]), 1 - 2*(true_q[2]**2 + true_q[3]**2))
-        
+        true_yaw = np.arctan2(
+            2 * (true_q[0] * true_q[3] + true_q[1] * true_q[2]),
+            1 - 2 * (true_q[2] ** 2 + true_q[3] ** 2),
+        )
+
         # 模拟 IMU 噪声注入
         gyro_noise = np.random.normal(0, 0.01, 3)
         accel_noise = np.random.normal(0, 0.05, 3)
-        
+
         raw_gx = data.qvel[3] + gyro_noise[0]
         raw_gy = data.qvel[4] + gyro_noise[1]
         raw_gz = data.qvel[5] + gyro_noise[2]
-        
-        raw_ax = 2.0 * (true_q[1]*true_q[3] - true_q[0]*true_q[2]) * 9.81 + accel_noise[0]
-        raw_ay = 2.0 * (true_q[0]*true_q[1] + true_q[2]*true_q[3]) * 9.81 + accel_noise[1]
-        raw_az = (true_q[0]**2 - true_q[1]**2 - true_q[2]**2 + true_q[3]**2) * 9.81 + accel_noise[2]
-        
+
+        raw_ax = (
+            2.0 * (true_q[1] * true_q[3] - true_q[0] * true_q[2]) * 9.81
+            + accel_noise[0]
+        )
+        raw_ay = (
+            2.0 * (true_q[0] * true_q[1] + true_q[2] * true_q[3]) * 9.81
+            + accel_noise[1]
+        )
+        raw_az = (
+            true_q[0] ** 2 - true_q[1] ** 2 - true_q[2] ** 2 + true_q[3] ** 2
+        ) * 9.81 + accel_noise[2]
+
         # 传感器源头使用一阶低通滤波进行物理级抗噪
         gx = filter_gx.update(raw_gx)
         gy = filter_gy.update(raw_gy)
@@ -2205,66 +2320,68 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         ax = filter_ax.update(raw_ax)
         ay = filter_ay.update(raw_ay)
         az = filter_az.update(raw_az)
-        
+
         mahony.update_imu(gx, gy, gz, ax, ay, az)
         estimated_yaw = mahony.get_estimated_yaw()
-        
+
         v_left = data.qvel[qvel_left_idx] * 0.08
         v_right = data.qvel[qvel_right_idx] * 0.08
         current_v = (v_left + v_right) / 2.0
-        
+
         current_state = np.array([data.qpos[0], data.qpos[1], estimated_yaw, current_v])
-        
+
         acados_solver.set(0, "lbx", current_state)
         acados_solver.set(0, "ubx", current_state)
-        
+
         for k in range(N):
-            idx = min(step + k, len(t_points)-1)
-            if idx < len(t_points)-1:
-                dy = ref_y[idx+1] - ref_y[idx]
-                dx = ref_x[idx+1] - ref_x[idx]
+            idx = min(step + k, len(t_points) - 1)
+            if idx < len(t_points) - 1:
+                dy = ref_y[idx + 1] - ref_y[idx]
+                dx = ref_x[idx + 1] - ref_x[idx]
                 theta_ref = np.arctan2(dy, dx)
             else:
                 theta_ref = 0.0
-                
-            ocp_yref = np.array([ref_x[idx], ref_y[idx], theta_ref, 0.3, 0.0, 0.0]) # 设定目标速度为 0.3 m/s
+
+            ocp_yref = np.array(
+                [ref_x[idx], ref_y[idx], theta_ref, 0.3, 0.0, 0.0]
+            )  # 设定目标速度为 0.3 m/s
             acados_solver.set(k, "yref", ocp_yref)
-            
-        idx_e = min(step + N, len(t_points)-1)
+
+        idx_e = min(step + N, len(t_points) - 1)
         ocp_yref_e = np.array([ref_x[idx_e], ref_y[idx_e], 0.0, 0.3])
         acados_solver.set(N, "yref", ocp_yref_e)
-        
+
         status = acados_solver.solve()
         if status != 0:
             log_file.write(f"#{step}_SOLVER_FAILED_STATUS_{status}\n")
-        
+
         u_opt = acados_solver.get(0, "u")
         a_opt = u_opt[0]
         w_cmd_raw = u_opt[1]
-        
+
         v_cmd_raw = max(0.0, current_v + a_opt * 0.01)
-        
+
         # 🛡️ 架构师修正：绝对禁止对 MPC 输出进行低通滤波！MPC 的输出即是最优解，滤波会引入致命的相位滞后。
         v_cmd = v_cmd_raw
         w_cmd = w_cmd_raw
-        
+
         # 施加控制级极限限幅
         v_cmd = min(0.3, v_cmd)
         w_cmd = np.clip(w_cmd, -0.6, 0.6)
-        
+
         R = 0.08
         L = 0.36
-        
+
         # 【核心重构】：恢复数学与物理完全对称的控制极性，彻底闭合负反馈控制环！
         v_left_motor = (v_cmd - w_cmd * L / 2.0) / R
         v_right_motor = (v_cmd + w_cmd * L / 2.0) / R
-        
+
         # 🛡️ 差速动力学：四轮差速动力同步输出给前、后桥电机通道
-        data.ctrl[0] = v_left_motor   # motor_lf
+        data.ctrl[0] = v_left_motor  # motor_lf
         data.ctrl[1] = v_right_motor  # motor_rf
-        data.ctrl[2] = v_left_motor   # motor_lr
+        data.ctrl[2] = v_left_motor  # motor_lr
         data.ctrl[3] = v_right_motor  # motor_rr
-        
+
         # 🛡️ 离屏视网膜捕获：每隔 3 步 (仿照物理 33Hz)，对物理相机渲染并推送至通信神经网
         if step % 3 == 0:
             try:
@@ -2274,61 +2391,73 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 # 转换成连续的 C 语言裸字节数组并高速写入 Zenoh 管道
                 raw_bytes = rgb_frame.tobytes()
                 camera_pub.put(raw_bytes)
-            except Exception as e:
+            except Exception:
                 pass
 
         mujoco.mj_step(model, data)
         viewer.sync()
-        
+
         elapsed = time.time() - step_start
-        
+
         if step % 50 == 0:
             target_x = ref_x[step]
             target_y = ref_y[step]
-            dist_error = np.sqrt((current_state[0] - target_x)**2 + (current_state[1] - target_y)**2)
-            
+            dist_error = np.sqrt(
+                (current_state[0] - target_x) ** 2 + (current_state[1] - target_y) ** 2
+            )
+
             # 记录真实姿态与估计姿态
-            log_file.write(f"{data.time:.2f},{current_state[0]:.4f},{current_state[1]:.4f},"
-                           f"{target_x:.4f},{target_y:.4f},{dist_error:.4f},"
-                           f"{v_cmd:.3f},{w_cmd:.3f},{estimated_yaw:.4f},{true_yaw:.4f},{elapsed*1000:.1f}\n")
-            
+            log_file.write(
+                f"{data.time:.2f},{current_state[0]:.4f},{current_state[1]:.4f},"
+                f"{target_x:.4f},{target_y:.4f},{dist_error:.4f},"
+                f"{v_cmd:.3f},{w_cmd:.3f},{estimated_yaw:.4f},{true_yaw:.4f},{elapsed * 1000:.1f}\n"
+            )
+
             # 终端实时简化遥测，不刷屏（1行完成）
-            print(f"Time: {data.time:.2f}s | Err: {dist_error:.3f}m | Solve: {elapsed*1000:.1f}ms")
-            
+            print(
+                f"Time: {data.time:.2f}s | Err: {dist_error:.3f}m | Solve: {elapsed * 1000:.1f}ms"
+            )
+
         step += 1
 
-    # 路径跑完后保持窗口开启以供审计
-# 找到 mujoco_nmpc_run.py 最后的循环判断，将其修改为：
+        # 路径跑完后保持窗口开启以供审计
+        # 找到 mujoco_nmpc_run.py 最后的循环判断，将其修改为：
         mujoco.mj_step(model, data)
         viewer.sync()
-        
+
         elapsed = time.time() - step_start
-        
+
         if step % 50 == 0:
             target_x = ref_x[step]
             target_y = ref_y[step]
-            dist_error = np.sqrt((current_state[0] - target_x)**2 + (current_state[1] - target_y)**2)
-            
-            log_file.write(f"{data.time:.2f},{current_state[0]:.4f},{current_state[1]:.4f},"
-                           f"{target_x:.4f},{target_y:.4f},{dist_error:.4f},"
-                           f"{v_cmd:.3f},{w_cmd:.3f},{estimated_yaw:.4f},{true_yaw:.4f},{elapsed*1000:.1f}\n")
-            
-            print(f"Time: {data.time:.2f}s | Err: {dist_error:.3f}m | Solve: {elapsed*1000:.1f}ms")
-            
+            dist_error = np.sqrt(
+                (current_state[0] - target_x) ** 2 + (current_state[1] - target_y) ** 2
+            )
+
+            log_file.write(
+                f"{data.time:.2f},{current_state[0]:.4f},{current_state[1]:.4f},"
+                f"{target_x:.4f},{target_y:.4f},{dist_error:.4f},"
+                f"{v_cmd:.3f},{w_cmd:.3f},{estimated_yaw:.4f},{true_yaw:.4f},{elapsed * 1000:.1f}\n"
+            )
+
+            print(
+                f"Time: {data.time:.2f}s | Err: {dist_error:.3f}m | Solve: {elapsed * 1000:.1f}ms"
+            )
+
         time.sleep(max(0, 0.01 - elapsed))
         step += 1
-        
+
         # === 核心修改：到达 15 秒终点后，自动复位回原点重新执行 ===
         if step >= len(t_points) - N:
             print("\n🔄 [到达终点] 正在自动重置底盘与算法，返回原点重新执行...")
-            
+
             # 1. 物理引擎复位：重置所有位置、速度和仿真时间为 0
             mujoco.mj_resetData(model, data)
-            
+
             # 2. 软件变量复位
             step = 0
             prev_w_cmd = 0.0
-            
+
             # 3. 姿态小脑复位：清空 Mahony 滤波器的积累误差
             mahony = MahonyAHRS(sample_freq=100.0, kp=1.5, ki=0.005)
             # === 新增：清除所有低通滤波器的“前世记忆” ===
@@ -2340,13 +2469,13 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             filter_ax = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
             filter_ay = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
             filter_az = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
-            
+
             # 4. 决策大脑复位：重新对 acados 进行时域温启动初始化
             for k in range(N + 1):
                 acados_solver.set(k, "x", np.zeros(nx))
             for k in range(N):
                 acados_solver.set(k, "u", np.zeros(nu))
-                
+
             print("✅ 重置成功！开始新一轮智驾追踪...\n")
 
 # 当你手动关闭 3D 窗口时，才会安全退出并保存日志
@@ -2531,68 +2660,169 @@ if not found_any:
 print("\n==================================================")
 </file>
 
-<file path="dora_dataflow.yaml">
-# =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
-# 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
-# =================================================================
-name: fsd-car-vision-twin
+<file path="core-control/src/bin/fast_brain_node.rs">
+use dora_node_api::arrow::array::Float32Array;
+use core_control::预测控制求解器;
+use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
+use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
+use eyre::{eyre, Context};
+use opencv::core::{Mat, CV_8UC3};
+use std::ffi::c_void;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use std::time::Duration;
 
-nodes:
-  # ---------------------------------------------------------------
-  # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
-  # ---------------------------------------------------------------
-  - id: isaac_sim_env
-    custom:
-      source: python
-      args: simulation-env/isaac_dora_node.py
-    outputs:
-      # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
-      - camera_rgb
+/// 🛡️ 状态金库：跨线程无锁/轻量锁共享的执行上下文
+struct 执行上下文 {
+    pub 物理主权已初始化: bool,
+    pub 期望_x: f64,
+    pub 期望_y: f64,
+    pub 当前线速度: f64,
+}
 
-  # ---------------------------------------------------------------
-  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
-  # ---------------------------------------------------------------
-  - id: fast_brain_nmpc
-    # 指向编译后的 Rust 二进制文件
-    path: target/release/fast_brain_node
-    # DORA 自动化构建契约：启动前自动执行 cargo build
-    build: cargo build -p core-control --release --bin fast_brain_node
-    env:
-      # 注入日志级别与运行时类型检查
-      RUST_LOG: info
-      DORA_RUNTIME_TYPE_CHECK: warn
-    inputs:
-      # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
-      image: isaac_sim_env/camera_rgb
-    outputs:
-      # 输出运动指令契约 (v, w)
-      - control_cmd
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
 
-  # ---------------------------------------------------------------
-  # 🧠 3. 慢系统：XFeat 拓扑建图与语义大脑 (The Slow System - 1Hz)
-  # ---------------------------------------------------------------
-  - id: slow_brain_mapper
-    path: target/release/slow_brain_node
-    build: cargo build -p core-decision --release --bin slow_brain_node
-    env:
-      RUST_LOG: info
-    inputs:
-      # 🛡️ 架构师高光：多节点订阅同一输出。
-      # DORA 共享内存支持多读单写 (MRSW)，慢系统读取图像绝不会导致二次内存拷贝！
-      image: isaac_sim_env/camera_rgb
+    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-  # ---------------------------------------------------------------
-  # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
-  # ---------------------------------------------------------------
-  - id: zenoh_bridge
-    path: target/release/zenoh_bridge_node
-    build: cargo build -p showcase --release --bin zenoh_bridge_node
-    env:
-      RUST_LOG: info
-    inputs:
-      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
-      cmd: fast_brain_nmpc/control_cmd
+    // 2. 初始化状态金库 (Arc + RwLock 保证多读单写并发安全)
+    let 状态金库 = Arc::new(RwLock::new(执行上下文 {
+        物理主权已初始化: false,
+        期望_x: 0.3,
+        期望_y: 0.0,
+        当前线速度: 0.0,
+    }));
+
+    let 金库_规控 = 状态金库.clone();
+
+    // ---------------------------------------------------------
+    // [阶段 A]：规控节拍器 (The Control Loop - 100Hz 绝对物理时钟)
+    // ---------------------------------------------------------
+    let 规控句柄 = tokio::spawn(async move {
+        let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
+        let mut 求解器已就绪 = false;
+        
+        // 🛡️ 架构师指令：强制 100Hz (10ms) 物理时钟，彻底斩断与摄像头帧率的耦合！
+        let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
+        
+        loop {
+            节拍器.tick().await;
+            
+            // 1. 极速读取状态金库 (读写锁，读操作极快)
+            let (已初始化, 期望_x, 期望_y, 当前线速度) = {
+                let lock = 金库_规控.read().await;
+                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度)
+            };
+
+            if !已初始化 {
+                continue;
+            }
+
+            // 2. 求解器温启动 (仅执行一次)
+            if !求解器已就绪 {
+                规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0).unwrap();
+                求解器已就绪 = true;
+                println!("✅ [快系统] NMPC 求解器温启动完成，进入 100Hz 极速控制环");
+            }
+
+            // 3. 注入最新的参考轨迹偏移
+            for k in 0..=20 {
+                规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3).unwrap();
+            }
+            
+            // 4. 求解最优控制量 (基于严格的 10ms dt)
+            match 规控大脑.求解最优控制量(当前线速度) {
+                Ok((线速度_v, 角速度_w)) => {
+                    // 更新金库中的线速度，供下一次积分使用
+                    {
+                        let mut lock = 金库_规控.write().await;
+                        lock.当前线速度 = 线速度_v;
+                    }
+
+                    // 5. 零拷贝输出指令
+                    let 运动指令 = Float32Array::from(vec![线速度_v as f32, 角速度_w as f32]);
+                    if let Err(e) = node.send_output(
+                        "control_cmd".to_string().into(),
+                        MetadataParameters::default(),
+                        运动指令,
+                    ) {
+                        eprintln!("❌ 控制指令发送失败: {}", e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️ NMPC 求解发散或异常: {}", e);
+                }
+            }
+        }
+    });
+
+    // ---------------------------------------------------------
+    // [阶段 B]：神经反射弧 (The Event Loop - 30Hz 视觉感知)
+    // ---------------------------------------------------------
+    let mut 青蛙眼 = 仿生青蛙眼::new();
+
+    // 🛡️ 架构师修正：使用 recv_async().await 彻底释放 Tokio 线程池，避免阻塞
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, metadata, data } => {
+                if id.as_str() == "image" {
+                    let 宽度 = match metadata.parameters.get("width") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 640,
+                    };
+                    let 高度 = match metadata.parameters.get("height") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 480,
+                    };
+
+                    // 检查并初始化物理主权
+                    let 需要初始化 = {
+                        let lock = 状态金库.read().await;
+                        !lock.物理主权已初始化
+                    };
+
+                    if 需要初始化 {
+                        青蛙眼.初始化(宽度, 高度).map_err(|e| eyre!(e))?;
+                        let mut lock = 状态金库.write().await;
+                        lock.物理主权已初始化 = true;
+                        println!("✅ [快系统] 感受野初始化完成 ({}x{})", 宽度, 高度);
+                    }
+
+                    // 物理级零拷贝 (Arrow -> OpenCV Mat)
+                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转 &[u8] 失败")?;
+                    let 视网膜帧 = unsafe {
+                        Mat::new_rows_cols_with_data_unsafe(
+                            高度,
+                            宽度,
+                            CV_8UC3,
+                            裸内存切片.as_ptr() as *mut c_void,
+                            opencv::core::Mat_AUTO_STEP,
+                        ).context("❌ OpenCV Mat 映射失败")?
+                    };
+
+                    // 仿生感知解算
+                    let 势场 = 青蛙眼.处理图像帧(&视网膜帧, 0.0).map_err(|e| eyre!(e))?;
+
+                    // 将势场梯度转化为 NMPC 参考轨迹偏移，并写入状态金库
+                    let mut lock = 状态金库.write().await;
+                    lock.期望_x = 0.3 + 势场.逃逸方向.0 as f64;
+                    lock.期望_y = 0.0 + 势场.逃逸方向.1 as f64;
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [快系统] 接收到 DORA 全局停止信号，安全释放 C 语言内存胶囊并退出...");
+                break;
+            }
+            _ => {} 
+        }
+    }
+    
+    // 优雅终止规控节拍器
+    规控句柄.abort();
+    Ok(())
+}
 </file>
 
 <file path="core-control/Cargo.toml">
@@ -2623,38 +2853,305 @@ core-perception = { path = "../core-perception" }
 cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
 </file>
 
-<file path="4.py">
+<file path="core-decision/Cargo.toml">
+[package]
+name = "core-decision"
+version = "0.1.0"
+edition = "2021"
 
+[dependencies]
+# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zenoh = { workspace = true }
+
+# 🛡️ 新增：并网所需的视觉与通信底座
+opencv = { workspace = true }
+dora-node-api = "0.3.3"
+eyre = "0.6"
+core-perception = { path = "../core-perception" }
 </file>
 
-<file path="Cargo.toml">
-[workspace]
-resolver = "2"
+<file path="showcase/Cargo.toml">
+[package]
+name = "showcase"
+version = "0.1.0"
+edition = "2021"
 
-# 声明工作空间下的所有物理子包
-members = [
-    "core-perception",  # 视觉感知引擎 (青蛙眼 + XFeat)
-    "core-control",     # 规控引擎 (NMPC 求解器)
-    "core-decision",    # 决策大脑 (行为树 + 拓扑图)
-    "showcase",         # 📺 专门用于存放可视化验证程序的展示厅包
-]
+[dependencies]
+# 继承自根目录 Workspace 的其她依赖
+opencv = { workspace = true }
+ort = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+zenoh = { workspace = true }
+postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
 
-[workspace.dependencies]
-# 视觉与 AI 引擎
-opencv = { version = "0.93", default-features = false, features = ["imgproc", "calib3d", "features2d", "videoio", "highgui"] }
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "tls-rustls", "load-dynamic"] }
+# 核心并网：引入感知引擎包与决策大脑包
+core-perception = { path = "../core-perception" }
+core-decision = { path = "../core-decision" }     # 🛡️ 新增：决策大脑包引用
 
-# 异步与并发底座
-tokio = { version = "1.38", features = ["full"] }
+# 🛡️ 显式契约绑定：配置四个独立的一键启动展示大屏
+[[bin]]
+name = "demo_xfeat"
+path = "src/bin/demo_xfeat.rs"
 
-# 神经通路与序列化
-zenoh = "0.11.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-postcard = { version = "1.0", features = ["alloc"] }
+[[bin]]
+name = "demo_frog"
+path = "src/bin/demo_frog.rs"
+</file>
 
-# 数学与矩阵运算
-ndarray = "0.15"
+<file path="simulation-env/isaac_dora_node.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+=================================================================
+🛡️ FSD-car V3.0: 虚拟物理界 (The Matrix) - Isaac Sim DORA 极速接入点
+架构哲学: CPU SHM 零拷贝 | GPU CUDA IPC 显存直通 | 物理引擎降级自愈
+=================================================================
+"""
+
+import time
+
+import numpy as np
+import pyarrow as pa
+from dora import Node
+
+# ---------------------------------------------------------------------------
+# 🛡️ 架构师自愈设计：自动探针检测 Isaac Sim 物理界与 CUDA 算力环境
+# ---------------------------------------------------------------------------
+try:
+    from omni.isaac.core import World
+    from omni.isaac.sensor import Camera
+
+    ISAAC_SIM_AVAILABLE = True
+    print("✅ [物理主权] 检测到 NVIDIA Isaac Sim 环境，已挂载物理法则引擎！")
+except ImportError:
+    ISAAC_SIM_AVAILABLE = False
+    print("⚠️ [降级自愈] 未检测到 Isaac Sim 环境，已切换为高性能 Mock 视频流发生器！")
+
+try:
+    import dora.cuda
+    import torch
+
+    CUDA_AVAILABLE = torch.cuda.is_available()
+    if CUDA_AVAILABLE:
+        print(
+            f"⚡ [显存主权] 检测到 CUDA GPU 算力就绪: {torch.cuda.get_device_name(0)}"
+        )
+    else:
+        print("ℹ️ [显存主权] 未检测到可用 GPU，通信管道锁定为极速 CPU 共享内存 (SHM)")
+except ImportError:
+    CUDA_AVAILABLE = False
+    print(
+        "ℹ️ [显存主权] 未安装 PyTorch/dora.cuda，通信管道锁定为极速 CPU 共享内存 (SHM)"
+    )
+
+
+class 虚拟物理界代理:
+    def __init__(self, use_gpu_pipeline: bool = False):
+        # 1. 初始化 DORA 节点契约
+        self.node = Node()
+
+        # 2. 对齐物理相机分辨率 (70° FOV 广角单目)
+        self.宽度 = 640
+        self.高度 = 480
+        self.通道数 = 3
+
+        # 3. 决定是否启用 GPU 显存直通通路 (Sim-to-Real SOTA)
+        self.启用GPU直通 = use_gpu_pipeline and CUDA_AVAILABLE
+
+        # 4. 仿真环境初始化
+        if ISAAC_SIM_AVAILABLE:
+            self.world = World()
+            self.camera = Camera(
+                prim_path="/World/Car/front_camera",
+                resolution=(self.宽度, self.高度),
+            )
+            self.world.reset()
+        else:
+            self.帧计数器 = 0
+            # 预分配 Mock 背景缓冲区，避免在 30Hz 循环中重复分配内存
+            self.mock_canvas = np.zeros(
+                (self.高度, self.宽度, self.通道数), dtype=np.uint8
+            )
+
+    def 获取物理视网膜帧(self) -> np.ndarray:
+        """
+        获取当前物理世界的 RGB 渲染帧 (支持物理引擎与降级 Mock)
+        """
+        if ISAAC_SIM_AVAILABLE:
+            self.world.step(render=True)
+            rgba_image = self.camera.get_rgba()
+            return rgba_image[:, :, :3].astype(np.uint8)
+        else:
+            # 🛡️ 降级自愈：在预分配的画布上生成高速移动彩色条纹 (模拟小车行进)
+            self.帧计数器 += 1
+            偏移量 = (self.帧计数器 * 5) % self.宽度
+
+            # 清空画布 (高吞吐原地操作，绝不 malloc)
+            self.mock_canvas.fill(0)
+
+            # 绘制高对比度物理地标 (模拟 XFeat 纠偏和青蛙眼避障站牌)
+            self.mock_canvas[:, 偏移量 : 偏移量 + 50] = [255, 0, 0]  # 红色站牌 (R)
+            self.mock_canvas[
+                :, (偏移量 + 200) % self.宽度 : (偏移量 + 250) % self.宽度
+            ] = [0, 255, 0]  # 绿色站牌 (G)
+            self.mock_canvas[
+                :, (偏移量 + 400) % self.宽度 : (偏移量 + 450) % self.宽度
+            ] = [0, 0, 255]  # 蓝色站牌 (B)
+
+            # 物理 30Hz 节奏补偿
+            time.sleep(0.033)
+            return self.mock_canvas
+
+    def 驱动物理底盘(self, v: float, w: float):
+        """
+        神经反馈底盘执行器
+        """
+        if ISAAC_SIM_AVAILABLE:
+            # 此处用于转换轮速并写入 Isaac Sim ArticulationController
+            pass
+        else:
+            if self.帧计数器 % 30 == 0:
+                print(
+                    f"🏎️ [底盘执行器] 接收到 Rust 规控指令 -> 线速度: {v:.3f} m/s, 角速度: {w:.3f} rad/s"
+                )
+
+    def 启动生命循环(self):
+        print("🚀 虚拟物理界代理已启动，正在向 DORA 共享内存注入物理法则...")
+        if self.启用GPU直通:
+            print("🚀 [管道状态] 开启: NVIDIA PyTorch GPU CUDA IPC 显存直通")
+        else:
+            print("🚀 [管道状态] 开启: Apache Arrow CPU Shared Memory (SHM) 零拷贝")
+
+        try:
+            while True:
+                # ---------------------------------------------------------
+                # 1. 视网膜捕获与零拷贝注入 (The Output Path)
+                # ---------------------------------------------------------
+                rgb_frame = self.获取物理视网膜帧()
+
+                if self.启用GPU直通:
+                    # 🛡️ 显存直通 SOTA：将 numpy 转换为 PyTorch GPU Tensor
+                    # 并提取 CUDA IPC 句柄，数据留在显卡，传输开销为 0 纳秒！
+                    gpu_tensor = torch.as_tensor(rgb_frame, device="cuda")
+                    ipc_buffer, metadata = dora.cuda.torch_to_ipc_buffer(gpu_tensor)
+
+                    self.node.send_output(
+                        output_id="camera_rgb", data=ipc_buffer, metadata=metadata
+                    )
+                else:
+                    # 🛡️ CPU 零拷贝优化：直接通过 NumPy 缓冲区协议创建连续的一维 Arrow 数组
+                    # 绕过了 Python 层面的逐元素列表转换，配合 DORA 的 Zenoh SHM 实现内存级零拷贝！
+                    flat_frame = rgb_frame.reshape(-1)  # 共享相同底层内存视图
+                    arrow_array = pa.Array.from_buffers(
+                        pa.uint8(), len(flat_frame), [None, pa.py_buffer(flat_frame)]
+                    )
+
+                    self.node.send_output(
+                        output_id="camera_rgb",
+                        data=arrow_array,
+                        metadata={
+                            "width": self.宽度,
+                            "height": self.高度,
+                            "channels": self.通道数,
+                            "encoding": "bgr8",
+                        },
+                    )
+
+                # ---------------------------------------------------------
+                # 2. 神经反射弧监听 (The Input Path)
+                # ---------------------------------------------------------
+                # 设置 1ms 超时非阻塞，绝不卡死 30Hz 物理渲染
+                event = self.node.next(timeout=0.001)
+
+                if event is not None:
+                    if event["type"] == "INPUT" and event["id"] == "control_cmd":
+                        cmd_array = event["value"].to_numpy()
+                        if len(cmd_array) >= 2:
+                            v, w = cmd_array[0], cmd_array[1]
+                            self.驱动物理底盘(v, w)
+
+                    elif event["type"] == "STOP":
+                        print("🛑 接收到 DORA 全局停止指令，安全关闭物理引擎...")
+                        break
+
+        except KeyboardInterrupt:
+            print("\n🛑 用户手动中断，安全退出...")
+
+
+if __name__ == "__main__":
+    # 如果要强行测试 GPU 显存直通，可以在实例化时传入 True
+    代理 = 虚拟物理界代理(use_gpu_pipeline=False)
+    代理.启动生命循环()
+</file>
+
+<file path="dora_dataflow.yaml">
+# =================================================================
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
+# 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
+# =================================================================
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    path: uv
+    args: run --with numpy --with pyarrow --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
+    inputs:
+      # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
+      control_cmd: fast_brain_nmpc/control_cmd
+    outputs:
+      # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
+      - camera_rgb
+  # ---------------------------------------------------------------
+  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
+  # ---------------------------------------------------------------
+  - id: fast_brain_nmpc
+    # 指向编译后的 Rust 二进制文件
+    path: target/release/fast_brain_node
+    # DORA 自动化构建契约：启动前自动执行 cargo build
+    build: cargo build -p core-control --release --bin fast_brain_node
+    env:
+      # 注入日志级别与运行时类型检查
+      RUST_LOG: info
+      DORA_RUNTIME_TYPE_CHECK: warn
+      # 🛡️ 架构师指令：必须将 acados 核心库目录与 NMPC 生成的 C 求解器库目录同时并网，彻底解决加载期断链！
+      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
+    inputs:
+      # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
+      image: isaac_sim_env/camera_rgb
+    outputs:
+      # 输出运动指令契约 (v, w)
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🧠 3. 慢系统：XFeat 拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 🛡️ 架构师高光：多节点订阅同一输出。
+      # DORA 共享内存支持多读单写 (MRSW)，慢系统读取图像绝不会导致二次内存拷贝！
+      image: isaac_sim_env/camera_rgb
+
+  # ---------------------------------------------------------------
+  # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
+  # ---------------------------------------------------------------
+  - id: zenoh_bridge
+    path: target/release/zenoh_bridge_node
+    build: cargo build -p core-bridge --release
+    env:
+      RUST_LOG: info
+    inputs:
+      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
+      cmd: fast_brain_nmpc/control_cmd
 </file>
 
 <file path="README.md">
@@ -2806,12 +3303,57 @@ fn main() {
 }
 </file>
 
+<file path="4.py">
+
+</file>
+
+<file path="Cargo.toml">
+[workspace]
+resolver = "2"
+
+# 声明工作空间下的所有物理子包
+members = [
+    "core-perception", # 视觉感知引擎 (青蛙眼 + XFeat)
+    "core-control",    # 规控引擎 (NMPC 求解器)
+    "core-decision",   # 决策大脑 (行为树 + 拓扑图)
+    "core-bridge",     # 🔗 生产级物理并网桥接网关 (Spinal Cord)
+    "showcase",        # 📺 专门用于存放可视化验证程序的展示厅包
+]
+
+[workspace.dependencies]
+# 视觉与 AI 引擎
+opencv = { version = "0.93", default-features = false, features = [
+    "imgproc",
+    "calib3d",
+    "features2d",
+    "videoio",
+    "highgui",
+] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "tls-rustls",
+    "load-dynamic",
+] }
+
+# 异步与并发底座
+tokio = { version = "1.38", features = ["full"] }
+
+# 神经通路与序列化
+zenoh = "0.11.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postcard = { version = "1.0", features = ["alloc"] }
+
+# 数学与矩阵运算
+ndarray = "0.15"
+</file>
+
 <file path=".gitignore">
 # =================================================================
-# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生版)
+# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生生产版)
 # =================================================================
 
-# --- 1. 系统、Python 虚拟环境与 IDE 临时文件 ---
+# --- 1. 系统、IDE 与临时垃圾文件 ---
 .DS_Store
 Thumbs.db
 *.tmp
@@ -2819,32 +3361,51 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
+
+# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
+# 彻底拦截 uv 和传统 Python 的虚拟环境与缓存
 .venv/
+.uv/
+.python-version
 __pycache__/
 *.py[cod]
 *$py.class
 
-# --- 2. Rust 工作空间全局编译缓存 ---
-# 强制忽略工作空间下的物理全局编译产物
+# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
+# 强制忽略 DORA 产生的 uuid 运行日志和协调器日志
+/out/
+out/
+dora-coordinator.txt
+dora-daemon.txt
+
+# --- 4. Rust 工作空间全局编译缓存 ---
+# 强制忽略整个多包工作空间下的 release/debug 编译产物
 /target/
 
-# 拦截所有临时和系统动态链接库
+# --- 5. 跨系统动态链接库与大资产模型 ---
+# 拦截系统级 SO 库与大尺寸 AI 模型，防止 Git 仓库历史体积爆炸
 *.so
 *.so.*
 *.tgz
-*.onnx
 *.a
 *.lib
 *.dll
 *.dylib
 
-# --- 3. 仿真环境产生的临时物理日志与求解器 C 缓存 ---
+# 🛡️ 架构师建议：大尺寸 ONNX 模型建议放在 model/ 目录下，通过 download_models.sh 脚本下载，
+# 或者使用 Git LFS 管理，绝对不要直接塞入主干 Git 历史中。
+*.onnx
+
+# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
 simulation-env/c_generated_code/
 simulation-env/acados_ocp.json
 simulation-env/acados/
 simulation-env/*.log
 simulation-env/MUJOCO_LOG.TXT
 simulation-env/nmpc_telemetry.log
+
+# 🛡️ 架构师建议：车端运行产生的动态拓扑记忆，属于高频变动的非代码资产
+topo_memory.json
 </file>
 
 </files>

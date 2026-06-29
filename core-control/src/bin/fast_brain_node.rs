@@ -6,7 +6,7 @@ use eyre::{eyre, Context};
 use opencv::core::{Mat, CV_8UC3};
 use std::ffi::c_void;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::RwLock; // 🛡️ 架构师修正：降级为标准库锁，拒绝 Tokio 调度让出
 use std::time::Duration;
 
 /// 🛡️ 状态金库：跨线程无锁/轻量锁共享的执行上下文
@@ -49,7 +49,8 @@ async fn main() -> eyre::Result<()> {
             
             // 1. 极速读取状态金库 (读写锁，读操作极快)
             let (已初始化, 期望_x, 期望_y, 当前线速度) = {
-                let lock = 金库_规控.read().await;
+                // 🛡️ 架构师修正：使用标准库锁，不跨 await 边界，耗时仅需几纳秒
+                let lock = 金库_规控.read().unwrap();
                 (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度)
             };
 
@@ -59,22 +60,31 @@ async fn main() -> eyre::Result<()> {
 
             // 2. 求解器温启动 (仅执行一次)
             if !求解器已就绪 {
-                规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0).unwrap();
+                if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0) {
+                    eprintln!("⚠️ 温启动状态注入失败: {}，跳过本帧", e);
+                    continue;
+                }
                 求解器已就绪 = true;
                 println!("✅ [快系统] NMPC 求解器温启动完成，进入 100Hz 极速控制环");
             }
 
             // 3. 注入最新的参考轨迹偏移
+            let mut 注入成功 = true;
             for k in 0..=20 {
-                规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3).unwrap();
+                if let Err(e) = 规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3) {
+                    eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
+                    注入成功 = false;
+                    break;
+                }
             }
+            if !注入成功 { continue; }
             
             // 4. 求解最优控制量 (基于严格的 10ms dt)
             match 规控大脑.求解最优控制量(当前线速度) {
                 Ok((线速度_v, 角速度_w)) => {
                     // 更新金库中的线速度，供下一次积分使用
                     {
-                        let mut lock = 金库_规控.write().await;
+                        let mut lock = 金库_规控.write().unwrap();
                         lock.当前线速度 = 线速度_v;
                     }
 
@@ -116,13 +126,13 @@ async fn main() -> eyre::Result<()> {
 
                     // 检查并初始化物理主权
                     let 需要初始化 = {
-                        let lock = 状态金库.read().await;
+                        let lock = 状态金库.read().unwrap();
                         !lock.物理主权已初始化
                     };
 
                     if 需要初始化 {
                         青蛙眼.初始化(宽度, 高度).map_err(|e| eyre!(e))?;
-                        let mut lock = 状态金库.write().await;
+                        let mut lock = 状态金库.write().unwrap();
                         lock.物理主权已初始化 = true;
                         println!("✅ [快系统] 感受野初始化完成 ({}x{})", 宽度, 高度);
                     }
@@ -143,7 +153,7 @@ async fn main() -> eyre::Result<()> {
                     let 势场 = 青蛙眼.处理图像帧(&视网膜帧, 0.0).map_err(|e| eyre!(e))?;
 
                     // 将势场梯度转化为 NMPC 参考轨迹偏移，并写入状态金库
-                    let mut lock = 状态金库.write().await;
+                    let mut lock = 状态金库.write().unwrap();
                     lock.期望_x = 0.3 + 势场.逃逸方向.0 as f64;
                     lock.期望_y = 0.0 + 势场.逃逸方向.1 as f64;
                 }

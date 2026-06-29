@@ -15,10 +15,20 @@ unsafe impl Send for 预测控制求解器 {}
 impl 预测控制求解器 {
     /// 构造函数：在堆内存中分配 C 求解器
     pub fn new() -> Result<Self, String> {
-        let capsule = unsafe { diff_drive_car_acados_create() };
+        // 1. 分配物理内存胶囊
+        let capsule = unsafe { diff_drive_car_acados_create_capsule() };
         if capsule.is_null() {
-            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！请检查动态库链接。".to_string());
+            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！".to_string());
         }
+        
+        // 2. 执行内部矩阵与求解器初始化
+        let status = unsafe { diff_drive_car_acados_create(capsule) };
+        if status != 0 {
+            // 初始化失败时，必须手动释放刚刚分配的胶囊，防止内存泄漏
+            unsafe { diff_drive_car_acados_free_capsule(capsule); }
+            return Err(format!("❌ NMPC 求解器内部初始化失败，状态码: {}", status));
+        }
+        
         Ok(Self { capsule })
     }
 
@@ -32,9 +42,11 @@ impl 预测控制求解器 {
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule); // 🛡️ SOTA 修正：获取 nlp_out 句柄 [cite: 3.1.6]
 
-            let status_lbx = ocp_nlp_in_set(config, dims, nlp_in, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
-            let status_ubx = ocp_nlp_in_set(config, dims, nlp_in, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
+            // 🛡️ 架构师 2026 SOTA 修正：传入 7 个完备参数（新增 nlp_out），彻底根治由栈破坏引起的 SIGSEGV 段错误！
+            let status_lbx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
+            let status_ubx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
 
             if status_lbx != 0 || status_ubx != 0 {
                 return Err("❌ NMPC 初始状态 (x0) 注入失败！".to_string());
@@ -52,14 +64,15 @@ impl 预测控制求解器 {
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
 
+            // 🛡️ 架构师 2026 SOTA 修正：设置参考代价函数 yref 必须使用 ocp_nlp_cost_model_set
             let status = if 预测步 == 20 { 
                 // 终端步 (Terminal Stage): ny_e = 4
                 let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
-                ocp_nlp_in_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
+                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
             } else {
                 // 中间步 (Intermediate Stage): ny = 6 (补齐 a 和 omega 的参考值 0.0)
                 let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
-                ocp_nlp_in_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
+                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
             };
 
             if status != 0 {
@@ -84,10 +97,7 @@ impl 预测控制求解器 {
             let field_u = CString::new("u").unwrap();
             let mut u_opt = [0.0f64; 2]; // [a, omega]
 
-            let get_status = ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
-            if get_status != 0 {
-                return Err("❌ NMPC 无法提取最优控制输出！".to_string());
-            }
+            ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
 
             let a_opt = u_opt[0];
             let w_cmd_raw = u_opt[1];
@@ -109,7 +119,46 @@ impl 预测控制求解器 {
 impl Drop for 预测控制求解器 {
     fn drop(&mut self) {
         unsafe {
+            // 必须严格按照逆序释放：先释放内部矩阵，再释放胶囊本身
             diff_drive_car_acados_free(self.capsule);
+            diff_drive_car_acados_free_capsule(self.capsule);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nmpc_solver_lifecycle_and_compute() {
+        println!("🛡️ [单测启动] 正在测试 NMPC 求解器 C FFI 边界...");
+        
+        // 1. 测试内存胶囊分配 (如果 C 动态库链接失败，这里会直接 panic)
+        let mut solver = 预测控制求解器::new().expect("❌ 求解器初始化失败，请检查 C 动态库链接！");
+        println!("✅ 求解器内存胶囊分配成功！");
+
+        // 2. 测试状态注入 (温启动：当前处于原点，静止)
+        solver.设置当前状态(0.0, 0.0, 0.0, 0.0).expect("❌ 初始状态注入失败");
+        println!("✅ 初始状态注入成功！");
+
+        // 3. 测试参考轨迹注入 (预测步长 N=20)
+        for k in 0..=20 {
+            // 假设目标在正前方 1.0 米处，期望线速度 0.3 m/s
+            solver.设置参考轨迹点(k, 1.0, 0.0, 0.0, 0.3).expect(&format!("❌ 第 {} 步参考轨迹注入失败", k));
+        }
+        println!("✅ 参考轨迹注入成功！");
+
+        // 4. 测试核心求解算子
+        let (v_cmd, w_cmd) = solver.求解最优控制量(0.0).expect("❌ NMPC 求解失败");
+        println!("✅ 求解成功！输出控制量 -> 线速度: {:.3} m/s, 角速度: {:.3} rad/s", v_cmd, w_cmd);
+
+        // 5. 物理主权断言：确保输出严格遵守我们在 generate_solver.py 中定义的硬约束
+        assert!(v_cmd >= 0.0 && v_cmd <= 0.3, "线速度超限！");
+        assert!(w_cmd >= -0.6 && w_cmd <= 0.6, "角速度超限！");
+        
+        // 6. 隐式测试：当 `solver` 离开此作用域时，Rust 会自动调用 Drop trait。
+        // 如果 C 侧的 free 逻辑有误，这里会触发段错误 (Segmentation Fault)。
+        println!("✅ 测试结束，准备安全释放 C 语言内存胶囊...");
     }
 }

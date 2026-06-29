@@ -1,8 +1,8 @@
 # =================================================================
-# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生版)
+# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生生产版)
 # =================================================================
 
-# --- 1. 系统、Python 虚拟环境与 IDE 临时文件 ---
+# --- 1. 系统、IDE 与临时垃圾文件 ---
 .DS_Store
 Thumbs.db
 *.tmp
@@ -10,30 +10,48 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
+
+# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
+# 彻底拦截 uv 和传统 Python 的虚拟环境与缓存
 .venv/
+.uv/
+.python-version
 __pycache__/
 *.py[cod]
 *$py.class
-/out/
 
-# --- 2. Rust 工作空间全局编译缓存 ---
-# 强制忽略工作空间下的物理全局编译产物
+# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
+# 强制忽略 DORA 产生的 uuid 运行日志和协调器日志
+/out/
+out/
+dora-coordinator.txt
+dora-daemon.txt
+
+# --- 4. Rust 工作空间全局编译缓存 ---
+# 强制忽略整个多包工作空间下的 release/debug 编译产物
 /target/
 
-# 拦截所有临时和系统动态链接库
+# --- 5. 跨系统动态链接库与大资产模型 ---
+# 拦截系统级 SO 库与大尺寸 AI 模型，防止 Git 仓库历史体积爆炸
 *.so
 *.so.*
 *.tgz
-*.onnx
 *.a
 *.lib
 *.dll
 *.dylib
 
-# --- 3. 仿真环境产生的临时物理日志与求解器 C 缓存 ---
+# 🛡️ 架构师建议：大尺寸 ONNX 模型建议放在 model/ 目录下，通过 download_models.sh 脚本下载，
+# 或者使用 Git LFS 管理，绝对不要直接塞入主干 Git 历史中。
+*.onnx
+
+# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
 simulation-env/c_generated_code/
 simulation-env/acados_ocp.json
 simulation-env/acados/
 simulation-env/*.log
 simulation-env/MUJOCO_LOG.TXT
 simulation-env/nmpc_telemetry.log
+
+# 🛡️ 架构师建议：车端运行产生的动态拓扑记忆，属于高频变动的非代码资产
+topo_memory.json
