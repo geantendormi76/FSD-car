@@ -106,182 +106,6 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="simulation-env/probe_acados_env.py">
-# -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-import ctypes
-import os
-
-
-def probe():
-    print("=" * 70)
-    print("🛰️  FSD-Car & Acados 动态库装载链深度检测探针")
-    print("=" * 70)
-
-    # 1. 检查 ACADOS_SOURCE_DIR 变量
-    acados_source = os.environ.get(
-        "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
-    )
-    print(f"📌 [环境变量] ACADOS_SOURCE_DIR -> {acados_source}")
-    if not os.path.exists(acados_source):
-        print("❌ [路径失效] 找不到指定的 acados 物理目录！")
-        return
-
-    # 2. 检测动态链接库完整性
-    lib_dir = os.path.join(acados_source, "lib")
-    print(f"📌 [动态库目录] 正在扫描: {lib_dir}")
-
-    required_libs = ["libacados.so", "libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]
-    missing_libs = []
-
-    if os.path.exists(lib_dir):
-        files_in_lib = os.listdir(lib_dir)
-        for lib in required_libs:
-            match = [f for f in files_in_lib if f.startswith(lib)]
-            if match:
-                print(f"  ✅ 发现物理库: {match[0]}")
-            else:
-                print(f"  ❌ 缺失核心依赖库: {lib}")
-                missing_libs.append(lib)
-    else:
-        print(f"❌ [致命] 找不到 lib 文件夹: {lib_dir}")
-        return
-
-    # 3. 检查 LD_LIBRARY_PATH 环境变量并网状态
-    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-    print(f"📌 [环境变量] LD_LIBRARY_PATH -> {ld_path}")
-    is_joined = lib_dir in ld_path
-    print(
-        f"  💡 并网评估: {'✅ acados 路径已并网' if is_joined else '⚠️ 未检测到并网 (会导致 ld-linux 加载失败)'}"
-    )
-
-    # 4. 执行 ctypes 装载实验
-    print("\n⚡ [符号沙盘演练] 正在尝试通过操作系统 C-Linker 装载动态库...")
-    if not missing_libs:
-        # 尝试直接装载依赖库以对全局符号表进行内存预热
-        for lib in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
-            lib_path = os.path.join(lib_dir, lib)
-            try:
-                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
-                print(f"  💎 预装载 {lib} -> ✅ 成功入驻进程空间")
-            except Exception as e:
-                print(f"  ⚠️ 预装载 {lib} -> ❌ 失败: {e}")
-
-        # 核心加载测试
-        libacados_path = os.path.join(lib_dir, "libacados.so")
-        try:
-            ctypes.CDLL(libacados_path)
-            print("  🏆 [终极载入测试] libacados.so -> 🎉 成功！系统已完全自愈！")
-        except Exception as e:
-            print(f"  🔥 [终极载入测试] libacados.so -> ❌ 失败，底层链接断链: {e}")
-    else:
-        print("❌ 核心动态库文件残缺，请在 simulation-env 目录下重新编译 acados 源码。")
-
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    probe()
-</file>
-
-<file path="core-bridge/src/main.rs">
-// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-use dora_node_api::{DoraNode, Event, into_vec};
-use eyre::{eyre, Context};
-use core_decision::messages::运动指令;
-use zenoh::config::{Config, WhatAmI};
-use zenoh::prelude::r#async::*; // 🛡️ 引入 Zenoh 异步解析特质
-
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    println!("🔗 [神经通路] 核心并网网关已启动，等待 DORA 共享内存注入...");
-
-    // 1. 接入 DORA 数据流网络
-    let (mut _node, mut events) = DoraNode::init_from_env()?;
-
-    // 2. 初始化 Zenoh 客户端 (Client 模式)
-    // 🛡️ 架构师指令：必须使用 Client 模式，防止与 DORA 底层的 Zenoh Router 产生端口冲突！
-    let mut z_config = Config::default();
-    // 🛡️ 架构师修正：使用 Peer 模式防止启动时因找不到 Router 而超时；同时禁用 listen 端口以 100% 避让 DORA 占用的 7447 端口！
-    z_config.set_mode(Some(WhatAmI::Peer));
-    z_config
-        .insert_json5("listen", "[]")
-        .expect("❌ Zenoh 禁用监听配置失败");
-    
-    // Zenoh 0.11.0 引入了 Builder 模式，调用 .res().await 执行异步操作
-    let z_session = zenoh::open(z_config)
-        .res()
-        .await
-        .map_err(|e| eyre!("❌ Zenoh 会话打开失败: {}", e))?;
-    
-    // 3. 声明 Zenoh 发布者 (Publisher)
-    let 发布主题 = "fsd/spinal_cord/cmd_vel";
-    let publisher = z_session
-        .declare_publisher(发布主题)
-        .res()
-        .await
-        .map_err(|e| eyre!("❌ Zenoh 发布者声明失败: {}", e))?;
-        
-    println!("✅ [神经通路] 物理并网连接成功！下发通道 -> 主题 [{}]", 发布主题);
-
-    // 4. 异步事件驱动循环
-    while let Some(event) = events.recv_async().await {
-        match event {
-            Event::Input { id, data, .. } => {
-                if id.as_str() == "cmd" {
-                    // ---------------------------------------------------------
-                    // [阶段 A]：从 DORA 零拷贝提取 Arrow 浮点数组
-                    // ---------------------------------------------------------
-                    let 控制量: Vec<f32> = into_vec(&data).context("❌ Arrow 数组解析失败")?;
-                    if 控制量.len() < 2 {
-                        eprintln!("⚠️ 接收到的控制指令长度不足 2");
-                        continue;
-                    }
-
-                    let 指令 = 运动指令 {
-                        v: 控制量[0],
-                        w: 控制量[1],
-                    };
-
-                    // ---------------------------------------------------------
-                    // [阶段 B]：极致压缩序列化 (Postcard)
-                    // ---------------------------------------------------------
-                    let 序列化字节 = postcard::to_allocvec(&指令).context("❌ Postcard 序列化失败")?;
-
-                    // ---------------------------------------------------------
-                    // [阶段 C]：通过 Zenoh 下发至 ESP32-C6 脊髓
-                    // ---------------------------------------------------------
-                    publisher
-                        .put(序列化字节)
-                        .res()
-                        .await
-                        .map_err(|e| eyre!("❌ Zenoh 消息发送失败: {}", e))?;
-                }
-            }
-            Event::Stop(_) => {
-                println!("🛑 [神经通路] 接收到 DORA 停止信号，安全关闭 Zenoh 桥接器...");
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    // ---------------------------------------------------------
-    // [阶段 D]：优雅退出与生命周期安全回收
-    // ---------------------------------------------------------
-    drop(publisher);
-
-    z_session
-        .close()
-        .res()
-        .await
-        .map_err(|e| eyre!("❌ Zenoh 会话关闭异常: {}", e))?;
-        
-    println!("🔌 [神经通路] 会话已安全释放，并网网关优雅退出。");
-    Ok(())
-}
-</file>
-
 <file path="core-bridge/Cargo.toml">
 # 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 [package]
@@ -308,50 +132,6 @@ eyre = "0.6"
 core-decision = { path = "../core-decision" }
 </file>
 
-<file path="core-control/src/ffi.rs">
-#![allow(non_camel_case_types)]
-use libc::{c_char, c_int, c_void};
-
-/// 🛡️ 不透明结构体：代表 acados 内部的求解器内存胶囊
-#[repr(C)]
-pub struct diff_drive_car_solver_capsule {
-    _unused: [u8; 0],
-}
-
-// 声明外部 C 函数符号
-extern "C" {
-    // 生命周期管理
-    pub fn diff_drive_car_acados_create() -> *mut diff_drive_car_solver_capsule;
-    pub fn diff_drive_car_acados_solve(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
-    pub fn diff_drive_car_acados_free(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
-
-    // 内部组件指针获取
-    pub fn diff_drive_car_acados_get_nlp_in(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    pub fn diff_drive_car_acados_get_nlp_out(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    pub fn diff_drive_car_acados_get_nlp_config(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    pub fn diff_drive_car_acados_get_nlp_dims(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-
-    // 通用数据注入与提取算子
-    pub fn ocp_nlp_in_set(
-        config: *mut c_void,
-        dims: *mut c_void,
-        nlp_in: *mut c_void,
-        stage: c_int,
-        field: *const c_char,
-        value: *mut c_void,
-    ) -> c_int;
-
-    pub fn ocp_nlp_out_get(
-        config: *mut c_void,
-        dims: *mut c_void,
-        nlp_out: *mut c_void,
-        stage: c_int,
-        field: *const c_char,
-        value: *mut c_void,
-    ) -> c_int;
-}
-</file>
-
 <file path="core-control/src/lib.rs">
 // <<<<<<< SEARCH
 pub fn add(left: u64, right: u64) -> u64 {
@@ -375,124 +155,6 @@ pub mod solver;
 // 🛡️ 向上层暴露安全的规控接口
 pub use solver::预测控制求解器;
 // >>>>>>> REPLACE
-</file>
-
-<file path="core-control/src/solver.rs">
-use super::ffi::*;
-use std::ffi::CString;
-use std::os::raw::c_void;
-
-/// 🛡️ 规控大脑：NMPC 求解器安全封装金库
-/// 彻底隔离 C 语言的裸指针，对外提供 100% 内存安全的 Rust 接口
-pub struct 预测控制求解器 {
-    capsule: *mut diff_drive_car_solver_capsule,
-}
-
-// 🛡️ 架构师指令：显式声明线程安全。
-// 只要我们保证在 Rust 层以 `&mut self` 独占借用的方式调用，C 求解器在多线程间传递就是安全的。
-unsafe impl Send for 预测控制求解器 {}
-
-impl 预测控制求解器 {
-    /// 构造函数：在堆内存中分配 C 求解器
-    pub fn new() -> Result<Self, String> {
-        let capsule = unsafe { diff_drive_car_acados_create() };
-        if capsule.is_null() {
-            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！请检查动态库链接。".to_string());
-        }
-        Ok(Self { capsule })
-    }
-
-    /// 注入当前物理状态 (对应 Python 中的 lbx, ubx)
-    pub fn 设置当前状态(&mut self, x: f64, y: f64, yaw: f64, v: f64) -> Result<(), String> {
-        let state = [x, y, yaw, v];
-        let field_lbx = CString::new("lbx").unwrap();
-        let field_ubx = CString::new("ubx").unwrap();
-        
-        unsafe {
-            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
-            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
-            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
-
-            let status_lbx = ocp_nlp_in_set(config, dims, nlp_in, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
-            let status_ubx = ocp_nlp_in_set(config, dims, nlp_in, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
-
-            if status_lbx != 0 || status_ubx != 0 {
-                return Err("❌ NMPC 初始状态 (x0) 注入失败！".to_string());
-            }
-        }
-        Ok(())
-    }
-
-    /// 注入未来预测步的参考轨迹点 (对应 Python 中的 yref)
-    pub fn 设置参考轨迹点(&mut self, 预测步: i32, ref_x: f64, ref_y: f64, ref_yaw: f64, ref_v: f64) -> Result<(), String> {
-        let field_yref = CString::new("yref").unwrap();
-        
-        unsafe {
-            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
-            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
-            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
-
-            let status = if 预测步 == 20 { 
-                // 终端步 (Terminal Stage): ny_e = 4
-                let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
-                ocp_nlp_in_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
-            } else {
-                // 中间步 (Intermediate Stage): ny = 6 (补齐 a 和 omega 的参考值 0.0)
-                let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
-                ocp_nlp_in_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
-            };
-
-            if status != 0 {
-                return Err(format!("❌ NMPC 第 {} 步参考轨迹注入失败！", 预测步));
-            }
-        }
-        Ok(())
-    }
-
-    /// 执行 RTI-SQP 求解，并返回平滑处理后的 (线速度, 角速度)
-    pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
-        unsafe {
-            let status = diff_drive_car_acados_solve(self.capsule);
-            if status != 0 {
-                return Err(format!("⚠️ NMPC 求解器发散或失败，状态码: {}", status));
-            }
-
-            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
-            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
-            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
-
-            let field_u = CString::new("u").unwrap();
-            let mut u_opt = [0.0f64; 2]; // [a, omega]
-
-            let get_status = ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
-            if get_status != 0 {
-                return Err("❌ NMPC 无法提取最优控制输出！".to_string());
-            }
-
-            let a_opt = u_opt[0];
-            let w_cmd_raw = u_opt[1];
-
-            // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
-            let mut v_cmd = 当前线速度 + a_opt * 0.01;
-            if v_cmd < 0.0 { v_cmd = 0.0; } // 限制不能倒车
-            if v_cmd > 0.3 { v_cmd = 0.3; } // 最大速度限制
-
-            // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
-            let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);
-
-            Ok((v_cmd, w_cmd))
-        }
-    }
-}
-
-// 🛡️ 内存守卫：RAII 机制。当 `预测控制求解器` 离开作用域时，自动调用 C 语言的 free 释放内存，彻底杜绝内存泄漏！
-impl Drop for 预测控制求解器 {
-    fn drop(&mut self) {
-        unsafe {
-            diff_drive_car_acados_free(self.capsule);
-        }
-    }
-}
 </file>
 
 <file path="core-decision/src/bin/slow_brain_node.rs">
@@ -1941,6 +1603,668 @@ if __name__ == "__main__":
     run_diagnostics()
 </file>
 
+<file path="simulation-env/network_check.py">
+import socket
+import urllib.request
+import urllib.error
+import subprocess
+
+print("==============================================")
+print("     WSL2 物理网络 & DNS 域名解析 诊断工具")
+print("==============================================")
+
+# 1. 检查底层网络（直接用IP连接，绕过DNS）
+print("【第一步】测试物理网络连接 (Ping 微软公共DNS)...", end="")
+try:
+    # 8.8.8.8 是谷歌的公共DNS，114.114.114.114 是国内公共DNS
+    result = subprocess.run(["ping", "-c", "2", "-W", "2", "114.114.114.114"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode == 0:
+        print(" 成功 (物理网络是通的)")
+    else:
+        print(" 失败 (物理网络不通，可能是Windows防火墙或网卡问题)")
+except Exception as e:
+    print(f" 失败 ({e})")
+
+# 2. 检查 DNS 域名解析
+print("【第二步】测试域名解析 (百度)...", end="")
+try:
+    socket.gethostbyname("www.baidu.com")
+    print(" 成功 (DNS工作正常)")
+except Exception as e:
+    print(f" 失败 ({e}) -> 说明WSL2不认识网址，通常需要修改 /etc/resolv.conf")
+
+# 3. 检查微软更新服务器（code . 报错的关键原因）
+print("【第三步】测试连接 VS Code 服务器...", end="")
+try:
+    urllib.request.urlopen("https://update.code.visualstudio.com", timeout=4)
+    print(" 成功 (可以正常连接微软，应能打开 code)")
+except Exception as e:
+    print(f" 失败 ({e}) -> 无法下载VS Code Server")
+
+# 4. 检查 GitHub 连接（git clone 报错的原因）
+print("【第四步】测试连接 GitHub...", end="")
+try:
+    urllib.request.urlopen("https://github.com", timeout=4)
+    print(" 成功 (可以正常拉取 acados)")
+except Exception as e:
+    print(f" 失败 ({e}) -> 连接GitHub超时，国内网络环境常见，需要配置代理")
+
+print("==============================================")
+</file>
+
+<file path="simulation-env/nmpc_model.py">
+# nmpc_model.py
+from acados_template import AcadosModel
+import casadi as ca
+
+def setup_car_model():
+    model_name = "diff_drive_car"
+
+    # 1. 定义系统状态量 (States)
+    # x: X轴位置, y: Y轴位置, theta: 航向角, v: 前进线速度 [cite: 21]
+    x = ca.MX.sym('x')
+    y = ca.MX.sym('y')
+    theta = ca.MX.sym('theta')
+    v = ca.MX.sym('v')
+    states = ca.vcat([x, y, theta, v])
+
+    # 2. 定义控制输入量 (Controls)
+    # a: 前进加速度, omega: 旋转角速度
+    a = ca.MX.sym('a')
+    omega = ca.MX.sym('omega')
+    controls = ca.vcat([a, omega])
+
+    # 3. 定义状态导数 (State derivatives for ODE)
+    x_dot = ca.MX.sym('x_dot')
+    y_dot = ca.MX.sym('y_dot')
+    theta_dot = ca.MX.sym('theta_dot')
+    v_dot = ca.MX.sym('v_dot')
+    states_dot = ca.vcat([x_dot, y_dot, theta_dot, v_dot])
+
+    # 4. 连续时间非线性动力学方程 (连续常微分方程) [cite: 21]
+    f_expl = ca.vcat([
+        v * ca.cos(theta),
+        v * ca.sin(theta),
+        omega,
+        a
+    ])
+
+    # 5. 组装 acados 模型对象
+    model = AcadosModel()
+    model.f_impl_expr = states_dot - f_expl # 隐式表达式
+    model.f_expl_expr = f_expl             # 显式表达式
+    model.x = states
+    model.xdot = states_dot
+    model.u = controls
+    model.name = model_name
+
+    return model
+</file>
+
+<file path="simulation-env/probe_acados_env.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import ctypes
+import os
+
+
+def probe():
+    print("=" * 70)
+    print("🛰️  FSD-Car & Acados 动态库装载链深度检测探针")
+    print("=" * 70)
+
+    # 1. 检查 ACADOS_SOURCE_DIR 变量
+    acados_source = os.environ.get(
+        "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
+    )
+    print(f"📌 [环境变量] ACADOS_SOURCE_DIR -> {acados_source}")
+    if not os.path.exists(acados_source):
+        print("❌ [路径失效] 找不到指定的 acados 物理目录！")
+        return
+
+    # 2. 检测动态链接库完整性
+    lib_dir = os.path.join(acados_source, "lib")
+    print(f"📌 [动态库目录] 正在扫描: {lib_dir}")
+
+    required_libs = ["libacados.so", "libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]
+    missing_libs = []
+
+    if os.path.exists(lib_dir):
+        files_in_lib = os.listdir(lib_dir)
+        for lib in required_libs:
+            match = [f for f in files_in_lib if f.startswith(lib)]
+            if match:
+                print(f"  ✅ 发现物理库: {match[0]}")
+            else:
+                print(f"  ❌ 缺失核心依赖库: {lib}")
+                missing_libs.append(lib)
+    else:
+        print(f"❌ [致命] 找不到 lib 文件夹: {lib_dir}")
+        return
+
+    # 3. 检查 LD_LIBRARY_PATH 环境变量并网状态
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    print(f"📌 [环境变量] LD_LIBRARY_PATH -> {ld_path}")
+    is_joined = lib_dir in ld_path
+    print(
+        f"  💡 并网评估: {'✅ acados 路径已并网' if is_joined else '⚠️ 未检测到并网 (会导致 ld-linux 加载失败)'}"
+    )
+
+    # 4. 执行 ctypes 装载实验
+    print("\n⚡ [符号沙盘演练] 正在尝试通过操作系统 C-Linker 装载动态库...")
+    if not missing_libs:
+        # 尝试直接装载依赖库以对全局符号表进行内存预热
+        for lib in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
+            lib_path = os.path.join(lib_dir, lib)
+            try:
+                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                print(f"  💎 预装载 {lib} -> ✅ 成功入驻进程空间")
+            except Exception as e:
+                print(f"  ⚠️ 预装载 {lib} -> ❌ 失败: {e}")
+
+        # 核心加载测试
+        libacados_path = os.path.join(lib_dir, "libacados.so")
+        try:
+            ctypes.CDLL(libacados_path)
+            print("  🏆 [终极载入测试] libacados.so -> 🎉 成功！系统已完全自愈！")
+        except Exception as e:
+            print(f"  🔥 [终极载入测试] libacados.so -> ❌ 失败，底层链接断链: {e}")
+    else:
+        print("❌ 核心动态库文件残缺，请在 simulation-env 目录下重新编译 acados 源码。")
+
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    probe()
+</file>
+
+<file path="simulation-env/probe_proxy.py">
+import os
+import sys
+
+print("==================================================")
+print("      WSL2 代理设置深度排查探针 (2026)")
+print("==================================================")
+
+# 1. 检查当前活跃的代理环境变量
+print("\n[1] 当前生效的代理环境变量:")
+proxy_vars = {k: v for k, v in os.environ.items() if 'proxy' in k.lower()}
+if proxy_vars:
+    for k, v in proxy_vars.items():
+        print(f"  {k} = {v}")
+else:
+    print("  没有检测到活跃的代理环境变量。")
+
+# 2. 扫描常见的系统和用户启动配置文件
+print("\n[2] 开始扫描常见启动配置文件...")
+targets = [
+    '~/.bashrc', '~/.zshrc', '~/.profile', '~/.bash_profile', 
+    '~/.bash_login', '~/.zshenv', '~/.zprofile', '~/.zlogin',
+    '/etc/profile', '/etc/environment', '/etc/bash.bashrc',
+    '/etc/resolv.conf'
+]
+
+found_any = False
+for t in targets:
+    path = os.path.expanduser(t)
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', errors='ignore') as f:
+                content = f.read()
+                if "192.168.3.11" in content or "代理已开启" in content:
+                    print(f"  🚩 发现可疑配置在: {t}")
+                    lines = content.split('\n')
+                    for i, line in enumerate(lines):
+                        if "192.168.3.11" in line or "代理已开启" in line:
+                            print(f"    第 {i+1} 行: {line.strip()}")
+                    found_any = True
+        except Exception as e:
+            pass
+
+# 3. 深度递归扫描家目录下的隐藏脚本（过滤掉大文件目录如 conda）
+print("\n[3] 深度递归扫描家目录下的隐藏脚本与插件...")
+home_dir = os.path.expanduser('~')
+# 忽略掉不可能有代理脚本的巨大目录，防止卡死
+ignore_dirs = ['miniconda3', '.cache', '.git', '.conda', 'node_modules', 'workspace', 'FSD-car', 'nlp_TC_Encoder', 'lejepa-mvp']
+
+for root, dirs, files in os.walk(home_dir):
+    # 动态裁剪忽略目录
+    dirs[:] = [d for d in dirs if d not in ignore_dirs]
+    
+    for file in files:
+        # 只扫描脚本文件、隐藏文件、以及无后缀文件
+        if file.endswith('.sh') or file.startswith('.') or '.' not in file:
+            file_path = os.path.join(root, file)
+            try:
+                with open(file_path, 'r', errors='ignore') as f:
+                    content = f.read()
+                    if "192.168.3.11" in content or "代理已开启" in content:
+                        rel_path = os.path.relpath(file_path, home_dir)
+                        print(f"  🚩 发现可疑脚本在: ~/{rel_path}")
+                        lines = content.split('\n')
+                        for i, line in enumerate(lines):
+                            if "192.168.3.11" in line or "代理已开启" in line:
+                                print(f"    第 {i+1} 行: {line.strip()}")
+                        found_any = True
+            except:
+                pass
+
+if not found_any:
+    print("  ❌ 未能在任何配置文件中找到包含 '192.168.3.11' 或 '代理已开启' 的代码。")
+    print("  提示：请检查你是否在 Windows 端的控制台或全局系统变量里设置了代理穿透。")
+print("\n==================================================")
+</file>
+
+<file path="core-bridge/src/main.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+use dora_node_api::{DoraNode, Event, into_vec};
+use eyre::{eyre, Context};
+use core_decision::messages::运动指令;
+use zenoh::config::{Config, WhatAmI};
+use zenoh::prelude::r#async::*; // 🛡️ 引入 Zenoh 异步解析特质
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🔗 [神经通路] 核心并网网关已启动，等待 DORA 共享内存注入...");
+
+    // 1. 接入 DORA 数据流网络
+    let (mut _node, mut events) = DoraNode::init_from_env()?;
+
+    // 2. 初始化 Zenoh 客户端 (Client 模式)
+    // 🛡️ 架构师指令：必须使用 Client 模式，防止与 DORA 底层的 Zenoh Router 产生端口冲突！
+    let mut z_config = Config::default();
+    // 🛡️ 架构师修正：使用 Peer 模式防止启动时因找不到 Router 而超时；同时禁用 listen 端口以 100% 避让 DORA 占用的 7447 端口！
+    z_config.set_mode(Some(WhatAmI::Peer))
+        .expect("❌ Zenoh 设置 Peer 模式失败");
+    z_config
+        .insert_json5("listen", "[]")
+        .expect("❌ Zenoh 禁用监听配置失败");
+    
+    // Zenoh 0.11.0 引入了 Builder 模式，调用 .res().await 执行异步操作
+    let z_session = zenoh::open(z_config)
+        .res()
+        .await
+        .map_err(|e| eyre!("❌ Zenoh 会话打开失败: {}", e))?;
+    
+    // 3. 声明 Zenoh 发布者 (Publisher)
+    let 发布主题 = "fsd/spinal_cord/cmd_vel";
+    let publisher = z_session
+        .declare_publisher(发布主题)
+        .res()
+        .await
+        .map_err(|e| eyre!("❌ Zenoh 发布者声明失败: {}", e))?;
+        
+    println!("✅ [神经通路] 物理并网连接成功！下发通道 -> 主题 [{}]", 发布主题);
+
+    // 4. 异步事件驱动循环
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, data, .. } => {
+                if id.as_str() == "cmd" {
+                    // ---------------------------------------------------------
+                    // [阶段 A]：从 DORA 零拷贝提取 Arrow 浮点数组
+                    // ---------------------------------------------------------
+                    let 控制量: Vec<f32> = into_vec(&data).context("❌ Arrow 数组解析失败")?;
+                    if 控制量.len() < 2 {
+                        eprintln!("⚠️ 接收到的控制指令长度不足 2");
+                        continue;
+                    }
+
+                    let 指令 = 运动指令 {
+                        v: 控制量[0],
+                        w: 控制量[1],
+                    };
+
+                    // ---------------------------------------------------------
+                    // [阶段 B]：极致压缩序列化 (Postcard)
+                    // ---------------------------------------------------------
+                    let 序列化字节 = postcard::to_allocvec(&指令).context("❌ Postcard 序列化失败")?;
+
+                    // ---------------------------------------------------------
+                    // [阶段 C]：通过 Zenoh 下发至 ESP32-C6 脊髓
+                    // ---------------------------------------------------------
+                    publisher
+                        .put(序列化字节)
+                        .res()
+                        .await
+                        .map_err(|e| eyre!("❌ Zenoh 消息发送失败: {}", e))?;
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [神经通路] 接收到 DORA 停止信号，安全关闭 Zenoh 桥接器...");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // ---------------------------------------------------------
+    // [阶段 D]：优雅退出与生命周期安全回收
+    // ---------------------------------------------------------
+    drop(publisher);
+
+    z_session
+        .close()
+        .res()
+        .await
+        .map_err(|e| eyre!("❌ Zenoh 会话关闭异常: {}", e))?;
+        
+    println!("🔌 [神经通路] 会话已安全释放，并网网关优雅退出。");
+    Ok(())
+}
+</file>
+
+<file path="core-control/src/ffi.rs">
+#![allow(non_camel_case_types)]
+use libc::{c_char, c_int, c_void};
+
+/// 🛡️ 不透明结构体：代表 acados 内部的求解器内存胶囊
+#[repr(C)]
+pub struct diff_drive_car_solver_capsule {
+    _unused: [u8; 0],
+}
+
+// 声明外部 C 函数符号
+extern "C" {
+    // 生命周期管理 (现代 Acados API 契约)
+    pub fn diff_drive_car_acados_create_capsule() -> *mut diff_drive_car_solver_capsule;
+    pub fn diff_drive_car_acados_create(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_solve(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free_capsule(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+
+    // 内部组件指针获取
+    pub fn diff_drive_car_acados_get_nlp_in(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_out(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_config(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_dims(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+
+    // 通用数据注入与提取算子
+    pub fn ocp_nlp_in_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    // 🛡️ 架构师 2026 SOTA 修正：现代 Acados 强制将约束与代价函数设置隔离为专用函数，废除万能的 in_set
+    pub fn ocp_nlp_constraints_model_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        nlp_out: *mut c_void, 
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    pub fn ocp_nlp_cost_model_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    pub fn ocp_nlp_out_get(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_out: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ); 
+}
+</file>
+
+<file path="core-control/src/solver.rs">
+use super::ffi::*;
+use std::ffi::CString;
+use std::os::raw::c_void;
+
+/// 🛡️ 规控大脑：NMPC 求解器安全封装金库
+/// 彻底隔离 C 语言的裸指针，对外提供 100% 内存安全的 Rust 接口
+pub struct 预测控制求解器 {
+    capsule: *mut diff_drive_car_solver_capsule,
+}
+
+// 🛡️ 架构师指令：显式声明线程安全。
+// 只要我们保证在 Rust 层以 `&mut self` 独占借用的方式调用，C 求解器在多线程间传递就是安全的。
+unsafe impl Send for 预测控制求解器 {}
+
+impl 预测控制求解器 {
+    /// 构造函数：在堆内存中分配 C 求解器
+    pub fn new() -> Result<Self, String> {
+        // 1. 分配物理内存胶囊
+        let capsule = unsafe { diff_drive_car_acados_create_capsule() };
+        if capsule.is_null() {
+            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！".to_string());
+        }
+        
+        // 2. 执行内部矩阵与求解器初始化
+        let status = unsafe { diff_drive_car_acados_create(capsule) };
+        if status != 0 {
+            // 初始化失败时，必须手动释放刚刚分配的胶囊，防止内存泄漏
+            unsafe { diff_drive_car_acados_free_capsule(capsule); }
+            return Err(format!("❌ NMPC 求解器内部初始化失败，状态码: {}", status));
+        }
+        
+        Ok(Self { capsule })
+    }
+
+    /// 注入当前物理状态 (对应 Python 中的 lbx, ubx)
+    pub fn 设置当前状态(&mut self, x: f64, y: f64, yaw: f64, v: f64) -> Result<(), String> {
+        let state = [x, y, yaw, v];
+        let field_lbx = CString::new("lbx").unwrap();
+        let field_ubx = CString::new("ubx").unwrap();
+        
+        unsafe {
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule); // 🛡️ SOTA 修正：获取 nlp_out 句柄 [cite: 3.1.6]
+
+            // 🛡️ 架构师 2026 SOTA 修正：传入 7 个完备参数（新增 nlp_out），彻底根治由栈破坏引起的 SIGSEGV 段错误！
+            let status_lbx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
+            let status_ubx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
+
+            if status_lbx != 0 || status_ubx != 0 {
+                return Err("❌ NMPC 初始状态 (x0) 注入失败！".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// 注入未来预测步的参考轨迹点 (对应 Python 中的 yref)
+    pub fn 设置参考轨迹点(&mut self, 预测步: i32, ref_x: f64, ref_y: f64, ref_yaw: f64, ref_v: f64) -> Result<(), String> {
+        let field_yref = CString::new("yref").unwrap();
+        
+        unsafe {
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+
+            // 🛡️ 架构师 2026 SOTA 修正：设置参考代价函数 yref 必须使用 ocp_nlp_cost_model_set
+            let status = if 预测步 == 20 { 
+                // 终端步 (Terminal Stage): ny_e = 4
+                let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
+                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
+            } else {
+                // 中间步 (Intermediate Stage): ny = 6 (补齐 a 和 omega 的参考值 0.0)
+                let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
+                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
+            };
+
+            if status != 0 {
+                return Err(format!("❌ NMPC 第 {} 步参考轨迹注入失败！", 预测步));
+            }
+        }
+        Ok(())
+    }
+
+    /// 执行 RTI-SQP 求解，并返回平滑处理后的 (线速度, 角速度)
+    pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
+        unsafe {
+            let status = diff_drive_car_acados_solve(self.capsule);
+            if status != 0 {
+                return Err(format!("⚠️ NMPC 求解器发散或失败，状态码: {}", status));
+            }
+
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
+
+            let field_u = CString::new("u").unwrap();
+            let mut u_opt = [0.0f64; 2]; // [a, omega]
+
+            ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
+
+            let a_opt = u_opt[0];
+            let w_cmd_raw = u_opt[1];
+
+            // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
+            let mut v_cmd = 当前线速度 + a_opt * 0.01;
+            if v_cmd < 0.0 { v_cmd = 0.0; } // 限制不能倒车
+            if v_cmd > 0.3 { v_cmd = 0.3; } // 最大速度限制
+
+            // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
+            let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);
+
+            Ok((v_cmd, w_cmd))
+        }
+    }
+}
+
+// 🛡️ 内存守卫：RAII 机制。当 `预测控制求解器` 离开作用域时，自动调用 C 语言的 free 释放内存，彻底杜绝内存泄漏！
+impl Drop for 预测控制求解器 {
+    fn drop(&mut self) {
+        unsafe {
+            // 必须严格按照逆序释放：先释放内部矩阵，再释放胶囊本身
+            diff_drive_car_acados_free(self.capsule);
+            diff_drive_car_acados_free_capsule(self.capsule);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nmpc_solver_lifecycle_and_compute() {
+        println!("🛡️ [单测启动] 正在测试 NMPC 求解器 C FFI 边界...");
+        
+        // 1. 测试内存胶囊分配 (如果 C 动态库链接失败，这里会直接 panic)
+        let mut solver = 预测控制求解器::new().expect("❌ 求解器初始化失败，请检查 C 动态库链接！");
+        println!("✅ 求解器内存胶囊分配成功！");
+
+        // 2. 测试状态注入 (温启动：当前处于原点，静止)
+        solver.设置当前状态(0.0, 0.0, 0.0, 0.0).expect("❌ 初始状态注入失败");
+        println!("✅ 初始状态注入成功！");
+
+        // 3. 测试参考轨迹注入 (预测步长 N=20)
+        for k in 0..=20 {
+            // 假设目标在正前方 1.0 米处，期望线速度 0.3 m/s
+            solver.设置参考轨迹点(k, 1.0, 0.0, 0.0, 0.3).expect(&format!("❌ 第 {} 步参考轨迹注入失败", k));
+        }
+        println!("✅ 参考轨迹注入成功！");
+
+        // 4. 测试核心求解算子
+        let (v_cmd, w_cmd) = solver.求解最优控制量(0.0).expect("❌ NMPC 求解失败");
+        println!("✅ 求解成功！输出控制量 -> 线速度: {:.3} m/s, 角速度: {:.3} rad/s", v_cmd, w_cmd);
+
+        // 5. 物理主权断言：确保输出严格遵守我们在 generate_solver.py 中定义的硬约束
+        assert!(v_cmd >= 0.0 && v_cmd <= 0.3, "线速度超限！");
+        assert!(w_cmd >= -0.6 && w_cmd <= 0.6, "角速度超限！");
+        
+        // 6. 隐式测试：当 `solver` 离开此作用域时，Rust 会自动调用 Drop trait。
+        // 如果 C 侧的 free 逻辑有误，这里会触发段错误 (Segmentation Fault)。
+        println!("✅ 测试结束，准备安全释放 C 语言内存胶囊...");
+    }
+}
+</file>
+
+<file path="core-control/Cargo.toml">
+[package]
+name = "core-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 继承自根目录 Workspace 的统一定义
+opencv = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
+
+# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
+dora-node-api = "0.3.3"
+# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
+eyre = "0.6"
+
+# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
+chrono = "=0.4.39"
+
+# 🛡️ 新增：引入感知引擎，实现快系统闭环
+core-perception = { path = "../core-perception" }
+
+[build-dependencies]
+cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
+</file>
+
+<file path="core-decision/Cargo.toml">
+[package]
+name = "core-decision"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zenoh = { workspace = true }
+
+# 🛡️ 新增：并网所需的视觉与通信底座
+opencv = { workspace = true }
+dora-node-api = "0.3.3"
+eyre = "0.6"
+core-perception = { path = "../core-perception" }
+</file>
+
+<file path="showcase/Cargo.toml">
+[package]
+name = "showcase"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 继承自根目录 Workspace 的其她依赖
+opencv = { workspace = true }
+ort = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+zenoh = { workspace = true }
+postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
+
+# 核心并网：引入感知引擎包与决策大脑包
+core-perception = { path = "../core-perception" }
+core-decision = { path = "../core-decision" }     # 🛡️ 新增：决策大脑包引用
+
+# 🛡️ 显式契约绑定：配置四个独立的一键启动展示大屏
+[[bin]]
+name = "demo_xfeat"
+path = "src/bin/demo_xfeat.rs"
+
+[[bin]]
+name = "demo_frog"
+path = "src/bin/demo_frog.rs"
+</file>
+
 <file path="simulation-env/generate_solver.py">
 # generate_solver.py
 # generate_solver.py
@@ -2034,6 +2358,193 @@ def generate_nmpc_solver():
 if __name__ == "__main__":
     generate_nmpc_solver()
     print("====== acados C代码求解器生成并编译成功！ ======")
+</file>
+
+<file path="simulation-env/isaac_dora_node.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+=================================================================
+🛡️ FSD-car V3.0: 虚拟物理界 (The Matrix) - Isaac Sim DORA 极速接入点
+架构哲学: CPU SHM 零拷贝 | GPU CUDA IPC 显存直通 | 物理引擎降级自愈
+=================================================================
+"""
+
+import time
+
+import numpy as np
+import pyarrow as pa
+from dora import Node
+
+# ---------------------------------------------------------------------------
+# 🛡️ 架构师自愈设计：自动探针检测 Isaac Sim 物理界与 CUDA 算力环境
+# ---------------------------------------------------------------------------
+try:
+    from omni.isaac.core import World
+    from omni.isaac.sensor import Camera
+
+    ISAAC_SIM_AVAILABLE = True
+    print("✅ [物理主权] 检测到 NVIDIA Isaac Sim 环境，已挂载物理法则引擎！")
+except ImportError:
+    ISAAC_SIM_AVAILABLE = False
+    print("⚠️ [降级自愈] 未检测到 Isaac Sim 环境，已切换为高性能 Mock 视频流发生器！")
+
+try:
+    import dora.cuda
+    import torch
+
+    CUDA_AVAILABLE = torch.cuda.is_available()
+    if CUDA_AVAILABLE:
+        print(
+            f"⚡ [显存主权] 检测到 CUDA GPU 算力就绪: {torch.cuda.get_device_name(0)}"
+        )
+    else:
+        print("ℹ️ [显存主权] 未检测到可用 GPU，通信管道锁定为极速 CPU 共享内存 (SHM)")
+except ImportError:
+    CUDA_AVAILABLE = False
+    print(
+        "ℹ️ [显存主权] 未安装 PyTorch/dora.cuda，通信管道锁定为极速 CPU 共享内存 (SHM)"
+    )
+
+
+class 虚拟物理界代理:
+    def __init__(self, use_gpu_pipeline: bool = False):
+        # 1. 初始化 DORA 节点契约
+        self.node = Node()
+
+        # 2. 对齐物理相机分辨率 (70° FOV 广角单目)
+        self.宽度 = 640
+        self.高度 = 480
+        self.通道数 = 3
+
+        # 3. 决定是否启用 GPU 显存直通通路 (Sim-to-Real SOTA)
+        self.启用GPU直通 = use_gpu_pipeline and CUDA_AVAILABLE
+
+        # 4. 仿真环境初始化
+        if ISAAC_SIM_AVAILABLE:
+            self.world = World()
+            self.camera = Camera(
+                prim_path="/World/Car/front_camera",
+                resolution=(self.宽度, self.高度),
+            )
+            self.world.reset()
+        else:
+            self.帧计数器 = 0
+            # 预分配 Mock 背景缓冲区，避免在 30Hz 循环中重复分配内存
+            self.mock_canvas = np.zeros(
+                (self.高度, self.宽度, self.通道数), dtype=np.uint8
+            )
+
+    def 获取物理视网膜帧(self) -> np.ndarray:
+        """
+        获取当前物理世界的 RGB 渲染帧 (支持物理引擎与降级 Mock)
+        """
+        if ISAAC_SIM_AVAILABLE:
+            self.world.step(render=True)
+            rgba_image = self.camera.get_rgba()
+            return rgba_image[:, :, :3].astype(np.uint8)
+        else:
+            # 🛡️ 降级自愈：在预分配的画布上生成高速移动彩色条纹 (模拟小车行进)
+            self.帧计数器 += 1
+            偏移量 = (self.帧计数器 * 5) % self.宽度
+
+            # 清空画布 (高吞吐原地操作，绝不 malloc)
+            self.mock_canvas.fill(0)
+
+            # 绘制高对比度物理地标 (模拟 XFeat 纠偏和青蛙眼避障站牌)
+            self.mock_canvas[:, 偏移量 : 偏移量 + 50] = [255, 0, 0]  # 红色站牌 (R)
+            self.mock_canvas[
+                :, (偏移量 + 200) % self.宽度 : (偏移量 + 250) % self.宽度
+            ] = [0, 255, 0]  # 绿色站牌 (G)
+            self.mock_canvas[
+                :, (偏移量 + 400) % self.宽度 : (偏移量 + 450) % self.宽度
+            ] = [0, 0, 255]  # 蓝色站牌 (B)
+
+            # 物理 30Hz 节奏补偿
+            time.sleep(0.033)
+            return self.mock_canvas
+
+    def 驱动物理底盘(self, v: float, w: float):
+        """
+        神经反馈底盘执行器
+        """
+        if ISAAC_SIM_AVAILABLE:
+            # 此处用于转换轮速并写入 Isaac Sim ArticulationController
+            pass
+        else:
+            if self.帧计数器 % 30 == 0:
+                print(
+                    f"🏎️ [底盘执行器] 接收到 Rust 规控指令 -> 线速度: {v:.3f} m/s, 角速度: {w:.3f} rad/s"
+                )
+
+    def 启动生命循环(self):
+        print("🚀 虚拟物理界代理已启动，正在向 DORA 共享内存注入物理法则...")
+        if self.启用GPU直通:
+            print("🚀 [管道状态] 开启: NVIDIA PyTorch GPU CUDA IPC 显存直通")
+        else:
+            print("🚀 [管道状态] 开启: Apache Arrow CPU Shared Memory (SHM) 零拷贝")
+
+        try:
+            while True:
+                # ---------------------------------------------------------
+                # 1. 视网膜捕获与零拷贝注入 (The Output Path)
+                # ---------------------------------------------------------
+                rgb_frame = self.获取物理视网膜帧()
+
+                if self.启用GPU直通:
+                    # 🛡️ 显存直通 SOTA：将 numpy 转换为 PyTorch GPU Tensor
+                    # 并提取 CUDA IPC 句柄，数据留在显卡，传输开销为 0 纳秒！
+                    gpu_tensor = torch.as_tensor(rgb_frame, device="cuda")
+                    ipc_buffer, metadata = dora.cuda.torch_to_ipc_buffer(gpu_tensor)
+
+                    self.node.send_output(
+                        output_id="camera_rgb", data=ipc_buffer, metadata=metadata
+                    )
+                else:
+                    # 🛡️ CPU 零拷贝优化：直接通过 NumPy 缓冲区协议创建连续的一维 Arrow 数组
+                    # 绕过了 Python 层面的逐元素列表转换，配合 DORA 的 Zenoh SHM 实现内存级零拷贝！
+                    flat_frame = rgb_frame.reshape(-1)  # 共享相同底层内存视图
+                    arrow_array = pa.Array.from_buffers(
+                        pa.uint8(), len(flat_frame), [None, pa.py_buffer(flat_frame)]
+                    )
+
+                    self.node.send_output(
+                        output_id="camera_rgb",
+                        data=arrow_array,
+                        metadata={
+                            "width": self.宽度,
+                            "height": self.高度,
+                            "channels": self.通道数,
+                            "encoding": "bgr8",
+                        },
+                    )
+
+                # ---------------------------------------------------------
+                # 2. 神经反射弧监听 (The Input Path)
+                # ---------------------------------------------------------
+                # 设置 1ms 超时非阻塞，绝不卡死 30Hz 物理渲染
+                event = self.node.next(timeout=0.001)
+
+                if event is not None:
+                    if event["type"] == "INPUT" and event["id"] == "control_cmd":
+                        cmd_array = event["value"].to_numpy()
+                        if len(cmd_array) >= 2:
+                            v, w = cmd_array[0], cmd_array[1]
+                            self.驱动物理底盘(v, w)
+
+                    elif event["type"] == "STOP":
+                        print("🛑 接收到 DORA 全局停止指令，安全关闭物理引擎...")
+                        break
+
+        except KeyboardInterrupt:
+            print("\n🛑 用户手动中断，安全退出...")
+
+
+if __name__ == "__main__":
+    # 如果要强行测试 GPU 显存直通，可以在实例化时传入 True
+    代理 = 虚拟物理界代理(use_gpu_pipeline=False)
+    代理.启动生命循环()
 </file>
 
 <file path="simulation-env/mujoco_nmpc_run.py">
@@ -2485,675 +2996,6 @@ time.sleep(0.5)
 print("\n🏆 [仿真安全退出] 数据已写入: nmpc_telemetry.log\n")
 </file>
 
-<file path="simulation-env/network_check.py">
-import socket
-import urllib.request
-import urllib.error
-import subprocess
-
-print("==============================================")
-print("     WSL2 物理网络 & DNS 域名解析 诊断工具")
-print("==============================================")
-
-# 1. 检查底层网络（直接用IP连接，绕过DNS）
-print("【第一步】测试物理网络连接 (Ping 微软公共DNS)...", end="")
-try:
-    # 8.8.8.8 是谷歌的公共DNS，114.114.114.114 是国内公共DNS
-    result = subprocess.run(["ping", "-c", "2", "-W", "2", "114.114.114.114"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode == 0:
-        print(" 成功 (物理网络是通的)")
-    else:
-        print(" 失败 (物理网络不通，可能是Windows防火墙或网卡问题)")
-except Exception as e:
-    print(f" 失败 ({e})")
-
-# 2. 检查 DNS 域名解析
-print("【第二步】测试域名解析 (百度)...", end="")
-try:
-    socket.gethostbyname("www.baidu.com")
-    print(" 成功 (DNS工作正常)")
-except Exception as e:
-    print(f" 失败 ({e}) -> 说明WSL2不认识网址，通常需要修改 /etc/resolv.conf")
-
-# 3. 检查微软更新服务器（code . 报错的关键原因）
-print("【第三步】测试连接 VS Code 服务器...", end="")
-try:
-    urllib.request.urlopen("https://update.code.visualstudio.com", timeout=4)
-    print(" 成功 (可以正常连接微软，应能打开 code)")
-except Exception as e:
-    print(f" 失败 ({e}) -> 无法下载VS Code Server")
-
-# 4. 检查 GitHub 连接（git clone 报错的原因）
-print("【第四步】测试连接 GitHub...", end="")
-try:
-    urllib.request.urlopen("https://github.com", timeout=4)
-    print(" 成功 (可以正常拉取 acados)")
-except Exception as e:
-    print(f" 失败 ({e}) -> 连接GitHub超时，国内网络环境常见，需要配置代理")
-
-print("==============================================")
-</file>
-
-<file path="simulation-env/nmpc_model.py">
-# nmpc_model.py
-from acados_template import AcadosModel
-import casadi as ca
-
-def setup_car_model():
-    model_name = "diff_drive_car"
-
-    # 1. 定义系统状态量 (States)
-    # x: X轴位置, y: Y轴位置, theta: 航向角, v: 前进线速度 [cite: 21]
-    x = ca.MX.sym('x')
-    y = ca.MX.sym('y')
-    theta = ca.MX.sym('theta')
-    v = ca.MX.sym('v')
-    states = ca.vcat([x, y, theta, v])
-
-    # 2. 定义控制输入量 (Controls)
-    # a: 前进加速度, omega: 旋转角速度
-    a = ca.MX.sym('a')
-    omega = ca.MX.sym('omega')
-    controls = ca.vcat([a, omega])
-
-    # 3. 定义状态导数 (State derivatives for ODE)
-    x_dot = ca.MX.sym('x_dot')
-    y_dot = ca.MX.sym('y_dot')
-    theta_dot = ca.MX.sym('theta_dot')
-    v_dot = ca.MX.sym('v_dot')
-    states_dot = ca.vcat([x_dot, y_dot, theta_dot, v_dot])
-
-    # 4. 连续时间非线性动力学方程 (连续常微分方程) [cite: 21]
-    f_expl = ca.vcat([
-        v * ca.cos(theta),
-        v * ca.sin(theta),
-        omega,
-        a
-    ])
-
-    # 5. 组装 acados 模型对象
-    model = AcadosModel()
-    model.f_impl_expr = states_dot - f_expl # 隐式表达式
-    model.f_expl_expr = f_expl             # 显式表达式
-    model.x = states
-    model.xdot = states_dot
-    model.u = controls
-    model.name = model_name
-
-    return model
-</file>
-
-<file path="simulation-env/probe_proxy.py">
-import os
-import sys
-
-print("==================================================")
-print("      WSL2 代理设置深度排查探针 (2026)")
-print("==================================================")
-
-# 1. 检查当前活跃的代理环境变量
-print("\n[1] 当前生效的代理环境变量:")
-proxy_vars = {k: v for k, v in os.environ.items() if 'proxy' in k.lower()}
-if proxy_vars:
-    for k, v in proxy_vars.items():
-        print(f"  {k} = {v}")
-else:
-    print("  没有检测到活跃的代理环境变量。")
-
-# 2. 扫描常见的系统和用户启动配置文件
-print("\n[2] 开始扫描常见启动配置文件...")
-targets = [
-    '~/.bashrc', '~/.zshrc', '~/.profile', '~/.bash_profile', 
-    '~/.bash_login', '~/.zshenv', '~/.zprofile', '~/.zlogin',
-    '/etc/profile', '/etc/environment', '/etc/bash.bashrc',
-    '/etc/resolv.conf'
-]
-
-found_any = False
-for t in targets:
-    path = os.path.expanduser(t)
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', errors='ignore') as f:
-                content = f.read()
-                if "192.168.3.11" in content or "代理已开启" in content:
-                    print(f"  🚩 发现可疑配置在: {t}")
-                    lines = content.split('\n')
-                    for i, line in enumerate(lines):
-                        if "192.168.3.11" in line or "代理已开启" in line:
-                            print(f"    第 {i+1} 行: {line.strip()}")
-                    found_any = True
-        except Exception as e:
-            pass
-
-# 3. 深度递归扫描家目录下的隐藏脚本（过滤掉大文件目录如 conda）
-print("\n[3] 深度递归扫描家目录下的隐藏脚本与插件...")
-home_dir = os.path.expanduser('~')
-# 忽略掉不可能有代理脚本的巨大目录，防止卡死
-ignore_dirs = ['miniconda3', '.cache', '.git', '.conda', 'node_modules', 'workspace', 'FSD-car', 'nlp_TC_Encoder', 'lejepa-mvp']
-
-for root, dirs, files in os.walk(home_dir):
-    # 动态裁剪忽略目录
-    dirs[:] = [d for d in dirs if d not in ignore_dirs]
-    
-    for file in files:
-        # 只扫描脚本文件、隐藏文件、以及无后缀文件
-        if file.endswith('.sh') or file.startswith('.') or '.' not in file:
-            file_path = os.path.join(root, file)
-            try:
-                with open(file_path, 'r', errors='ignore') as f:
-                    content = f.read()
-                    if "192.168.3.11" in content or "代理已开启" in content:
-                        rel_path = os.path.relpath(file_path, home_dir)
-                        print(f"  🚩 发现可疑脚本在: ~/{rel_path}")
-                        lines = content.split('\n')
-                        for i, line in enumerate(lines):
-                            if "192.168.3.11" in line or "代理已开启" in line:
-                                print(f"    第 {i+1} 行: {line.strip()}")
-                        found_any = True
-            except:
-                pass
-
-if not found_any:
-    print("  ❌ 未能在任何配置文件中找到包含 '192.168.3.11' 或 '代理已开启' 的代码。")
-    print("  提示：请检查你是否在 Windows 端的控制台或全局系统变量里设置了代理穿透。")
-print("\n==================================================")
-</file>
-
-<file path="core-control/src/bin/fast_brain_node.rs">
-use dora_node_api::arrow::array::Float32Array;
-use core_control::预测控制求解器;
-use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
-use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
-use eyre::{eyre, Context};
-use opencv::core::{Mat, CV_8UC3};
-use std::ffi::c_void;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::time::Duration;
-
-/// 🛡️ 状态金库：跨线程无锁/轻量锁共享的执行上下文
-struct 执行上下文 {
-    pub 物理主权已初始化: bool,
-    pub 期望_x: f64,
-    pub 期望_y: f64,
-    pub 当前线速度: f64,
-}
-
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
-
-    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
-    let (mut node, mut events) = DoraNode::init_from_env()?;
-
-    // 2. 初始化状态金库 (Arc + RwLock 保证多读单写并发安全)
-    let 状态金库 = Arc::new(RwLock::new(执行上下文 {
-        物理主权已初始化: false,
-        期望_x: 0.3,
-        期望_y: 0.0,
-        当前线速度: 0.0,
-    }));
-
-    let 金库_规控 = 状态金库.clone();
-
-    // ---------------------------------------------------------
-    // [阶段 A]：规控节拍器 (The Control Loop - 100Hz 绝对物理时钟)
-    // ---------------------------------------------------------
-    let 规控句柄 = tokio::spawn(async move {
-        let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
-        let mut 求解器已就绪 = false;
-        
-        // 🛡️ 架构师指令：强制 100Hz (10ms) 物理时钟，彻底斩断与摄像头帧率的耦合！
-        let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
-        
-        loop {
-            节拍器.tick().await;
-            
-            // 1. 极速读取状态金库 (读写锁，读操作极快)
-            let (已初始化, 期望_x, 期望_y, 当前线速度) = {
-                let lock = 金库_规控.read().await;
-                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度)
-            };
-
-            if !已初始化 {
-                continue;
-            }
-
-            // 2. 求解器温启动 (仅执行一次)
-            if !求解器已就绪 {
-                规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0).unwrap();
-                求解器已就绪 = true;
-                println!("✅ [快系统] NMPC 求解器温启动完成，进入 100Hz 极速控制环");
-            }
-
-            // 3. 注入最新的参考轨迹偏移
-            for k in 0..=20 {
-                规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3).unwrap();
-            }
-            
-            // 4. 求解最优控制量 (基于严格的 10ms dt)
-            match 规控大脑.求解最优控制量(当前线速度) {
-                Ok((线速度_v, 角速度_w)) => {
-                    // 更新金库中的线速度，供下一次积分使用
-                    {
-                        let mut lock = 金库_规控.write().await;
-                        lock.当前线速度 = 线速度_v;
-                    }
-
-                    // 5. 零拷贝输出指令
-                    let 运动指令 = Float32Array::from(vec![线速度_v as f32, 角速度_w as f32]);
-                    if let Err(e) = node.send_output(
-                        "control_cmd".to_string().into(),
-                        MetadataParameters::default(),
-                        运动指令,
-                    ) {
-                        eprintln!("❌ 控制指令发送失败: {}", e);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("⚠️ NMPC 求解发散或异常: {}", e);
-                }
-            }
-        }
-    });
-
-    // ---------------------------------------------------------
-    // [阶段 B]：神经反射弧 (The Event Loop - 30Hz 视觉感知)
-    // ---------------------------------------------------------
-    let mut 青蛙眼 = 仿生青蛙眼::new();
-
-    // 🛡️ 架构师修正：使用 recv_async().await 彻底释放 Tokio 线程池，避免阻塞
-    while let Some(event) = events.recv_async().await {
-        match event {
-            Event::Input { id, metadata, data } => {
-                if id.as_str() == "image" {
-                    let 宽度 = match metadata.parameters.get("width") {
-                        Some(Parameter::Integer(val)) => *val as i32,
-                        _ => 640,
-                    };
-                    let 高度 = match metadata.parameters.get("height") {
-                        Some(Parameter::Integer(val)) => *val as i32,
-                        _ => 480,
-                    };
-
-                    // 检查并初始化物理主权
-                    let 需要初始化 = {
-                        let lock = 状态金库.read().await;
-                        !lock.物理主权已初始化
-                    };
-
-                    if 需要初始化 {
-                        青蛙眼.初始化(宽度, 高度).map_err(|e| eyre!(e))?;
-                        let mut lock = 状态金库.write().await;
-                        lock.物理主权已初始化 = true;
-                        println!("✅ [快系统] 感受野初始化完成 ({}x{})", 宽度, 高度);
-                    }
-
-                    // 物理级零拷贝 (Arrow -> OpenCV Mat)
-                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转 &[u8] 失败")?;
-                    let 视网膜帧 = unsafe {
-                        Mat::new_rows_cols_with_data_unsafe(
-                            高度,
-                            宽度,
-                            CV_8UC3,
-                            裸内存切片.as_ptr() as *mut c_void,
-                            opencv::core::Mat_AUTO_STEP,
-                        ).context("❌ OpenCV Mat 映射失败")?
-                    };
-
-                    // 仿生感知解算
-                    let 势场 = 青蛙眼.处理图像帧(&视网膜帧, 0.0).map_err(|e| eyre!(e))?;
-
-                    // 将势场梯度转化为 NMPC 参考轨迹偏移，并写入状态金库
-                    let mut lock = 状态金库.write().await;
-                    lock.期望_x = 0.3 + 势场.逃逸方向.0 as f64;
-                    lock.期望_y = 0.0 + 势场.逃逸方向.1 as f64;
-                }
-            }
-            Event::Stop(_) => {
-                println!("🛑 [快系统] 接收到 DORA 全局停止信号，安全释放 C 语言内存胶囊并退出...");
-                break;
-            }
-            _ => {} 
-        }
-    }
-    
-    // 优雅终止规控节拍器
-    规控句柄.abort();
-    Ok(())
-}
-</file>
-
-<file path="core-control/Cargo.toml">
-[package]
-name = "core-control"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 继承自根目录 Workspace 的统一定义
-opencv = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
-
-# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
-dora-node-api = "0.3.3"
-# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
-eyre = "0.6"
-
-# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
-chrono = "=0.4.39"
-
-# 🛡️ 新增：引入感知引擎，实现快系统闭环
-core-perception = { path = "../core-perception" }
-
-[build-dependencies]
-cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
-</file>
-
-<file path="core-decision/Cargo.toml">
-[package]
-name = "core-decision"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-zenoh = { workspace = true }
-
-# 🛡️ 新增：并网所需的视觉与通信底座
-opencv = { workspace = true }
-dora-node-api = "0.3.3"
-eyre = "0.6"
-core-perception = { path = "../core-perception" }
-</file>
-
-<file path="showcase/Cargo.toml">
-[package]
-name = "showcase"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 继承自根目录 Workspace 的其她依赖
-opencv = { workspace = true }
-ort = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-zenoh = { workspace = true }
-postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
-
-# 核心并网：引入感知引擎包与决策大脑包
-core-perception = { path = "../core-perception" }
-core-decision = { path = "../core-decision" }     # 🛡️ 新增：决策大脑包引用
-
-# 🛡️ 显式契约绑定：配置四个独立的一键启动展示大屏
-[[bin]]
-name = "demo_xfeat"
-path = "src/bin/demo_xfeat.rs"
-
-[[bin]]
-name = "demo_frog"
-path = "src/bin/demo_frog.rs"
-</file>
-
-<file path="simulation-env/isaac_dora_node.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-=================================================================
-🛡️ FSD-car V3.0: 虚拟物理界 (The Matrix) - Isaac Sim DORA 极速接入点
-架构哲学: CPU SHM 零拷贝 | GPU CUDA IPC 显存直通 | 物理引擎降级自愈
-=================================================================
-"""
-
-import time
-
-import numpy as np
-import pyarrow as pa
-from dora import Node
-
-# ---------------------------------------------------------------------------
-# 🛡️ 架构师自愈设计：自动探针检测 Isaac Sim 物理界与 CUDA 算力环境
-# ---------------------------------------------------------------------------
-try:
-    from omni.isaac.core import World
-    from omni.isaac.sensor import Camera
-
-    ISAAC_SIM_AVAILABLE = True
-    print("✅ [物理主权] 检测到 NVIDIA Isaac Sim 环境，已挂载物理法则引擎！")
-except ImportError:
-    ISAAC_SIM_AVAILABLE = False
-    print("⚠️ [降级自愈] 未检测到 Isaac Sim 环境，已切换为高性能 Mock 视频流发生器！")
-
-try:
-    import dora.cuda
-    import torch
-
-    CUDA_AVAILABLE = torch.cuda.is_available()
-    if CUDA_AVAILABLE:
-        print(
-            f"⚡ [显存主权] 检测到 CUDA GPU 算力就绪: {torch.cuda.get_device_name(0)}"
-        )
-    else:
-        print("ℹ️ [显存主权] 未检测到可用 GPU，通信管道锁定为极速 CPU 共享内存 (SHM)")
-except ImportError:
-    CUDA_AVAILABLE = False
-    print(
-        "ℹ️ [显存主权] 未安装 PyTorch/dora.cuda，通信管道锁定为极速 CPU 共享内存 (SHM)"
-    )
-
-
-class 虚拟物理界代理:
-    def __init__(self, use_gpu_pipeline: bool = False):
-        # 1. 初始化 DORA 节点契约
-        self.node = Node()
-
-        # 2. 对齐物理相机分辨率 (70° FOV 广角单目)
-        self.宽度 = 640
-        self.高度 = 480
-        self.通道数 = 3
-
-        # 3. 决定是否启用 GPU 显存直通通路 (Sim-to-Real SOTA)
-        self.启用GPU直通 = use_gpu_pipeline and CUDA_AVAILABLE
-
-        # 4. 仿真环境初始化
-        if ISAAC_SIM_AVAILABLE:
-            self.world = World()
-            self.camera = Camera(
-                prim_path="/World/Car/front_camera",
-                resolution=(self.宽度, self.高度),
-            )
-            self.world.reset()
-        else:
-            self.帧计数器 = 0
-            # 预分配 Mock 背景缓冲区，避免在 30Hz 循环中重复分配内存
-            self.mock_canvas = np.zeros(
-                (self.高度, self.宽度, self.通道数), dtype=np.uint8
-            )
-
-    def 获取物理视网膜帧(self) -> np.ndarray:
-        """
-        获取当前物理世界的 RGB 渲染帧 (支持物理引擎与降级 Mock)
-        """
-        if ISAAC_SIM_AVAILABLE:
-            self.world.step(render=True)
-            rgba_image = self.camera.get_rgba()
-            return rgba_image[:, :, :3].astype(np.uint8)
-        else:
-            # 🛡️ 降级自愈：在预分配的画布上生成高速移动彩色条纹 (模拟小车行进)
-            self.帧计数器 += 1
-            偏移量 = (self.帧计数器 * 5) % self.宽度
-
-            # 清空画布 (高吞吐原地操作，绝不 malloc)
-            self.mock_canvas.fill(0)
-
-            # 绘制高对比度物理地标 (模拟 XFeat 纠偏和青蛙眼避障站牌)
-            self.mock_canvas[:, 偏移量 : 偏移量 + 50] = [255, 0, 0]  # 红色站牌 (R)
-            self.mock_canvas[
-                :, (偏移量 + 200) % self.宽度 : (偏移量 + 250) % self.宽度
-            ] = [0, 255, 0]  # 绿色站牌 (G)
-            self.mock_canvas[
-                :, (偏移量 + 400) % self.宽度 : (偏移量 + 450) % self.宽度
-            ] = [0, 0, 255]  # 蓝色站牌 (B)
-
-            # 物理 30Hz 节奏补偿
-            time.sleep(0.033)
-            return self.mock_canvas
-
-    def 驱动物理底盘(self, v: float, w: float):
-        """
-        神经反馈底盘执行器
-        """
-        if ISAAC_SIM_AVAILABLE:
-            # 此处用于转换轮速并写入 Isaac Sim ArticulationController
-            pass
-        else:
-            if self.帧计数器 % 30 == 0:
-                print(
-                    f"🏎️ [底盘执行器] 接收到 Rust 规控指令 -> 线速度: {v:.3f} m/s, 角速度: {w:.3f} rad/s"
-                )
-
-    def 启动生命循环(self):
-        print("🚀 虚拟物理界代理已启动，正在向 DORA 共享内存注入物理法则...")
-        if self.启用GPU直通:
-            print("🚀 [管道状态] 开启: NVIDIA PyTorch GPU CUDA IPC 显存直通")
-        else:
-            print("🚀 [管道状态] 开启: Apache Arrow CPU Shared Memory (SHM) 零拷贝")
-
-        try:
-            while True:
-                # ---------------------------------------------------------
-                # 1. 视网膜捕获与零拷贝注入 (The Output Path)
-                # ---------------------------------------------------------
-                rgb_frame = self.获取物理视网膜帧()
-
-                if self.启用GPU直通:
-                    # 🛡️ 显存直通 SOTA：将 numpy 转换为 PyTorch GPU Tensor
-                    # 并提取 CUDA IPC 句柄，数据留在显卡，传输开销为 0 纳秒！
-                    gpu_tensor = torch.as_tensor(rgb_frame, device="cuda")
-                    ipc_buffer, metadata = dora.cuda.torch_to_ipc_buffer(gpu_tensor)
-
-                    self.node.send_output(
-                        output_id="camera_rgb", data=ipc_buffer, metadata=metadata
-                    )
-                else:
-                    # 🛡️ CPU 零拷贝优化：直接通过 NumPy 缓冲区协议创建连续的一维 Arrow 数组
-                    # 绕过了 Python 层面的逐元素列表转换，配合 DORA 的 Zenoh SHM 实现内存级零拷贝！
-                    flat_frame = rgb_frame.reshape(-1)  # 共享相同底层内存视图
-                    arrow_array = pa.Array.from_buffers(
-                        pa.uint8(), len(flat_frame), [None, pa.py_buffer(flat_frame)]
-                    )
-
-                    self.node.send_output(
-                        output_id="camera_rgb",
-                        data=arrow_array,
-                        metadata={
-                            "width": self.宽度,
-                            "height": self.高度,
-                            "channels": self.通道数,
-                            "encoding": "bgr8",
-                        },
-                    )
-
-                # ---------------------------------------------------------
-                # 2. 神经反射弧监听 (The Input Path)
-                # ---------------------------------------------------------
-                # 设置 1ms 超时非阻塞，绝不卡死 30Hz 物理渲染
-                event = self.node.next(timeout=0.001)
-
-                if event is not None:
-                    if event["type"] == "INPUT" and event["id"] == "control_cmd":
-                        cmd_array = event["value"].to_numpy()
-                        if len(cmd_array) >= 2:
-                            v, w = cmd_array[0], cmd_array[1]
-                            self.驱动物理底盘(v, w)
-
-                    elif event["type"] == "STOP":
-                        print("🛑 接收到 DORA 全局停止指令，安全关闭物理引擎...")
-                        break
-
-        except KeyboardInterrupt:
-            print("\n🛑 用户手动中断，安全退出...")
-
-
-if __name__ == "__main__":
-    # 如果要强行测试 GPU 显存直通，可以在实例化时传入 True
-    代理 = 虚拟物理界代理(use_gpu_pipeline=False)
-    代理.启动生命循环()
-</file>
-
-<file path="dora_dataflow.yaml">
-# =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
-# 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
-# =================================================================
-nodes:
-  # ---------------------------------------------------------------
-  # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
-  # ---------------------------------------------------------------
-  - id: isaac_sim_env
-    path: uv
-    args: run --with numpy --with pyarrow --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
-    inputs:
-      # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
-      control_cmd: fast_brain_nmpc/control_cmd
-    outputs:
-      # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
-      - camera_rgb
-  # ---------------------------------------------------------------
-  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
-  # ---------------------------------------------------------------
-  - id: fast_brain_nmpc
-    # 指向编译后的 Rust 二进制文件
-    path: target/release/fast_brain_node
-    # DORA 自动化构建契约：启动前自动执行 cargo build
-    build: cargo build -p core-control --release --bin fast_brain_node
-    env:
-      # 注入日志级别与运行时类型检查
-      RUST_LOG: info
-      DORA_RUNTIME_TYPE_CHECK: warn
-      # 🛡️ 架构师指令：必须将 acados 核心库目录与 NMPC 生成的 C 求解器库目录同时并网，彻底解决加载期断链！
-      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
-    inputs:
-      # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
-      image: isaac_sim_env/camera_rgb
-    outputs:
-      # 输出运动指令契约 (v, w)
-      - control_cmd
-
-  # ---------------------------------------------------------------
-  # 🧠 3. 慢系统：XFeat 拓扑建图与语义大脑 (The Slow System - 1Hz)
-  # ---------------------------------------------------------------
-  - id: slow_brain_mapper
-    path: target/release/slow_brain_node
-    build: cargo build -p core-decision --release --bin slow_brain_node
-    env:
-      RUST_LOG: info
-    inputs:
-      # 🛡️ 架构师高光：多节点订阅同一输出。
-      # DORA 共享内存支持多读单写 (MRSW)，慢系统读取图像绝不会导致二次内存拷贝！
-      image: isaac_sim_env/camera_rgb
-
-  # ---------------------------------------------------------------
-  # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
-  # ---------------------------------------------------------------
-  - id: zenoh_bridge
-    path: target/release/zenoh_bridge_node
-    build: cargo build -p core-bridge --release
-    env:
-      RUST_LOG: info
-    inputs:
-      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
-      cmd: fast_brain_nmpc/control_cmd
-</file>
-
 <file path="README.md">
 # 🚀 FSD-car: 极简纯视觉具身智能与自动驾驶控制栈 
 
@@ -3235,6 +3077,190 @@ cargo run --release          # 自动录制站牌，移动摄像头体验 RANSAC
 ```
 </file>
 
+<file path="core-control/src/bin/fast_brain_node.rs">
+use dora_node_api::arrow::array::Float32Array;
+use core_control::预测控制求解器;
+use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
+use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
+use eyre::{eyre, Context};
+use opencv::core::{Mat, CV_8UC3};
+use std::ffi::c_void;
+use std::sync::Arc;
+use std::sync::RwLock; // 🛡️ 架构师修正：降级为标准库锁，拒绝 Tokio 调度让出
+use std::time::Duration;
+
+/// 🛡️ 状态金库：跨线程无锁/轻量锁共享的执行上下文
+struct 执行上下文 {
+    pub 物理主权已初始化: bool,
+    pub 期望_x: f64,
+    pub 期望_y: f64,
+    pub 当前线速度: f64,
+}
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
+
+    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+
+    // 2. 初始化状态金库 (Arc + RwLock 保证多读单写并发安全)
+    let 状态金库 = Arc::new(RwLock::new(执行上下文 {
+        物理主权已初始化: false,
+        期望_x: 0.3,
+        期望_y: 0.0,
+        当前线速度: 0.0,
+    }));
+
+    let 金库_规控 = 状态金库.clone();
+
+    // ---------------------------------------------------------
+    // [阶段 A]：规控节拍器 (The Control Loop - 100Hz 绝对物理时钟)
+    // ---------------------------------------------------------
+    let 规控句柄 = tokio::spawn(async move {
+        let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
+        let mut 求解器已就绪 = false;
+        
+        // 🛡️ 架构师指令：强制 100Hz (10ms) 物理时钟，彻底斩断与摄像头帧率的耦合！
+        let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
+        
+        loop {
+            节拍器.tick().await;
+            
+            // 1. 极速读取状态金库 (读写锁，读操作极快)
+            let (已初始化, 期望_x, 期望_y, 当前线速度) = {
+                // 🛡️ 架构师修正：使用标准库锁，不跨 await 边界，耗时仅需几纳秒
+                let lock = 金库_规控.read().unwrap();
+                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度)
+            };
+
+            if !已初始化 {
+                continue;
+            }
+
+            // 2. 求解器温启动 (仅执行一次)
+            if !求解器已就绪 {
+                if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0) {
+                    eprintln!("⚠️ 温启动状态注入失败: {}，跳过本帧", e);
+                    continue;
+                }
+                求解器已就绪 = true;
+                println!("✅ [快系统] NMPC 求解器温启动完成，进入 100Hz 极速控制环");
+            }
+
+            // 3. 注入最新的参考轨迹偏移
+            let mut 注入成功 = true;
+            for k in 0..=20 {
+                if let Err(e) = 规控大脑.设置参考轨迹点(k, 期望_x, 期望_y, 0.0, 0.3) {
+                    eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
+                    注入成功 = false;
+                    break;
+                }
+            }
+            if !注入成功 { continue; }
+            
+            // 4. 求解最优控制量 (基于严格的 10ms dt)
+            match 规控大脑.求解最优控制量(当前线速度) {
+                Ok((线速度_v, 角速度_w)) => {
+                    // 更新金库中的线速度，供下一次积分使用
+                    {
+                        let mut lock = 金库_规控.write().unwrap();
+                        lock.当前线速度 = 线速度_v;
+                    }
+
+                    // 5. 零拷贝输出指令
+                    let 运动指令 = Float32Array::from(vec![线速度_v as f32, 角速度_w as f32]);
+                    if let Err(e) = node.send_output(
+                        "control_cmd".to_string().into(),
+                        MetadataParameters::default(),
+                        运动指令,
+                    ) {
+                        eprintln!("❌ 控制指令发送失败: {}", e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️ NMPC 求解发散或异常: {}", e);
+                }
+            }
+        }
+    });
+
+    // ---------------------------------------------------------
+    // [阶段 B]：神经反射弧 (The Event Loop - 30Hz 视觉感知)
+    // ---------------------------------------------------------
+    let mut 青蛙眼 = 仿生青蛙眼::new();
+
+    // 🛡️ 架构师修正：使用 recv_async().await 彻底释放 Tokio 线程池，避免阻塞
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, metadata, data } => {
+                if id.as_str() == "image" {
+                    let 宽度 = match metadata.parameters.get("width") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 640,
+                    };
+                    let 高度 = match metadata.parameters.get("height") {
+                        Some(Parameter::Integer(val)) => *val as i32,
+                        _ => 480,
+                    };
+
+                    // 检查并初始化物理主权
+                    let 需要初始化 = {
+                        let lock = 状态金库.read().unwrap();
+                        !lock.物理主权已初始化
+                    };
+
+                    if 需要初始化 {
+                        青蛙眼.初始化(宽度, 高度).map_err(|e| eyre!(e))?;
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.物理主权已初始化 = true;
+                        println!("✅ [快系统] 感受野初始化完成 ({}x{})", 宽度, 高度);
+                    }
+
+                    // 物理级零拷贝 (Arrow -> OpenCV Mat)
+                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转 &[u8] 失败")?;
+                    let 视网膜帧 = unsafe {
+                        Mat::new_rows_cols_with_data_unsafe(
+                            高度,
+                            宽度,
+                            CV_8UC3,
+                            裸内存切片.as_ptr() as *mut c_void,
+                            opencv::core::Mat_AUTO_STEP,
+                        ).context("❌ OpenCV Mat 映射失败")?
+                    };
+
+                    // 仿生感知解算
+                    let 帧_copy = 视网膜帧.clone(); // 视网膜帧借用了 Arrow 内存，必须深拷贝才能跨线程
+                    let mut 青蛙眼_转移 = 青蛙眼; // 夺取所有权，准备送入阻塞线程池
+
+                    let (更新后的青蛙眼, 势场结果) = tokio::task::spawn_blocking(move || {
+                        let res = 青蛙眼_转移.处理图像帧(&帧_copy, 0.0);
+                        (青蛙眼_转移, res) // 计算完毕后，将所有权和结果一起归还
+                    }).await?;
+
+                    青蛙眼 = 更新后的青蛙眼; // 恢复主线程对青蛙眼的所有权
+                    let 势场 = 势场结果.map_err(|e| eyre!(e))?;
+
+                    // 将势场梯度转化为 NMPC 参考轨迹偏移，并写入状态金库
+                    let mut lock = 状态金库.write().unwrap();
+                    lock.期望_x = 0.3 + 势场.逃逸方向.0 as f64;
+                    lock.期望_y = 0.0 + 势场.逃逸方向.1 as f64;
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [快系统] 接收到 DORA 全局停止信号，安全释放 C 语言内存胶囊并退出...");
+                break;
+            }
+            _ => {} 
+        }
+    }
+    
+    // 优雅终止规控节拍器
+    规控句柄.abort();
+    Ok(())
+}
+</file>
+
 <file path="core-control/build.rs">
 // core-control/build.rs
 use std::env;
@@ -3303,10 +3329,6 @@ fn main() {
 }
 </file>
 
-<file path="4.py">
-
-</file>
-
 <file path="Cargo.toml">
 [workspace]
 resolver = "2"
@@ -3346,6 +3368,85 @@ postcard = { version = "1.0", features = ["alloc"] }
 
 # 数学与矩阵运算
 ndarray = "0.15"
+</file>
+
+<file path="dora_dataflow.yaml">
+# =================================================================
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
+# 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
+# =================================================================
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    # 🛡️ 架构师双轨制启动策略 (Dual-Track Boot Strategy)：
+    # 
+    # [模式 A：Mock 降级模式 (当前激活)]
+    # 适用场景：在 WSL/Windows 下无 Isaac Sim 环境时，纯靠 CPU 极速测试数据流。
+    path: uv
+    args: run --with numpy --with pyarrow --with torch --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
+    
+    # [模式 B：Isaac Sim 真实物理界模式 (降临时请解除下方注释，并注释掉模式 A)]
+    # 适用场景：真正挂载 NVIDIA 物理引擎。必须使用 Isaac Sim 自带的 python.sh！
+    # path: /home/zhz/.local/share/ov/pkg/isaac-sim-2023.1.1/python.sh
+    # args: simulation-env/isaac_dora_node.py
+    
+    inputs:
+      # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
+      control_cmd: fast_brain_nmpc/control_cmd
+    outputs:
+      # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
+      - camera_rgb
+  # ---------------------------------------------------------------
+  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
+  # ---------------------------------------------------------------
+  - id: fast_brain_nmpc
+    # 指向编译后的 Rust 二进制文件
+    path: target/release/fast_brain_node
+    # DORA 自动化构建契约：启动前自动执行 cargo build
+    build: cargo build -p core-control --release --bin fast_brain_node
+    env:
+      # 注入日志级别与运行时类型检查
+      RUST_LOG: info
+      DORA_RUNTIME_TYPE_CHECK: warn
+      # 🛡️ 架构师指令：必须将 acados 核心库目录与 NMPC 生成的 C 求解器库目录同时并网，彻底解决加载期断链！
+      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
+    inputs:
+      # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
+      image: isaac_sim_env/camera_rgb
+    outputs:
+      # 输出运动指令契约 (v, w)
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🧠 3. 慢系统：XFeat 拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 🛡️ 架构师高光：多节点订阅同一输出。
+      # DORA 共享内存支持多读单写 (MRSW)，慢系统读取图像绝不会导致二次内存拷贝！
+      image: isaac_sim_env/camera_rgb
+
+  # ---------------------------------------------------------------
+  # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
+  # ---------------------------------------------------------------
+  - id: zenoh_bridge
+    path: target/release/zenoh_bridge_node
+    build: cargo build -p core-bridge --release
+    env:
+      RUST_LOG: info
+    inputs:
+      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
+      cmd: fast_brain_nmpc/control_cmd
+</file>
+
+<file path="4.py">
+
 </file>
 
 <file path=".gitignore">

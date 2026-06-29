@@ -150,7 +150,16 @@ async fn main() -> eyre::Result<()> {
                     };
 
                     // 仿生感知解算
-                    let 势场 = 青蛙眼.处理图像帧(&视网膜帧, 0.0).map_err(|e| eyre!(e))?;
+                    let 帧_copy = 视网膜帧.clone(); // 视网膜帧借用了 Arrow 内存，必须深拷贝才能跨线程
+                    let mut 青蛙眼_转移 = 青蛙眼; // 夺取所有权，准备送入阻塞线程池
+
+                    let (更新后的青蛙眼, 势场结果) = tokio::task::spawn_blocking(move || {
+                        let res = 青蛙眼_转移.处理图像帧(&帧_copy, 0.0);
+                        (青蛙眼_转移, res) // 计算完毕后，将所有权和结果一起归还
+                    }).await?;
+
+                    青蛙眼 = 更新后的青蛙眼; // 恢复主线程对青蛙眼的所有权
+                    let 势场 = 势场结果.map_err(|e| eyre!(e))?;
 
                     // 将势场梯度转化为 NMPC 参考轨迹偏移，并写入状态金库
                     let mut lock = 状态金库.write().unwrap();

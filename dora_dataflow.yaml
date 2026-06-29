@@ -7,9 +7,18 @@ nodes:
   # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
   # ---------------------------------------------------------------
   - id: isaac_sim_env
+    # 🛡️ 架构师双轨制启动策略 (Dual-Track Boot Strategy)：
+    # 
+    # [模式 A：Mock 降级模式 (当前激活)]
+    # 适用场景：在 WSL/Windows 下无 Isaac Sim 环境时，纯靠 CPU 极速测试数据流。
     path: uv
-    # 🛡️ 架构师一键并网：注入 torch 依赖，uv 将自动探针宿主机 GPU 并下载最高效的 PyTorch 运行时！
     args: run --with numpy --with pyarrow --with torch --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
+    
+    # [模式 B：Isaac Sim 真实物理界模式 (降临时请解除下方注释，并注释掉模式 A)]
+    # 适用场景：真正挂载 NVIDIA 物理引擎。必须使用 Isaac Sim 自带的 python.sh！
+    # path: /home/zhz/.local/share/ov/pkg/isaac-sim-2023.1.1/python.sh
+    # args: simulation-env/isaac_dora_node.py
+    
     inputs:
       # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
       control_cmd: fast_brain_nmpc/control_cmd
