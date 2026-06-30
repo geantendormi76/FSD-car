@@ -97,7 +97,7 @@ simulation-env/
   probe_acados_env.py
   probe_proxy.py
 .gitignore
-4.py
+car.py
 Cargo.toml
 dora_dataflow.yaml
 README.md
@@ -105,6 +105,92 @@ README.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="car.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import numpy as np
+from omni.isaac.core import World
+from omni.isaac.core.robots import Robot
+from omni.isaac.sensor import Camera
+
+
+class FsdCarBionicController:
+    def __init__(self):
+        # 1. 声明物理世界（加载您保存的 fsd_car_pure_vision.usd 场景）
+        self.world = World(stage_units_in_meters=1.0)
+
+        # 2. 接管纯物理小车载具 (无 ROS2，纯 Articulation 物理根节点) [cite: 24]
+        # 路径对应您的 Stage 树结构
+        self.car = Robot(prim_path="/World/Car", name="fsd_car")
+        self.world.scene.add(self.car)
+
+        # 3. 接管前视“仿生视网膜”单目相机 [cite: 1.1.3]
+        self.camera = Camera(
+            prim_path="/World/Car/chassis_link/sensors/front_hawk",
+            resolution=(640, 480),
+        )
+        self.camera.initialize()
+
+        # 物理几何参数（Carter 真实轮距与轮半径）
+        self.L = 0.36  # 轴距 (meters)
+        self.R = 0.08  # 轮半径 (meters)
+
+        # 4. 获取小车的物理关节控制柄
+        self.controller = self.car.get_articulation_controller()
+
+    def write_wheel_velocities(self, v: float, w: float):
+        """
+        物理脊髓：将 NMPC 的 (v, w) 极速逆解为左、右轮的转速，并直接写入物理引擎 [cite: 24]
+        """
+        # 限制最大转向角速度，防止小车自转甩尾
+        w = np.clip(w, -0.6, 0.6)
+
+        # 差速逆解公式
+        v_left = (v - w * self.L / 2.0) / self.R
+        v_right = (v + w * self.L / 2.0) / self.R
+
+        # 寻找小车左、右轮驱动关节的索引
+        # Carter 默认左轮关节为第 0 通道，右轮为第 1 通道
+        self.controller.set_joint_velocities([v_left, v_right])
+
+    def get_retina_image(self) -> np.ndarray:
+        """
+        仿生视网膜：零拷贝抓取相机画面，送给青蛙眼和 XFeat [cite: 1.1.3]
+        """
+        # 抓取当前帧 RGB 彩色图像
+        rgba_frame = self.camera.get_rgba()
+        rgb_frame = rgba_frame[:, :, :3]  # 去掉 Alpha 通道
+        return rgb_frame.astype(np.uint8)
+
+    def run_simulation_loop(self):
+        # 物理热热身，完成重力下沉
+        self.world.reset()
+
+        print("🏎️ [FSD 并网成功] 纯 Python 物理控制环已启动，100Hz 节拍同步就绪！")
+
+        while self.world.is_playing():
+            # 1. 抓取相机图像，随时准备喂给 WSL2 里的 XFeat/青蛙眼 [cite: 1.1.3]
+            frame = self.get_retina_image()
+
+            # -------------------------------------------------------------
+            # [决策大脑对接点]：在这里，您的 FSD 算法计算出线速度 v 和角速度 w
+            # 我们先模拟一个前行并轻微右转的指令
+            # -------------------------------------------------------------
+            target_v = 0.3  # 前进 0.3 m/s
+            target_w = 0.1  # 每秒右转 0.1 弧度
+
+            # 2. 物理写入车轮 [cite: 24]
+            self.write_wheel_velocities(target_v, target_w)
+
+            # 3. 物理引擎步进 10ms (100Hz 规控时钟)
+            self.world.step(render=True)
+
+
+if __name__ == "__main__":
+    controller = FsdCarBionicController()
+    controller.run_simulation_loop()
+</file>
 
 <file path="core-bridge/Cargo.toml">
 # 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
@@ -3077,6 +3163,115 @@ cargo run --release          # 自动录制站牌，移动摄像头体验 RANSAC
 ```
 </file>
 
+<file path="core-control/build.rs">
+// core-control/build.rs
+use std::env;
+use std::path::PathBuf;
+
+fn main() {
+    // 1. 获取当前 crate (core-control) 的绝对物理路径
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+
+    // 2. 向上自适应溯源至工作空间根目录 (FSD-car)，彻底告别任何硬编码
+    let workspace_root = manifest_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or(manifest_dir);
+
+    // 3. 动态解析并定位 acados 底层 C 库的物理路径 (优先读取环境变量，否则使用工作空间自适应沙盘路径)
+    let acados_lib_dir = if let Ok(acados_source) = env::var("ACADOS_SOURCE_DIR") {
+        PathBuf::from(acados_source).join("lib")
+    } else {
+        workspace_root.join("simulation-env/acados/lib")
+    };
+
+    // 4. 定位 NMPC 自动生成的 OCP 求解器动态库物理路径
+    let solver_lib_dir = workspace_root.join("simulation-env/c_generated_code");
+
+    // -------------------------------------------------------------------------
+    // 🛡️ 工业级 RPATH 链接保障契约
+    // -------------------------------------------------------------------------
+
+    // A. 绑定链接并注入 RPATH：libacados.so
+    if acados_lib_dir.exists() {
+        // 告诉 Cargo 编译期去哪里寻找 libacados.so
+        println!("cargo:rustc-link-search=native={}", acados_lib_dir.display());
+        // SOTA 核心：将动态库路径硬烧录进生成的二进制 ELF 文件（RPATH 机制） [cite: 1.2.8]
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", acados_lib_dir.display());
+    } else {
+        println!(
+            "cargo:warning=⚠️ [build.rs] 未找到 acados 核心动态库路径：{}，请检查 acados 是否正确编译安装。", 
+            acados_lib_dir.display()
+        );
+    }
+
+    // B. 绑定链接并注入 RPATH：libacados_ocp_solver_diff_drive_car.so
+    if solver_lib_dir.exists() {
+        // 编译期搜索
+        println!("cargo:rustc-link-search=native={}", solver_lib_dir.display());
+        // 运行时 RPATH 路径嵌入 [cite: 1.2.8]
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", solver_lib_dir.display());
+    } else {
+        println!(
+            "cargo:warning=⚠️ [build.rs] 未找到自动生成求解器代码路径：{}，请确保在 simulation-env 目录下运行过 Python 生成器。", 
+            solver_lib_dir.display()
+        );
+    }
+
+    // 5. 声明需要动态链接的库名称
+    println!("cargo:rustc-link-lib=dylib=acados");
+    // 🛡️ 对齐实际物理生成的动态库名称（带 _ocp_ 命名极性）
+    println!("cargo:rustc-link-lib=dylib=acados_ocp_solver_diff_drive_car");
+
+    // 6. 编译防腐哨兵：如果 C 求解器源文件被重新生成，强制触发 Rust 重新编译
+    let c_solver_source = solver_lib_dir.join("acados_solver_diff_drive_car.c");
+    if c_solver_source.exists() {
+        println!("cargo:rerun-if-changed={}", c_solver_source.display());
+    }
+}
+</file>
+
+<file path="Cargo.toml">
+[workspace]
+resolver = "2"
+
+# 声明工作空间下的所有物理子包
+members = [
+    "core-perception", # 视觉感知引擎 (青蛙眼 + XFeat)
+    "core-control",    # 规控引擎 (NMPC 求解器)
+    "core-decision",   # 决策大脑 (行为树 + 拓扑图)
+    "core-bridge",     # 🔗 生产级物理并网桥接网关 (Spinal Cord)
+    "showcase",        # 📺 专门用于存放可视化验证程序的展示厅包
+]
+
+[workspace.dependencies]
+# 视觉与 AI 引擎
+opencv = { version = "0.93", default-features = false, features = [
+    "imgproc",
+    "calib3d",
+    "features2d",
+    "videoio",
+    "highgui",
+] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "tls-rustls",
+    "load-dynamic",
+] }
+
+# 异步与并发底座
+tokio = { version = "1.38", features = ["full"] }
+
+# 神经通路与序列化
+zenoh = "0.11.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postcard = { version = "1.0", features = ["alloc"] }
+
+# 数学与矩阵运算
+ndarray = "0.15"
+</file>
+
 <file path="core-control/src/bin/fast_brain_node.rs">
 use dora_node_api::arrow::array::Float32Array;
 use core_control::预测控制求解器;
@@ -3261,115 +3456,6 @@ async fn main() -> eyre::Result<()> {
 }
 </file>
 
-<file path="core-control/build.rs">
-// core-control/build.rs
-use std::env;
-use std::path::PathBuf;
-
-fn main() {
-    // 1. 获取当前 crate (core-control) 的绝对物理路径
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-
-    // 2. 向上自适应溯源至工作空间根目录 (FSD-car)，彻底告别任何硬编码
-    let workspace_root = manifest_dir
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or(manifest_dir);
-
-    // 3. 动态解析并定位 acados 底层 C 库的物理路径 (优先读取环境变量，否则使用工作空间自适应沙盘路径)
-    let acados_lib_dir = if let Ok(acados_source) = env::var("ACADOS_SOURCE_DIR") {
-        PathBuf::from(acados_source).join("lib")
-    } else {
-        workspace_root.join("simulation-env/acados/lib")
-    };
-
-    // 4. 定位 NMPC 自动生成的 OCP 求解器动态库物理路径
-    let solver_lib_dir = workspace_root.join("simulation-env/c_generated_code");
-
-    // -------------------------------------------------------------------------
-    // 🛡️ 工业级 RPATH 链接保障契约
-    // -------------------------------------------------------------------------
-
-    // A. 绑定链接并注入 RPATH：libacados.so
-    if acados_lib_dir.exists() {
-        // 告诉 Cargo 编译期去哪里寻找 libacados.so
-        println!("cargo:rustc-link-search=native={}", acados_lib_dir.display());
-        // SOTA 核心：将动态库路径硬烧录进生成的二进制 ELF 文件（RPATH 机制） [cite: 1.2.8]
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", acados_lib_dir.display());
-    } else {
-        println!(
-            "cargo:warning=⚠️ [build.rs] 未找到 acados 核心动态库路径：{}，请检查 acados 是否正确编译安装。", 
-            acados_lib_dir.display()
-        );
-    }
-
-    // B. 绑定链接并注入 RPATH：libacados_ocp_solver_diff_drive_car.so
-    if solver_lib_dir.exists() {
-        // 编译期搜索
-        println!("cargo:rustc-link-search=native={}", solver_lib_dir.display());
-        // 运行时 RPATH 路径嵌入 [cite: 1.2.8]
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", solver_lib_dir.display());
-    } else {
-        println!(
-            "cargo:warning=⚠️ [build.rs] 未找到自动生成求解器代码路径：{}，请确保在 simulation-env 目录下运行过 Python 生成器。", 
-            solver_lib_dir.display()
-        );
-    }
-
-    // 5. 声明需要动态链接的库名称
-    println!("cargo:rustc-link-lib=dylib=acados");
-    // 🛡️ 对齐实际物理生成的动态库名称（带 _ocp_ 命名极性）
-    println!("cargo:rustc-link-lib=dylib=acados_ocp_solver_diff_drive_car");
-
-    // 6. 编译防腐哨兵：如果 C 求解器源文件被重新生成，强制触发 Rust 重新编译
-    let c_solver_source = solver_lib_dir.join("acados_solver_diff_drive_car.c");
-    if c_solver_source.exists() {
-        println!("cargo:rerun-if-changed={}", c_solver_source.display());
-    }
-}
-</file>
-
-<file path="Cargo.toml">
-[workspace]
-resolver = "2"
-
-# 声明工作空间下的所有物理子包
-members = [
-    "core-perception", # 视觉感知引擎 (青蛙眼 + XFeat)
-    "core-control",    # 规控引擎 (NMPC 求解器)
-    "core-decision",   # 决策大脑 (行为树 + 拓扑图)
-    "core-bridge",     # 🔗 生产级物理并网桥接网关 (Spinal Cord)
-    "showcase",        # 📺 专门用于存放可视化验证程序的展示厅包
-]
-
-[workspace.dependencies]
-# 视觉与 AI 引擎
-opencv = { version = "0.93", default-features = false, features = [
-    "imgproc",
-    "calib3d",
-    "features2d",
-    "videoio",
-    "highgui",
-] }
-ort = { version = "=2.0.0-rc.11", default-features = false, features = [
-    "std",
-    "tls-rustls",
-    "load-dynamic",
-] }
-
-# 异步与并发底座
-tokio = { version = "1.38", features = ["full"] }
-
-# 神经通路与序列化
-zenoh = "0.11.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-postcard = { version = "1.0", features = ["alloc"] }
-
-# 数学与矩阵运算
-ndarray = "0.15"
-</file>
-
 <file path="dora_dataflow.yaml">
 # =================================================================
 # 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
@@ -3443,10 +3529,6 @@ nodes:
     inputs:
       # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
       cmd: fast_brain_nmpc/control_cmd
-</file>
-
-<file path="4.py">
-
 </file>
 
 <file path=".gitignore">
