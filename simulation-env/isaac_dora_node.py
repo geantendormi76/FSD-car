@@ -198,8 +198,12 @@ class 虚拟物理界代理:
                 if event is not None:
                     if event["type"] == "INPUT" and event["id"] == "control_cmd":
                         cmd_array = event["value"].to_numpy()
-                        if len(cmd_array) >= 2:
-                            v, w = cmd_array[0], cmd_array[1]
+                        # 🛡️ 架构师 2026 物理主权自愈：
+                        # 由于 Rust 端发来的是 8 字节裸内存 [f32; 2]（线速度与角速度），
+                        # DORA 传输时将其封装为了 uint8 的 Arrow 数组。
+                        # 我们必须使用 np.frombuffer 进行零拷贝二进制还原，彻底解决将原始字节误当做速度值而导致小车原地疯狂打转的 Bug！
+                        if len(cmd_array) == 8:
+                            v, w = np.frombuffer(cmd_array, dtype=np.float32)
                             self.驱动物理底盘(v, w)
 
                     elif event["type"] == "STOP":

@@ -1,47 +1,34 @@
 # =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图
-# 架构哲学: 快慢系统非对称算力 | Apache Arrow 零拷贝 | 软硬绝对解耦
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图 (2026 极致版)
+# 架构哲学: 快慢系统非对称算力 | 仿生避障下沉 | 8字节裸内存直通
 # =================================================================
 nodes:
   # ---------------------------------------------------------------
   # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
   # ---------------------------------------------------------------
   - id: isaac_sim_env
-    # 🛡️ 架构师双轨制启动策略 (Dual-Track Boot Strategy)：
-    # 
-    # [模式 A：Mock 降级模式 (当前激活)]
-    # 适用场景：在 WSL/Windows 下无 Isaac Sim 环境时，纯靠 CPU 极速测试数据流。
     path: uv
     args: run --with numpy --with pyarrow --with torch --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
-    
-    # [模式 B：Isaac Sim 真实物理界模式 (降临时请解除下方注释，并注释掉模式 A)]
-    # 适用场景：真正挂载 NVIDIA 物理引擎。必须使用 Isaac Sim 自带的 python.sh！
-    # path: /home/zhz/.local/share/ov/pkg/isaac-sim-2023.1.1/python.sh
-    # args: simulation-env/isaac_dora_node.py
-    
     inputs:
       # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
       # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
       - camera_rgb
+
   # ---------------------------------------------------------------
-  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 30Hz)
+  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
   # ---------------------------------------------------------------
   - id: fast_brain_nmpc
-    # 指向编译后的 Rust 二进制文件
     path: target/release/fast_brain_node
-    # DORA 自动化构建契约：启动前自动执行 cargo build
     build: cargo build -p core-control --release --bin fast_brain_node
     env:
-      # 注入日志级别与运行时类型检查
       RUST_LOG: info
       DORA_RUNTIME_TYPE_CHECK: warn
-      # 🛡️ 架构师指令：必须将 acados 核心库目录与 NMPC 生成的 C 求解器库目录同时并网，彻底解决加载期断链！
       LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
-      # 订阅 Isaac Sim 的图像。DORA 底层自动通过共享内存传递指针，耗时 0 纳秒
-      image: isaac_sim_env/camera_rgb
+      # 🎯 2026 SOTA 降维并网：快脑彻底摆脱大图像输入，直接订阅 8字节 的避障势场力，0 拷贝延迟！
+      obstacle_force: zenoh_bridge/obstacle_force
     outputs:
       # 输出运动指令契约 (v, w)
       - control_cmd
@@ -55,9 +42,8 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      # 🛡️ 架构师高光：多节点订阅同一输出。
-      # DORA 共享内存支持多读单写 (MRSW)，慢系统读取图像绝不会导致二次内存拷贝！
-      image: isaac_sim_env/camera_rgb
+      # 🎯 2026 SOTA 降维：彻底废除图像输入，直接订阅 Windows 传来的二进制特征契约
+      xfeat_features: zenoh_bridge/xfeat_features
 
   # ---------------------------------------------------------------
   # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
@@ -68,5 +54,9 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 ESP32-C6 物理底盘
+      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 Windows 仿真底盘
       cmd: fast_brain_nmpc/control_cmd
+    outputs:
+      # 🎯 2026 SOTA：高频向 DORA 共享总线输出 8 字节避障力
+      - obstacle_force
+      - xfeat_features

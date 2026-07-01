@@ -1,13 +1,10 @@
 // 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-use dora_node_api::{DoraNode, Event, Parameter};
-use eyre::{eyre, Context};
-use opencv::core::{Mat, CV_8UC3};
-use std::ffi::c_void;
-use std::sync::Arc;
+use dora_node_api::{DoraNode, Event};
+use eyre::eyre;
 
 use core_decision::topo_graph::graph::TopologicalGraph;
 use core_decision::topo_graph::node::{Pose, TopologicalNode};
-use core_perception::perception::xfeat_engine::仿生特征提取器;
+use core_perception::perception::xfeat_engine::稀疏特征点; // 仅复用数据结构
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -16,65 +13,48 @@ async fn main() -> eyre::Result<()> {
     // 1. 接入 DORA 数据流网络
     let (mut _node, mut events) = DoraNode::init_from_env()?;
 
-    // 2. 初始化 XFeat 引擎 (使用 Arc 包装以便跨线程安全传递)
-    // 注意：请确保在运行目录下存在 model/xfeat_640x640.onnx
-    let model_path = "model/xfeat_640x640.onnx";
-    // 🛡️ 架构师修正：String 未实现 Error Trait，需使用 map_err 配合 eyre! 宏手动转换为标准 Report
-    let 提取器 = Arc::new(
-        仿生特征提取器::new(model_path).map_err(|e| eyre!("❌ XFeat 模型加载失败: {}", e))?,
-    );
-
-    // 3. 初始化全简体中文业务逻辑主权对象：拓扑地图
+    // 2. 初始化全简体中文业务逻辑主权对象：拓扑地图
     let mut 拓扑地图 = TopologicalGraph::new();
     let mut 节点计数器 = 0;
 
-    // 4. 异步事件驱动循环
+    // 3. 异步事件驱动循环
     while let Some(event) = events.recv_async().await {
         match event {
-            Event::Input { id, metadata, data } => {
-                if id.as_str() == "image" {
-                    let 宽度 = match metadata.parameters.get("width") {
-                        Some(Parameter::Integer(val)) => *val as i32,
-                        _ => 640,
-                    };
-                    let 高度 = match metadata.parameters.get("height") {
-                        Some(Parameter::Integer(val)) => *val as i32,
-                        _ => 480,
-                    };
-
-                    // 物理级零拷贝 (Arrow -> OpenCV Mat)
-                    let 裸内存切片: &[u8] = (&data).try_into().context("❌ Arrow 内存强转失败")?;
-                    let 视网膜帧 = unsafe {
-                        Mat::new_rows_cols_with_data_unsafe(
-                            高度,
-                            宽度,
-                            CV_8UC3,
-                            裸内存切片.as_ptr() as *mut c_void,
-                            opencv::core::Mat_AUTO_STEP,
-                        )
-                        .context("❌ OpenCV Mat 映射失败")?
-                    };
-
-                    // ---------------------------------------------------------
-                    // 🛡️ 架构师指令：异步隔离与生命周期自愈
-                    // ---------------------------------------------------------
-                    let 提取器_clone = 提取器.clone();
-
-                    // 为什么这里要 clone 图像？
-                    // 因为 spawn_blocking 要求闭包内的变量具有 'static 生命周期。
-                    // 视网膜帧借用了 data (Arrow 内存)，而 data 会在当前循环结束时销毁。
-                    // 作为 1Hz 的慢系统，单次深拷贝图像的开销微乎其微，却能换来绝对的并发安全！
-                    let 帧_copy = 视网膜帧.clone();
-
-                    // 将 CPU 密集型推理推入 Tokio 阻塞线程池
-                    let 特征结果 = tokio::task::spawn_blocking(move || {
-                        提取器_clone.提取特征(&帧_copy, 200)
-                    })
-                    .await?
-                    .map_err(|e| eyre!("❌ XFeat 特征提取失败: {}", e))?;
+            Event::Input { id, data, .. } => {
+                if id.as_str() == "xfeat_features" {
+                    // 🎯 核心重构：直接解析 Windows 端传来的二进制特征契约
+                    let 裸数据_vec: Vec<u8> = dora_node_api::into_vec(&data)
+                        .map_err(|e| eyre!("❌ 无法解析 DORA 特征数据: {}", e))?;
+                        
+                    if 裸数据_vec.len() < 4 { continue; }
+                    
+                    let 特征数量 = u32::from_le_bytes(裸数据_vec[0..4].try_into().unwrap()) as usize;
+                    let mut offset = 4;
+                    let mut 特征结果 = Vec::with_capacity(特征数量);
+                    
+                    for _ in 0..特征数量 {
+                        if offset + 268 > 裸数据_vec.len() { break; } // 防越界保护
+                        
+                        let x = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
+                        let y = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
+                        let score = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
+                        
+                        let mut desc = vec![0.0f32; 64];
+                        for i in 0..64 {
+                            desc[i] = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); 
+                            offset += 4;
+                        }
+                        
+                        特征结果.push(稀疏特征点 {
+                            x,
+                            y,
+                            置信度: score,
+                            描述子: desc,
+                        });
+                    }
 
                     println!(
-                        "✅ [慢系统] 成功提取 {} 个 XFeat 骨干特征点",
+                        "✅ [慢系统] 成功接收并解析 {} 个 XFeat 骨干特征点 (0 图像解码开销!)",
                         特征结果.len()
                     );
 
