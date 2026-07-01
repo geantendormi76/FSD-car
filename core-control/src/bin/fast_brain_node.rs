@@ -1,4 +1,3 @@
-use dora_node_api::arrow::array::Float32Array;
 use core_control::预测控制求解器;
 use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
 use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
@@ -89,11 +88,18 @@ async fn main() -> eyre::Result<()> {
                     }
 
                     // 5. 零拷贝输出指令
-                    let 运动指令 = Float32Array::from(vec![线速度_v as f32, 角速度_w as f32]);
-                    if let Err(e) = node.send_output(
+                    // 🛡️ 架构师修正：废弃 Float32Array (Arrow IPC 封装)，直接发送 8 字节裸内存！
+                    // 彻底消除 zenoh_bridge 端 into_vec 解析 Arrow 头部导致的错位与崩溃！
+                    let 运动指令_裸数组 = [线速度_v as f32, 角速度_w as f32];
+                    let 裸内存切片: &[u8] = unsafe {
+                        std::slice::from_raw_parts(运动指令_裸数组.as_ptr() as *const u8, 8)
+                    };
+                    
+                    if let Err(e) = node.send_output_bytes(
                         "control_cmd".to_string().into(),
                         MetadataParameters::default(),
-                        运动指令,
+                        8,
+                        裸内存切片,
                     ) {
                         eprintln!("❌ 控制指令发送失败: {}", e);
                     }
