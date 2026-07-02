@@ -8,7 +8,6 @@ edition = "2021"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-zenoh = { workspace = true }
 
 # 🛡️ 新增：并网所需的视觉与通信底座
 opencv = { workspace = true }

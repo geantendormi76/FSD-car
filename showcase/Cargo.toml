@@ -9,7 +9,6 @@ opencv = { workspace = true }
 ort = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
-zenoh = { workspace = true }
 postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
 
 # 核心并网：引入感知引擎包与决策大脑包

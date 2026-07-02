@@ -1,26 +1,11 @@
 # generate_solver.py
 # generate_solver.py
-import ctypes
 import os
-
 import numpy as np
 
-# 🛡️ 进程空间内存预热自愈：在加载 acados 之前，预先把依赖的 .so 库强行读入当前 Python 进程的内存。
-# 这能彻底免疫因为缺少宿主机 LD_LIBRARY_PATH 导致的 `OSError: libqpOASES_e.so not found` 崩溃
-acados_source = os.environ.get(
-    "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
-)
-if acados_source and os.path.exists(acados_source):
-    acados_lib = os.path.join(acados_source, "lib")
-    # RTLD_GLOBAL 标志会让加载进来的符号对后续装载的 libacados.so 自动全局可见
-    for lib_name in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
-        lib_path = os.path.join(acados_lib, lib_name)
-        if os.path.exists(lib_path):
-            try:
-                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
-            except Exception:
-                # 兼容不同系统的库加载失败情况，防止进程硬卡死
-                pass
+# 🛡️ 架构师 2026 净化：彻底移除 Windows/WSL 时代的 ctypes.CDLL 内存预热 Hack。
+# 在原生的 Ubuntu 26.04 LTS 下，我们严格依赖标准的 LD_LIBRARY_PATH 或 RPATH 机制。
+# 保持 Python 运行环境的绝对纯净与高内聚。
 
 from acados_template import AcadosOcp, AcadosOcpSolver
 from nmpc_model import setup_car_model

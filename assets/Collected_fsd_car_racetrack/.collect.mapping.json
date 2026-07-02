@@ -1,0 +1,83 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_EuroCase_A1_Albedo.png",
+            "source_hash": "b73a6351329fe552b32a20f123bbf821f31b0b1a",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_EuroCase_A1_Albedo.png",
+            "target_hash": "b73a6351329fe552b32a20f123bbf821f31b0b1a"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_EuroCase_A1_Normal.png",
+            "source_hash": "020beb675aa5c6ee90d5842a019dadb82902eaa9",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_EuroCase_A1_Normal.png",
+            "target_hash": "020beb675aa5c6ee90d5842a019dadb82902eaa9"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_EuroCase_A1_ORM.png",
+            "source_hash": "78c53223c75da5c19a2c5d3cc51efde0daac10f4",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_EuroCase_A1_ORM.png",
+            "target_hash": "78c53223c75da5c19a2c5d3cc51efde0daac10f4"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PalletWooden_A_Albedo.png",
+            "source_hash": "4a6b844cc64e326fab29d50ce2682a08fb614afa",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PalletWooden_A_Albedo.png",
+            "target_hash": "4a6b844cc64e326fab29d50ce2682a08fb614afa"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PalletWooden_A_Normal.png",
+            "source_hash": "d9ad06de5f3e71881cc3fa5866fca584ed01cfd2",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PalletWooden_A_Normal.png",
+            "target_hash": "d9ad06de5f3e71881cc3fa5866fca584ed01cfd2"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PalletWooden_A_ORM.png",
+            "source_hash": "2c44c3c578320509edbf32757eb29f570f07049d",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PalletWooden_A_ORM.png",
+            "target_hash": "2c44c3c578320509edbf32757eb29f570f07049d"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PlasticTape_A1_Albedo.png",
+            "source_hash": "9dfbb326dc95cfdb16bd9f4fea3b6d677e07f4f1",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PlasticTape_A1_Albedo.png",
+            "target_hash": "9dfbb326dc95cfdb16bd9f4fea3b6d677e07f4f1"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PlasticTape_A1_Normal.png",
+            "source_hash": "10aceb77f5b3d8333e544ead069243304aa42813",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PlasticTape_A1_Normal.png",
+            "target_hash": "10aceb77f5b3d8333e544ead069243304aa42813"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PlasticTape_A1_ORM.png",
+            "source_hash": "9eba2e8f0cf85890ecb304aaf4c6a39cbbbb6b9f",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/Pallet/Materials/Textures/T_PlasticTape_A1_ORM.png",
+            "target_hash": "9eba2e8f0cf85890ecb304aaf4c6a39cbbbb6b9f"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/005_tomato_soup_can_COLOR.png",
+            "source_hash": "7fe9717573934670ed74e8d857908e81425b270f",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/005_tomato_soup_can_COLOR.png",
+            "target_hash": "7fe9717573934670ed74e8d857908e81425b270f"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/006_mustard_bottle_COLOR.png",
+            "source_hash": "7ee51a47746aa3dde03a33be36efd5c54505048a",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/006_mustard_bottle_COLOR.png",
+            "target_hash": "7ee51a47746aa3dde03a33be36efd5c54505048a"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/003_cracker_box_COLOR.png",
+            "source_hash": "7bfb452ebb429aac922d39d2d90a804a16c10c01",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/003_cracker_box_COLOR.png",
+            "target_hash": "7bfb452ebb429aac922d39d2d90a804a16c10c01"
+        },
+        {
+            "source_url": "D:/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/004_sugar_box_COLOR.png",
+            "source_hash": "e71506a7f5ed2c9725023cdb32e1cd6d62d2e992",
+            "target_url": "./D/isaac_assets/Assets/Isaac/6.0/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/004_sugar_box_COLOR.png",
+            "target_hash": "e71506a7f5ed2c9725023cdb32e1cd6d62d2e992"
+        }
+    ]
+}

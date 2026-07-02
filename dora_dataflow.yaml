@@ -1,20 +1,22 @@
 # =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生与 Sim-to-Real 数据流蓝图 (2026 极致版)
-# 架构哲学: 快慢系统非对称算力 | 仿生避障下沉 | 8字节裸内存直通
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
+# 架构哲学: 去网关化 | 仿生避障下沉至原生 Python 节点 | 共享内存 0 微秒延迟直通
 # =================================================================
 nodes:
   # ---------------------------------------------------------------
-  # 🌌 1. 虚拟物理界 (The Matrix) - Isaac Sim 仿真引擎接入点
+  # 🌌 1. 物理仿真界 (The Matrix) - Isaac Sim 仿真引擎原生 DORA 节点
   # ---------------------------------------------------------------
   - id: isaac_sim_env
-    path: uv
-    args: run --with numpy --with pyarrow --with torch --with dora-rs==0.3.13 simulation-env/isaac_dora_node.py
+    path: /home/zhz/.local/share/ov/pkg/isaac-sim-4.2.0/python.sh
+    args: simulation-env/isaac_dora_node.py
     inputs:
-      # 🛡️ 架构师闭环：接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
+      # 接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
-      # 物理级零拷贝输出：RGB 图像张量 (Apache Arrow 格式)
-      - camera_rgb
+      # 直接向慢大脑广播提取好的 XFeat 稀疏特征二进制契约 (零图像传输开销!)
+      - xfeat_features
+      # 直接向快大脑广播 8 字节仿生势场避障力
+      - obstacle_force
 
   # ---------------------------------------------------------------
   # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
@@ -27,14 +29,14 @@ nodes:
       DORA_RUNTIME_TYPE_CHECK: warn
       LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
-      # 🎯 2026 SOTA 降维并网：快脑彻底摆脱大图像输入，直接订阅 8字节 的避障势场力，0 拷贝延迟！
-      obstacle_force: zenoh_bridge/obstacle_force
+      # 从本地共享内存极速订阅避障势场力
+      obstacle_force: isaac_sim_env/obstacle_force
     outputs:
       # 输出运动指令契约 (v, w)
       - control_cmd
 
   # ---------------------------------------------------------------
-  # 🧠 3. 慢系统：XFeat 拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # 🧠 3. 慢系统：拓扑建图与语义大脑 (The Slow System - 1Hz)
   # ---------------------------------------------------------------
   - id: slow_brain_mapper
     path: target/release/slow_brain_node
@@ -42,21 +44,5 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      # 🎯 2026 SOTA 降维：彻底废除图像输入，直接订阅 Windows 传来的二进制特征契约
-      xfeat_features: zenoh_bridge/xfeat_features
-
-  # ---------------------------------------------------------------
-  # 🔗 4. 神经通路：Zenoh 物理桥接器 (The Spinal Cord)
-  # ---------------------------------------------------------------
-  - id: zenoh_bridge
-    path: target/release/zenoh_bridge_node
-    build: cargo build -p core-bridge --release
-    env:
-      RUST_LOG: info
-    inputs:
-      # 订阅快系统计算出的控制指令，通过 Zenoh 极速下发给 Windows 仿真底盘
-      cmd: fast_brain_nmpc/control_cmd
-    outputs:
-      # 🎯 2026 SOTA：高频向 DORA 共享总线输出 8 字节避障力
-      - obstacle_force
-      - xfeat_features
+      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
+      xfeat_features: isaac_sim_env/xfeat_features

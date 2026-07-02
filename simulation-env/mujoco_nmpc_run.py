@@ -1,26 +1,11 @@
 # mujoco_nmpc_run.py
-import ctypes
-import os
-
-import numpy as np
-
-# 🛡️ 进程空间内存预热自愈：保障 MuJoCo 仿真跑道上的 acados 模型加载符号链安全完整
-acados_source = os.environ.get(
-    "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
-)
-if acados_source and os.path.exists(acados_source):
-    acados_lib = os.path.join(acados_source, "lib")
-    for lib_name in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
-        lib_path = os.path.join(acados_lib, lib_name)
-        if os.path.exists(lib_path):
-            try:
-                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
-            except Exception:
-                pass
-
+mport os
 import time
-
+import numpy as np
 import mujoco
+
+# 🛡️ 架构师 2026 净化：彻底移除 ctypes.CDLL 内存预热 Hack。
+# 依赖 Ubuntu 26.04 原生的动态链接器 (ld-linux.so) 进行符号解析。
 import mujoco.viewer
 from acados_template import AcadosOcpSolver
 
