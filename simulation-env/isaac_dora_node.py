@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+# 🛡️ *协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。*
 
 """
 =================================================================
-🛡️ FSD-car V3.0: 仿真环境物理代理节点 (原生 Linux 零拷贝并网版)
-设计哲学: 去网关化 | 双视觉算法下沉 | 共享内存直通 | 物理与算法时钟对齐
+🛡️ FSD-car V3.0: 仿真环境物理代理节点 (白盒插桩诊断版)
+设计哲学: 去网关化 | 多线程异步解耦 | 硬盘高频心跳插桩 | 异常无损落盘
 =================================================================
 """
 
 import os
+# 🛡️ 架构师 2026 终极自愈：在 SimulationApp 启动前，强行将 75G 本地物理资产并网！
+os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+
 import sys
 import struct
+import threading
+import traceback
 import numpy as np
 import cv2
 import torch
@@ -21,38 +26,44 @@ import pyarrow as pa
 from dora import Node
 
 # ---------------------------------------------------------------------------
-# 🛡️ 环境变量自愈：自动加载项目根目录的 .env 文件
+# 🛡️ 架构师黑客级自愈：全局未捕获异常强制落盘，防止 DORA 管道吞噬 Traceback
 # ---------------------------------------------------------------------------
-def load_env_manually():
-    # 向上自适应溯源两层，找到项目根目录下的 .env
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    parts = line.split("=", 1)
-                    if len(parts) == 2:
-                        os.environ[parts[0].strip()] = parts[1].strip()
-load_env_manually()
+DEBUG_LOG_PATH = "/home/zhz/fsd-car/simulation_env_debug.log"
+
+def debug_write(msg):
+    with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(f"⏰ [TELEMETRY] {msg}\n")
+    print(msg)
+
+# 强制清空并初始化调试文件
+with open(DEBUG_LOG_PATH, "w", encoding="utf-8") as f:
+    f.write("=== FSD-CAR TELEMETRY INITIALIZED ===\n")
+
+def global_exception_handler(exctype, value, tb):
+    with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write("\n❌❌❌ [FATAL UNCAUGHT EXCEPTION] ❌❌❌\n")
+        traceback.print_exception(exctype, value, tb, file=f)
+    sys.__excepthook__(exctype, value, tb)
+
+sys.excepthook = global_exception_handler
 
 # ---------------------------------------------------------------------------
-# 🛡️ NVIDIA Isaac Sim 启动哨兵 (LTS 级强依赖约束)
+# 🛡️ NVIDIA Isaac Sim 启动哨兵
 # ---------------------------------------------------------------------------
 try:
     from isaacsim import SimulationApp
-    # 本地原生运行，启动 headed 模式以便实时在大屏监测小车运动
-    simulation_app = SimulationApp({"headless": False})
+    simulation_app = SimulationApp({"headless": True})
     
     import omni
     from pxr import UsdPhysics
     from isaacsim.core.api.world import World
-    from isaacsim.core.experimental.prims import Articulation
+    from isaacsim.core.prims import Articulation
     from isaacsim.sensors.camera import Camera
     from isaacsim.core.utils.stage import open_stage
-    print("✅ [物理代理] NVIDIA Isaac Sim Standalone 引擎启动成功！")
-except ImportError as e:
-    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！请确保运行在 python.sh 环境下。报错: {e}")
+    debug_write("✅ [物理代理] NVIDIA Isaac Sim Standalone 引擎启动成功！")
+except Exception as e:
+    with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+        traceback.print_exc(file=f)
     sys.exit(1)
 
 
@@ -122,7 +133,7 @@ class XFeatEngine:
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
-        print(f"✓ [XFeat] 神经网络推理引擎装载完毕，物理计算提供商: {self.session.get_providers()}")
+        debug_write(f"✓ [XFeat] 神经网络推理引擎装载完毕，计算提供商: {self.session.get_providers()}")
 
     def extract(self, frame_rgb, top_k=200):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
@@ -189,31 +200,71 @@ class XFeatEngine:
 
 
 # ===========================================================================
+# 📡 DORA 异步命令订阅守护线程 (Threaded Subscriber)
+# ===========================================================================
+v_cmd = 0.0
+w_cmd = 0.0
+cmd_lock = threading.Lock()
+dora_stop_event = threading.Event()
+
+def dora_listener_thread(node):
+    global v_cmd, w_cmd
+    debug_write("📡 [并发并网] DORA 异步命令订阅守护线程已启动，进入 0 延迟接收队列...")
+    try:
+        for event in node:
+            ev_type = event["type"]
+            if ev_type == "INPUT":
+                ev_id = event["id"]
+                if ev_id == "control_cmd":
+                    cmd_bytes = bytes(event["value"])
+                    if len(cmd_bytes) == 8:
+                        v, w = struct.unpack("<ff", cmd_bytes)
+                        with cmd_lock:
+                            v_cmd = v
+                            w_cmd = w
+            elif ev_type == "STOP":
+                debug_write("🛑 [并发并网] 收到 DORA 全局停止指令，正在下线接收队列...")
+                dora_stop_event.set()
+                break
+    except Exception as e:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write("\n❌ [THREAD EXCEPTION] DORA 接收线程异常断裂:\n")
+            traceback.print_exc(file=f)
+        dora_stop_event.set()
+
+
+# ===========================================================================
 #  🚀 DORA 原生节点主循环与仿真执行器
 # ===========================================================================
 def main():
-    print("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
+    debug_write("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
     
-    # 1. 初始化本地 DORA 节点契约
-    dora_node = Node()
+    try:
+        dora_node = Node()
+        debug_write("✓ [DORA] Node 实例构建完成！")
+    except Exception as e:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        sys.exit(1)
 
-    # 2. 读取环境变量路径，加载物理场景
-    fsd_assets_dir = os.environ.get("FSD_ASSETS_DIR", "/home/zhz/fsd_assets")
-    usd_path = os.path.join(fsd_assets_dir, "Collected_fsd_car_racetrack", "fsd_car_racetrack.usd")
+    # 读取环境变量路径，加载物理场景
+    fsd_assets_dir = "/home/zhz/fsd-car/assets"
+    # 🛡️ 对齐至能完整显示资产的根级 USD 路径，规避损坏的 Collected 子包
+    usd_path = os.path.join(fsd_assets_dir, "fsd_car_racetrack.usd")
     
     if not os.path.exists(usd_path):
-        print(f"❌ 致命错误：无法在指定路径找到物理场景文件 -> {usd_path}")
+        debug_write(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
         sys.exit(1)
         
     open_stage(usd_path=usd_path)
     
-    # 3. 初始化仿真世界
+    # 初始化仿真世界
     world = World(stage_units_in_meters=1.0, physics_prim_path="/PhysicsScene")
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
     
     if not stage.GetPrimAtPath(car_path):
-        print(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
+        debug_write(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
         sys.exit(1)
 
     # 🛡️ 物理关节属性重置：清除冗余阻尼，驯化为纯速度伺服关节
@@ -225,40 +276,56 @@ def main():
             drive.CreateStiffnessAttr(0.0)
             drive.CreateDampingAttr(1e5)
 
-    # 4. 绑定物理实体
-    car = Articulation(car_path)
-    camera_path = f"{car_path}/rgb_camera"
-    camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
+    # 绑定物理实体
+    # 🛡️ 架构师 2026 避坑修正：显式声明 prim_paths_expr，并注册到世界场景中以激活 PhysX 视图！
+    car = Articulation(prim_paths_expr=car_path, name="jetbot")
+    world.scene.add(car)
 
-    # 5. 加载算法引擎
-    xfeat_model_path = os.path.join(fsd_assets_dir, "model", "xfeat_640x640.onnx")
+    # 🛡️ 架构师 2026 路径自愈：对齐探针发现的真实单目相机路径
+    camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
+    camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
+    world.scene.add(camera)
+
+    # 加载算法引擎
+    # 🛡️ 架构师 2026 路径自愈：指向项目标准的 model 目录
+    xfeat_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
     if not os.path.exists(xfeat_model_path):
-        print(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
+        debug_write(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
         sys.exit(1)
         
     xfeat_engine = XFeatEngine(xfeat_model_path)
     frog_eye = BionicFrogEye(640, 480)
 
-    # 6. 物理世界预热起跑
+    # 物理世界预热起跑
     world.reset()
     world.play()
     world.step(render=True)
     camera.initialize()
     
-    print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
+    # 🚀 启动后台异步订阅线程
+    listener_thread = threading.Thread(target=dora_listener_thread, args=(dora_node,), daemon=True)
+    listener_thread.start()
+
+    debug_write("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
 
     L = 0.1125  # 轮距
     R = 0.03    # 轮半径
     tick = 0
 
-    v_cmd = 0.0
-    w_cmd = 0.0
-
     try:
-        while simulation_app.is_running():
+        while True:
+            # 🛡️ 探针心跳落盘监控
+            tick += 1
+            if tick % 10 == 0:
+                with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(f"🔄 Loop heartbeat: step={tick} | app_running={simulation_app.is_running()}\n")
+
+            if not simulation_app.is_running():
+                debug_write(f"⚠️ [退出监控] simulation_app.is_running() 返回 False，退出循环。")
+                break
+
             # A. 步进物理和渲染帧
             world.step(render=True)
-            tick += 1
 
             # B. 极速显存抓取与前置过滤
             rgb_raw = camera.get_rgb()
@@ -289,33 +356,38 @@ def main():
                             arrow_xfeat_features = pa.array(np.frombuffer(xfeat_payload, dtype=np.uint8))
                             dora_node.send_output("xfeat_features", arrow_xfeat_features)
 
-            # C. 🏎️ 非阻塞监听快系统大脑下发的运动规控反馈 (0 延迟)
-            event = dora_node.next(timeout=0.001)
-            if event is not None:
-                if event["type"] == "INPUT" and event["id"] == "control_cmd":
-                    cmd_bytes = bytes(event["value"])
-                    if len(cmd_bytes) == 8:
-                        v_cmd, w_cmd = struct.unpack("<ff", cmd_bytes)
-                elif event["type"] == "STOP":
-                    print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
-                    break
+            # C. 物理主权控制：从状态金库中线程安全地取出最新指令
+            with cmd_lock:
+                current_v = v_cmd
+                current_w = w_cmd
 
-            # D. 执行物理控制
-            v_left = (v_cmd - w_cmd * L / 2.0) / R
-            v_right = -(v_cmd + w_cmd * L / 2.0) / R  # 右轮极性反向自愈
-            car.set_dof_velocity_targets(np.array([v_left, v_right]))
+            # 执行差速物理控制
+            v_left = (current_v - current_w * L / 2.0) / R
+            v_right = -(current_v + current_w * L / 2.0) / R  # 右轮极性反向自愈
+            car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
 
-    except KeyboardInterrupt:
-        print("\n🛑 用户手动中断，优雅下线。")
+            # D. 自愈监控：如果协调器通知下线，优雅退出仿真
+            if dora_stop_event.is_set():
+                debug_write("🛑 [退出监控] 监听线程接获停止事件，主动终止仿真世界...")
+                break
+
+            # 🛡️ 架构师 2026 自愈：防止 CPU 100% 占满导致 GUI 线程死锁，提供喘息窗口
+            import time
+            time.sleep(0.005)
+
+    except Exception as e:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write("\n❌ [LOOP EXCEPTION] 仿真核心主循环发生致命异常:\n")
+            traceback.print_exc(file=f)
     finally:
         # 安全制动
         try:
-            car.set_dof_velocity_targets(np.array([0.0, 0.0]))
+            car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
             world.step(render=True)
         except Exception:
             pass
         simulation_app.close()
-        print("🔌 物理仿真界代理已安全卸载。")
+        debug_write("🔌 物理仿真界代理已安全卸载。")
 
 
 if __name__ == "__main__":

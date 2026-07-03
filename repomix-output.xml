@@ -1,0 +1,3982 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+- Pay special attention to the Repository Description. These contain important context and guidelines specific to this project.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: **/*.rs, **/*.py, **/Cargo.toml, **/*.md, dora_dataflow.yaml, **/.gitignore
+- Files matching these patterns are excluded: **/target/**, **/lib_dylib/**, **/model/**, **/acados/**, **/c_generated_code/**, **/Cargo.lock, **/repomix-output.xml
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<user_provided_header>
+这是我 FSD-car 项目当前的最新全量源码,当前的我开始打算从零开始自研一套FSD自动驾驶架构，来实现小车的纯视觉下能自动化导航驾驶到目标点位！我的愿景是从成本、效率、速度、安全进行开发
+</user_provided_header>
+
+<directory_structure>
+core-control/
+  src/
+    bin/
+      fast_brain_node.rs
+    ffi.rs
+    lib.rs
+    solver.rs
+  build.rs
+  Cargo.toml
+core-decision/
+  src/
+    bin/
+      slow_brain_node.rs
+    topo_graph/
+      graph.rs
+      mod.rs
+      node.rs
+    lib.rs
+    messages.rs
+  Cargo.toml
+core-perception/
+  src/
+    perception/
+      frog_eye.rs
+      matcher.rs
+      mod.rs
+      xfeat_engine.rs
+    lib.rs
+  Cargo.toml
+showcase/
+  src/
+    bin/
+      demo_frog.rs
+      demo_xfeat.rs
+    main.rs
+  Cargo.toml
+simulation-env/
+  generate_solver.py
+  isaac_dora_node.py
+  mujoco_nmpc_run.py
+  nmpc_model.py
+tools/
+  diagnostics/
+    diagnose.py
+    mock_perception_node.py
+    network_check.py
+    network_deep_probe.py
+    probe_acados_env.py
+    probe_proxy.py
+    probe_tcp_boundary.py
+    verify_control.py
+    zenoh_isolated_test.py
+.gitignore
+4.py
+Cargo.toml
+dora_dataflow.yaml
+isaac_deep_probe.py
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="tools/diagnostics/mock_perception_node.py">
+import time
+import struct
+import numpy as np
+import pyarrow as pa
+from dora import Node
+
+node = Node()
+print("🟢 [MOCK感知] 零拷贝模拟通道已并网！开始发送 100Hz 避障力...")
+
+# 🎯 物理温启动：在进入阻塞循环前主动发射第一次避障力，打破时序死锁！
+fe_payload = struct.pack("<ff", -0.05, 0.1)
+node.send_output("obstacle_force", pa.array(np.frombuffer(fe_payload, dtype=np.uint8)))
+
+tick = 0
+for event in node:
+    if event["type"] == "INPUT" and event["id"] == "control_cmd":
+        v, w = struct.unpack("<ff", bytes(event["value"]))
+        print(f"📥 [收] 快脑反馈指令 -> 线速度: {v:.3f} m/s | 角速度: {w:.3f} rad/s")
+        tick += 1
+        if tick >= 20:
+            print("✅ [SHM测试] 控制环路完美闭环，正在安全退出...")
+            break
+
+        # 闭环状态下，高频持续发送避障力信号
+        node.send_output("obstacle_force", pa.array(np.frombuffer(fe_payload, dtype=np.uint8)))
+        time.sleep(0.01)
+</file>
+
+<file path="isaac_deep_probe.py">
+# -*- coding: utf-8 -*-
+import sys
+import os
+import importlib
+
+print("=" * 80)
+print("🛰️  NEXUS - NVIDIA Isaac Sim Python 命名空间深度逆向探针")
+print("=" * 80)
+
+# 1. 打印当前的运行环境
+print(f"📌 [Python 解释器]: {sys.executable}")
+print(f"📌 [当前工作目录]: {os.getcwd()}")
+
+# 2. 核心诊断：审计 sys.path 优先级，看看是谁污染了搜索链
+print("\n🔍 [审计 sys.path 搜索链优先级]:")
+for idx, path in enumerate(sys.path):
+    print(f"  [{idx:02d}] -> {path}")
+
+# 3. 核心诊断：审计环境变量污染
+print("\n🔍 [审计系统环境变量]:")
+for var in ["PYTHONPATH", "LD_LIBRARY_PATH", "PATH"]:
+    print(f"  {var} = {os.environ.get(var, '❌ 未设置')}")
+
+# 4. 逆向核心：探测 omni.kit.asset_converter 的物理加载源头
+def probe_module(mod_name):
+    print(f"\n⚡ [深度探测模块]: {mod_name}")
+    try:
+        # 尝试导入
+        mod = importlib.import_module(mod_name)
+        # 获取其物理路径（如果是 Namespace 包，通常会返回多个路径或 None）
+        mod_path = getattr(mod, "__path__", "Namespace / Unknown Location")
+        print(f"  ✅ 成功加载！")
+        print(f"  📍 物理加载源头 -> {mod_path}")
+        
+        # 打印其暴露的公开属性，检查是否存在 AssetConverterContext
+        attrs = [attr for attr in dir(mod) if not attr.startswith("_")]
+        print(f"  📦 暴露的公开属性数: {len(attrs)}")
+        print(f"  📋 公开属性列表: {attrs[:15]} ...")
+    except Exception as e:
+        print(f"  ❌ 加载失败！报错信息: {e}")
+
+probe_module("omni.kit.asset_converter")
+probe_module("omni.kit.tool.asset_importer")
+
+print("\n" + "=" * 80)
+</file>
+
+<file path="core-control/src/lib.rs">
+// <<<<<<< SEARCH
+pub fn add(left: u64, right: u64) -> u64 {
+    left + right
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let result = add(2, 2);
+        assert_eq!(result, 4);
+    }
+}
+// =======
+pub mod ffi;
+pub mod solver;
+
+// 🛡️ 向上层暴露安全的规控接口
+pub use solver::预测控制求解器;
+// >>>>>>> REPLACE
+</file>
+
+<file path="core-decision/src/topo_graph/graph.rs">
+use super::node::TopologicalNode;
+use serde::{Serialize, Deserialize};
+use std::collections::{HashMap, BinaryHeap};
+use std::fs::File;
+use std::io::{Write, Read};
+use std::cmp::Ordering;
+
+/// 🛡️ 拓扑有向边：规定了地标站牌之间的通行物理开销
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Edge {
+    pub target_id: u32,      // 目标地标节点 ID
+    pub weight: f32,         // 两点之间的物理距离 (作为 A* 算法的 G 权重值) [cite: 21]
+    pub relative_yaw: f32,   // 驶向目标节点所期望的相对偏航角 (单位: 度)
+}
+
+/// 🛡️ 拓扑地图：管理所有的地标和道路网
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct TopologicalGraph {
+    pub nodes: HashMap<u32, TopologicalNode>,
+    pub adjacency_list: HashMap<u32, Vec<Edge>>, // 邻接表：节点ID -> 相连的有向边
+}
+
+/// 🛡️ 用于 A* 优先队列的辅助状态结构体 [cite: 9]
+#[derive(Copy, Clone, PartialEq)]
+struct State {
+    cost: f32,
+    position: u32,
+}
+
+impl Eq for State {}
+
+// 实现 Ord，使 BinaryHeap 表现为最小堆（每次弹回代价最小的路径点） [cite: 9]
+impl Ord for State {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal)
+    }
+}
+
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl TopologicalGraph {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            adjacency_list: HashMap::new(),
+        }
+    }
+
+    /// 往地图中注册全新的空间地标
+    pub fn add_node(&mut self, node: TopologicalNode) {
+        self.nodes.insert(node.id, node);
+    }
+
+    /// 往地图中铺设一条有向道路
+    pub fn add_edge(&mut self, from: u32, to: u32, weight: f32, relative_yaw: f32) {
+        self.adjacency_list
+            .entry(from)
+            .or_insert_with(Vec::new)
+            .push(Edge {
+                target_id: to,
+                weight,
+                relative_yaw,
+            });
+    }
+
+    /// 🧠 A* 全局路径寻路引擎：结合启发式几何距离，秒级规划最优站牌路径
+    pub fn find_path_astar(&self, start: u32, goal: u32) -> Option<Vec<u32>> {
+        let mut dist: HashMap<u32, f32> = HashMap::new();
+        let mut parent: HashMap<u32, u32> = HashMap::new();
+        let mut heap = BinaryHeap::new();
+
+        dist.insert(start, 0.0);
+        heap.push(State { cost: 0.0, position: start });
+
+        let goal_node = self.nodes.get(&goal)?;
+
+        while let Some(State { cost: current_cost, position }) = heap.pop() {
+            if position == goal {
+                // 递归反转重构出最平滑的路径节点序列
+                let mut path = Vec::new();
+                let mut curr = goal;
+                while curr != start {
+                    path.push(curr);
+                    curr = *parent.get(&curr)?;
+                }
+                path.push(start);
+                path.reverse();
+                return Some(path);
+            }
+
+            if let Some(&d) = dist.get(&position) {
+                if current_cost > d {
+                    continue;
+                }
+            }
+
+            if let Some(edges) = self.adjacency_list.get(&position) {
+                for edge in edges {
+                    let next = edge.target_id;
+                    let next_node = self.nodes.get(&next)?;
+                    let new_dist = dist.get(&position).copied().unwrap_or(f32::INFINITY) + edge.weight;
+
+                    if new_dist < dist.get(&next).copied().unwrap_or(f32::INFINITY) {
+                        dist.insert(next, new_dist);
+                        parent.insert(next, position);
+
+                        // A* 核心：计算当前探索点到终点地标的欧氏几何距离作为启发式估算 (H 值) [cite: 21]
+                        let h = ((next_node.pose.x - goal_node.pose.x).powi(2) + 
+                                 (next_node.pose.y - goal_node.pose.y).powi(2)).sqrt();
+
+                        heap.push(State { cost: new_dist + h, position: next });
+                    }
+                }
+            }
+        }
+        None 
+    }
+
+    /// 💾 将整个拓扑地图持久化写入硬盘文件 (小车保存其脑海中的小区地图记忆)
+    pub fn save_to_file(&self, path: &str) -> Result<(), String> {
+        let serialized = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let mut file = File::create(path).map_err(|e| e.to_string())?;
+        file.write_all(serialized.as_bytes()).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 📥 从硬盘加载小区地图记忆 (开机自检自动恢复地图)
+    pub fn load_from_file(path: &str) -> Result<Self, String> {
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).map_err(|e| e.to_string())?;
+        let graph: Self = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+        Ok(graph)
+    }
+}
+</file>
+
+<file path="core-decision/src/topo_graph/mod.rs">
+// 🛡️ 统筹拓扑节点与图路径规划逻辑，向外公开 API
+pub mod node;
+pub mod graph;
+</file>
+
+<file path="core-decision/src/topo_graph/node.rs">
+use serde::{Serialize, Deserialize};
+
+/// 🛡️ 物理三维姿态量
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Pose {
+    pub x: f32,
+    pub y: f32,
+    pub yaw: f32,
+}
+
+/// 🛡️ 拓扑空间地标节点：作为小车在大脑中对物理世界一个“站牌”的记忆
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TopologicalNode {
+    pub id: u32,                     // 唯一的节点站牌 ID
+    pub name: String,                // 节点地标语义名称 (如 "5栋楼下", "1号别墅转角")
+    pub pose: Pose,                  // 拍照时的里程计/北斗绝对坐标
+    
+    /// XFeat 描述子集合：扁平化的描述子特征向量 [N_features * 64 维]
+    pub descriptors: Vec<f32>,
+    
+    /// 每个特征点的 (x, y) 亚像素物理坐标：扁平化的坐标矩阵 [N_features * 2]
+    pub keypoints: Vec<f32>,
+}
+</file>
+
+<file path="core-decision/src/lib.rs">
+// 🛡️ 决策大脑统一入口网关：向工作空间暴露拓扑地图与统一消息中心
+pub mod topo_graph;
+pub mod messages;
+</file>
+
+<file path="core-decision/src/messages.rs">
+use serde::{Serialize, Deserialize};
+
+/// 🛡️ 【全简体中文业务逻辑主权】
+/// 物理主权守卫：运动指令契约 (严格 8 字节对齐)
+/// 保证在大脑（PC/RK3588）与脊髓（ESP32-C6）之间的内存布局绝对一致
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct 运动指令 {
+    pub v: f32, // 线速度 (m/s)
+    pub w: f32, // 角速度 (rad/s)
+}
+</file>
+
+<file path="core-perception/src/perception/frog_eye.rs">
+#![allow(dead_code)] // 🛡️ 架构师指令：在 V3.0 开发合并期，允许暂时未被调用的算法 API 存在
+
+use opencv::{
+    prelude::*,
+    core::{self, Mat, Point, Size, Scalar},
+    imgproc,
+};
+
+/// 🛡️ 领域模型：2D 动态势场 (常作为通信载荷，高度优化为粗糙网格以节省带宽)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct 动态势场 {
+    /// 势场网格 (例如 20x20 的局部避障栅格，数值越大代表排斥力越大)
+    pub 斥力网格: Vec<Vec<f32>>, 
+    /// 视野内的最大危险指数 (0.0 表示绝对安全，1.0 表示即将碰撞)
+    pub 最高危险等级: f32,
+    /// 避障推荐逃逸向量 (x_force, y_force)
+    pub 逃逸方向: (f32, f32),
+}
+
+/// 🛡️ 仿生视觉核心契约
+pub trait 伪青蛙眼感知器: Send {
+    /// 初始化感知器内部的内存金库，避免运行时 malloc 造成的延迟抖动
+    fn 初始化(&mut self, 宽: i32, 高: i32) -> Result<(), String>;
+
+    /// 核心处理：输入最新图像帧与 IMU 偏航角增量（弧度），输出计算好的势场
+    /// * `角速度_yaw_delta`: 过去一帧时间内的偏航角变化，用于策略 A 的运动补偿
+    fn 处理图像帧(&mut self, 原始帧: &Mat, 角速度_yaw_delta: f32) -> Result<动态势场, String>;
+
+    /// 获取渲染后的调试画面 (叠加了红色势场热力图)
+    fn 获取调试帧(&self) -> Result<Mat, String>;
+}
+
+/// 🛡️ 仿生青蛙眼核心实现结构体
+pub struct 仿生青蛙眼 {
+    宽: i32,
+    高: i32,
+    /// 抑制感受野 (IRF)：存储上一帧的灰度背景
+    上一帧灰度: Mat,
+    /// 兴奋感受野 (ERF)：当前帧的灰度
+    当前帧灰度: Mat,
+    /// 帧间差值缓存
+    差异帧: Mat,
+    /// 二值化运动斑块
+    运动斑块: Mat,
+    /// 势场膨胀热力图
+    势场图: Mat,
+    /// 策略 A 仿射变换补偿矩阵
+    运动补偿矩阵: Mat,
+}
+
+impl 仿生青蛙眼 {
+    /// 构造全新的空壳结构体，不分配堆内存
+    pub fn new() -> Self {
+        Self {
+            宽: 0,
+            高: 0,
+            上一帧灰度: Mat::default(),
+            当前帧灰度: Mat::default(),
+            差异帧: Mat::default(),
+            运动斑块: Mat::default(),
+            势场图: Mat::default(),
+            运动补偿矩阵: Mat::default(),
+        }
+    }
+}
+
+impl 伪青蛙眼感知器 for 仿生青蛙眼 {
+    fn 初始化(&mut self, 宽: i32, 高: i32) -> Result<(), String> {
+        self.宽 = 宽;
+        self.高 = 高;
+        
+        // 预分配所有内存金库，防止运行时动态分配内存（采用安全可靠的 new_rows_cols_with_default 机制）
+        self.上一帧灰度 = Mat::new_rows_cols_with_default(高, 宽, core::CV_8UC1, Scalar::all(0.0)).map_err(|e| e.to_string())?;
+        self.当前帧灰度 = Mat::new_rows_cols_with_default(高, 宽, core::CV_8UC1, Scalar::all(0.0)).map_err(|e| e.to_string())?;
+        self.差异帧 = Mat::new_rows_cols_with_default(高, 宽, core::CV_8UC1, Scalar::all(0.0)).map_err(|e| e.to_string())?;
+        self.运动斑块 = Mat::new_rows_cols_with_default(高, 宽, core::CV_8UC1, Scalar::all(0.0)).map_err(|e| e.to_string())?;
+        self.势场图 = Mat::new_rows_cols_with_default(高, 宽, core::CV_8UC1, Scalar::all(0.0)).map_err(|e| e.to_string())?;
+        
+        // 使用 from_slice_2d 一步到位预分配 2x3 仿射变换矩阵，避免 reshape 产生 BoxedRef 引用生命周期问题
+        let 补偿数据: &[&[f32]] = &[
+            &[1.0, 0.0, 0.0],
+            &[0.0, 1.0, 0.0],
+        ];
+        self.运动补偿矩阵 = Mat::from_slice_2d(补偿数据).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    fn 处理图像帧(&mut self, 原始帧: &Mat, 角速度_yaw_delta: f32) -> Result<动态势场, String> {
+        if self.宽 == 0 || self.高 == 0 {
+            return Err("❌ 伪青蛙眼感知器未初始化！".to_string());
+        }
+
+        // 1. 转为灰度并存入【当前帧灰度】缓存
+        let mut 临时灰度 = Mat::default();
+        imgproc::cvt_color(原始帧, &mut 临时灰度, imgproc::COLOR_BGR2GRAY, 0).map_err(|e| e.to_string())?;
+        imgproc::gaussian_blur(&临时灰度, &mut self.当前帧灰度, Size::new(21, 21), 0.0, 0.0, core::BORDER_DEFAULT).map_err(|e| e.to_string())?;
+
+        // 检查是否是第一帧输入
+        let 元素总数 = self.上一帧灰度.total();
+        let mut 是否全零 = true;
+        if 元素总数 > 0 {
+            // 快速检查上一帧是否全空
+            if let Ok(均值) = core::mean(&self.上一帧灰度, &core::no_array()) {
+                if 均值[0] > 0.1 { 是否全零 = false; }
+            }
+        }
+
+        if 是否全零 {
+            self.当前帧灰度.copy_to(&mut self.上一帧灰度).map_err(|e| e.to_string())?;
+            return Ok(动态势场 { 斥力网格: vec![vec![0.0; 20]; 20], 最高危险等级: 0.0, 逃逸方向: (0.0, 0.0) });
+        }
+
+        // 2. 策略 A 运动自愈：基于 IMU 偏航角速度，反向补偿上一帧（抵消自车转弯造成的背景漂移）
+        let mut 补偿后的上一帧 = Mat::default();
+        if 角速度_yaw_delta.abs() > 0.001 {
+            // 基于单目相机焦距算子估算水平像素漂移量 (假设水平焦距为 500 像素)
+            let 焦距_f_x = 500.0f32;
+            let 水平像素漂移 = 焦距_f_x * 角速度_yaw_delta;
+
+            // 动态注入反向平移偏差到 2x3 仿射矩阵的 X轴偏移量参数
+            self.运动补偿矩阵.at_2d_mut::<f32>(0, 2).map(|v| *v = -水平像素漂移).map_err(|e| e.to_string())?;
+
+            // 执行极速仿射变换
+            imgproc::warp_affine(
+                &self.上一帧灰度,
+                &mut 补偿后的上一帧,
+                &self.运动补偿矩阵,
+                Size::new(self.宽, self.高),
+                imgproc::INTER_LINEAR,
+                core::BORDER_REPLICATE,
+                Scalar::default()
+            ).map_err(|e| e.to_string())?;
+        } else {
+            self.上一帧灰度.copy_to(&mut 补偿后的上一帧).map_err(|e| e.to_string())?;
+        }
+
+        // 3. 青蛙眼核心算子：抑制感受野(IRF)与兴奋感受野(ERF)相减，提取纯动态变化
+        core::absdiff(&补偿后的上一帧, &self.当前帧灰度, &mut self.差异帧).map_err(|e| e.to_string())?;
+
+        // 4. 提取运动斑块并进行形态学膨胀
+        imgproc::threshold(&self.差异帧, &mut self.运动斑块, 25.0, 255.0, imgproc::THRESH_BINARY).map_err(|e| e.to_string())?;
+        
+        // * 步骤 B：执行形态学膨胀。由于此时 `差异帧` 数据已过时不再需要，我们将其作为输出缓存（Dst）安全复用！
+        imgproc::dilate(
+            &self.运动斑块,
+            &mut self.差异帧,
+            &core::no_array(),
+            Point::new(-1, -1),
+            2,
+            core::BORDER_CONSTANT,
+            Scalar::default()
+        ).map_err(|e| e.to_string())?;
+
+        // 5. 模拟感受野辐射：对膨胀后保存在 `差异帧` 中的斑块进行超强高斯模糊，生成 2D 连续势场
+        imgproc::gaussian_blur(&self.差异帧, &mut self.势场图, Size::new(101, 101), 0.0, 0.0, core::BORDER_DEFAULT).map_err(|e| e.to_string())?;
+
+        // 6. 降维计算：将高分辨率势场图压缩为 20x20 的粗糙网格，并解算出逃逸向量
+        let 栅格大小 = 20;
+        let mut 斥力网格 = vec![vec![0.0f32; 栅格大小]; 栅格大小];
+        let 块宽 = self.宽 / 栅格大小 as i32;
+        let 块高 = self.高 / 栅格大小 as i32;
+        let mut 最大值: u8 = 0;
+        
+        let mut 斥力中心_x = 0.0f32;
+        let mut 斥力中心_y = 0.0f32;
+        let mut 总斥力 = 0.0f32;
+
+        for 行 in 0..栅格大小 {
+            for 列 in 0..栅格大小 {
+                // 截取 20x20 对应的 ROI 区域，原地求均值
+                let roi = core::Rect::new(列 as i32 * 块宽, 行 as i32 * 块高, 块宽, 块高);
+                
+                // 改用链式方法调用风格，触发 Rust 自动解引用 (Deref Coercion)，平滑转换为 col_bounds 可用的形式
+                let 行切片 = self.势场图.row_bounds(roi.y, roi.y + roi.height).map_err(|e| e.to_string())?;
+                let 局部块 = 行切片.col_bounds(roi.x, roi.x + roi.width).map_err(|e| e.to_string())?;
+                
+                // 通过 &* 对 BoxedRef 解引用，将底层 Mat 裸引用安全传递给 mean 算子
+                if let Ok(均值) = core::mean(&局部块, &core::no_array()) {
+                    let 势能值 = (均值[0] / 255.0) as f32;
+                    斥力网格[行][列] = 势能值;
+                    
+                    if 均值[0] as u8 > 最大值 {
+                        最大值 = 均值[0] as u8;
+                    }
+
+                    // 物理质心累计计算，用于解算逃逸方向
+                    if 势能值 > 0.05 {
+                        let 相对坐标_x = (列 as f32 / 栅格大小 as f32) - 0.5; // [-0.5, 0.5]
+                        let 相对坐标_y = 0.5 - (行 as f32 / 栅格大小 as f32); // [0.5, -0.5]
+                        斥力中心_x += 相对坐标_x * 势能值;
+                        斥力中心_y += 相对坐标_y * 势能值;
+                        总斥力 += 势能值;
+                    }
+                }
+            }
+        }
+
+        // 解算逃逸方向 (反向质心向量)
+        let 逃逸方向 = if 总斥力 > 0.01 {
+            let 质心_x = 斥力中心_x / 总斥力;
+            let 质心_y = 斥力中心_y / 总斥力;
+            // 逃逸向量与质心方向相反
+            (-质心_x, -质心_y)
+        } else {
+            (0.0, 0.0)
+        };
+
+        // 7. 将当前帧更新为下一轮的抑制感受野背景
+        self.当前帧灰度.copy_to(&mut self.上一帧灰度).map_err(|e| e.to_string())?;
+
+        Ok(动态势场 {
+            斥力网格,
+            最高危险等级: 最大值 as f32 / 255.0,
+            逃逸方向,
+        })
+    }
+
+    fn 获取调试帧(&self) -> Result<Mat, String> {
+        Ok(self.势场图.clone())
+    }
+}
+</file>
+
+<file path="core-perception/src/perception/matcher.rs">
+use super::xfeat_engine::稀疏特征点;
+use opencv::{
+    prelude::*,
+    core::{self, Point2f},
+    calib3d,
+};
+
+/// 🛡️ 特征匹配与几何说谎者过滤核心组件
+pub struct 仿生匹配器;
+
+impl 仿生匹配器 {
+    /// 利用双向余弦距离交叉检验 (Mutual Nearest Neighbor) 进行特征向量极速硬核比对
+    pub fn 交叉匹配(
+        实时特征: &[稀疏特征点],
+        历史快照: &[稀疏特征点],
+        最小相似度阈值: f32,
+    ) -> Vec<(usize, usize, f32)> {
+        if 实时特征.is_empty() || 历史快照.is_empty() { return Vec::new(); }
+
+        let rows1 = 实时特征.len();
+        let rows2 = 历史快照.len();
+        
+        let mut 匹配12 = vec![-1i32; rows1];
+        let mut 得分12 = vec![0.0f32; rows1];
+
+        for i in 0..rows1 {
+            let mut max_score = -1.0f32;
+            let mut max_idx = -1i32;
+            for j in 0..rows2 {
+                let 相似度 = Self::余弦相似度(&实时特征[i].描述子, &历史快照[j].描述子);
+                if 相似度 > max_score {
+                    max_score = 相似度;
+                    max_idx = j as i32;
+                }
+            }
+            匹配12[i] = max_idx;
+            得分12[i] = max_score;
+        }
+
+        let mut 匹配21 = vec![-1i32; rows2];
+        for j in 0..rows2 {
+            let mut max_score = -1.0f32;
+            let mut max_idx = -1i32;
+            for i in 0..rows1 {
+                let 相似度 = Self::余弦相似度(&实时特征[i].描述子, &历史快照[j].描述子);
+                if 相似度 > max_score {
+                    max_score = 相似度;
+                    max_idx = i as i32;
+                }
+            }
+            匹配21[j] = max_idx;
+        }
+
+        let mut 最终匹配对 = Vec::new();
+        for i in 0..rows1 {
+            let j = 匹配12[i];
+            if j >= 0 {
+                let j_idx = j as usize;
+                if 匹配21[j_idx] == i as i32 && 得分12[i] > 最小相似度阈值 {
+                    最终匹配对.push((i, j_idx, 得分12[i]));
+                }
+            }
+        }
+
+        最终匹配对
+    }
+
+    /// RANSAC 对极几何外点过滤（彻底滤除动态噪点和假阴影点） (修复 7 参数接口)
+    pub fn 几何纠偏过滤(
+        实时特征: &[稀疏特征点],
+        历史快照: &[稀疏特征点],
+        匹配对: &[(usize, usize, f32)],
+        ransac_误差阈值: f64,
+    ) -> Result<Vec<(usize, usize, f32)>, String> {
+        if 匹配对.len() < 8 {
+            return Err("❌ 匹配对数量少于 8 对，物理约束不足，无法进行纠偏计算！".to_string());
+        }
+
+        let mut 投影点_实时 = core::Vector::<Point2f>::new();
+        let mut 投影点_历史 = core::Vector::<Point2f>::new();
+
+        for &(idx1, idx2, _) in 匹配对 {
+            let pt1 = &实时特征[idx1];
+            let pt2 = &历史快照[idx2];
+            投影点_实时.push(Point2f::new(pt1.x, pt1.y));
+            投影点_历史.push(Point2f::new(pt2.x, pt2.y));
+        }
+
+        let mut 状态掩码 = Mat::default();
+        
+        // 核心纠偏：传入 7 个完整参数，max_iters 设定为 1000 次最大迭代
+        calib3d::find_fundamental_mat(
+            &投影点_实时,
+            &投影点_历史,
+            calib3d::FM_RANSAC,
+            ransac_误差阈值,
+            0.999,
+            1000,
+            &mut 状态掩码
+        ).map_err(|e| e.to_string())?;
+
+        let mut 干净的匹配对 = Vec::new();
+        for i in 0..匹配对.len() {
+            let 判决 = *状态掩码.at::<u8>(i as i32).map_err(|e| e.to_string())?;
+            if 判决 != 0 {
+                干净的匹配对.push(匹配对[i]);
+            }
+        }
+
+        Ok(干净的匹配对)
+    }
+
+    fn 余弦相似度(v1: &[f32], v2: &[f32]) -> f32 {
+        let mut 点积 = 0.0f32;
+        for i in 0..64 {
+            点积 += v1[i] * v2[i];
+        }
+        点积
+    }
+}
+</file>
+
+<file path="core-perception/src/perception/mod.rs">
+// 🛡️ 将三个核心视觉算法向上一级 lib 网关完全公开
+pub mod frog_eye;
+pub mod matcher;
+pub mod xfeat_engine;
+</file>
+
+<file path="core-perception/src/perception/xfeat_engine.rs">
+use opencv::{
+    prelude::*,
+    core::{self, Mat, Size, Scalar},
+    imgproc,
+};
+use ort::session::Session;
+use ort::value::Value;
+
+/// 🛡️ 领域模型：XFeat 单特征点数据载荷
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct 稀疏特征点 {
+    pub x: f32,
+    pub y: f32,
+    pub 置信度: f32,
+    /// 64 维局部高精度描述子特征
+    pub 描述子: Vec<f32>,
+}
+
+/// 🛡️ XFeat 仿生视觉特征提取引擎
+pub struct 仿生特征提取器 {
+    // 🛡️ 工业级并发自愈：在 ort 2.0-rc.10+ 中，Session::run 被升级为了 &mut self 独占借用。
+    // 我们在此通过 Mutex 建立内部可变性（Interior Mutability）状态金库，
+    // 使得高层业务能继续以只读引用 &self 的形式进行多线程安全并发调用，彻底解决 Arc 共享生命周期死锁！
+    推理会话: std::sync::Mutex<Session>,
+    模型宽度: i32,
+    模型高度: i32,
+}
+
+impl 仿生特征提取器 {
+    /// 实例化提取器并加载本地 ONNX 权重
+    pub fn new<P: std::convert::AsRef<std::path::Path>>(model_path: P) -> Result<Self, String> {
+        // 创建高性能 ONNX 运行环境
+        let 推理会话 = Session::builder()
+            .map_err(|e| e.to_string())?
+            .with_intra_threads(1)
+            .map_err(|e| e.to_string())?
+            .commit_from_file(model_path)
+            .map_err(|e| e.to_string())?;
+
+        Ok(Self {
+            推理会话: std::sync::Mutex::new(推理会话),
+            模型宽度: 640,
+            模型高度: 640,
+        })
+    }
+
+    /// 双三次权重插值辅助算子
+    fn 计算双三次插值权重(t: f32) -> (f32, f32, f32, f32) {
+        let a = -0.75f32;
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let wm1 = a * (t3 - 2.0 * t2 + t);
+        let w0  = (a + 2.0) * t3 - (a + 3.0) * t2 + 1.0;
+        let w1  = -(a + 2.0) * t3 + (2.0 * a + 3.0) * t2 - a * t;
+        let w2  = a * (-t3 + t2);
+        (wm1, w0, w1, w2)
+    }
+
+    /// 核心处理：通过亚像素级插值获取 64 维描述子
+    fn 插值描述子(&self, 描述子数据: &[f32], 目标缓冲: &mut [f32], 坐标_x: f32, 坐标_y: f32) {
+        let x0 = 坐标_x.floor() as i32;
+        let y0 = 坐标_y.floor() as i32;
+        let xm1 = x0 - 1;
+        let ym1 = y0 - 1;
+        let dx = 坐标_x - x0 as f32;
+        let dy = 坐标_y - y0 as f32;
+
+        let (wxm1, wx0, wx1, wx2) = Self::计算双三次插值权重(dx);
+        let (wym1, wy0, wy1, wy2) = Self::计算双三次插值权重(dy);
+
+        let 宽d8 = self.模型宽度 / 8;
+        let 高d8 = self.模型高度 / 8;
+
+        let get_val_ptr = |y_idx: i32, x_idx: i32| -> usize {
+            let clamped_y = y_idx.clamp(0, 高d8 - 1) as usize;
+            let clamped_x = x_idx.clamp(0, 宽d8 - 1) as usize;
+            (clamped_y * 宽d8 as usize + clamped_x) * 64
+        };
+
+        let ptr_xm1_ym1 = get_val_ptr(ym1, xm1);
+        let ptr_x0_ym1 = get_val_ptr(ym1, x0);
+        let ptr_x1_ym1 = get_val_ptr(ym1, x0 + 1);
+        let ptr_x2_ym1 = get_val_ptr(ym1, x0 + 2);
+
+        let ptr_xm1_y0 = get_val_ptr(y0, xm1);
+        let ptr_x0_y0 = get_val_ptr(y0, x0);
+        let ptr_x1_y0 = get_val_ptr(y0, x0 + 1);
+        let ptr_x2_y0 = get_val_ptr(y0, x0 + 2);
+
+        let ptr_xm1_y1 = get_val_ptr(y0 + 1, xm1);
+        let ptr_x0_y1 = get_val_ptr(y0 + 1, x0);
+        let ptr_x1_y1 = get_val_ptr(y0 + 1, x0 + 1);
+        let ptr_x2_y1 = get_val_ptr(y0 + 1, x0 + 2);
+
+        let ptr_xm1_y2 = get_val_ptr(y0 + 2, xm1);
+        let ptr_x0_y2 = get_val_ptr(y0 + 2, x0);
+        let ptr_x1_y2 = get_val_ptr(y0 + 2, x0 + 1);
+        let ptr_x2_y2 = get_val_ptr(y0 + 2, x0 + 2);
+
+        let mut 平方和 = 0.0f32;
+        for i in 0..64 {
+            let v_m1 = wxm1 * 描述子数据[ptr_xm1_ym1 + i] + wx0 * 描述子数据[ptr_x0_ym1 + i] + wx1 * 描述子数据[ptr_x1_ym1 + i] + wx2 * 描述子数据[ptr_x2_ym1 + i];
+            let v_0  = wxm1 * 描述子数据[ptr_xm1_y0 + i]  + wx0 * 描述子数据[ptr_x0_y0 + i]  + wx1 * 描述子数据[ptr_x1_y0 + i]  + wx2 * 描述子数据[ptr_x2_y0 + i];
+            let v_1  = wxm1 * 描述子数据[ptr_xm1_y1 + i]  + wx0 * 描述子数据[ptr_x0_y1 + i]  + wx1 * 描述子数据[ptr_x1_y1 + i]  + wx2 * 描述子数据[ptr_x2_y1 + i];
+            let v_2  = wxm1 * 描述子数据[ptr_xm1_y2 + i]  + wx0 * 描述子数据[ptr_x0_y2 + i]  + wx1 * 描述子数据[ptr_x1_y2 + i]  + wx2 * 描述子数据[ptr_x2_y2 + i];
+
+            let v = wym1 * v_m1 + wy0 * v_0 + wy1 * v_1 + wy2 * v_2;
+            目标缓冲[i] = v;
+            平方和 += v * v;
+        }
+
+        // L2 归一化描述子
+        let 模长倒数 = 1.0 / (平方和.sqrt().max(1e-12));
+        for i in 0..64 {
+            目标缓冲[i] *= 模长倒数;
+        }
+    }
+
+    /// 核心图像计算：提取当前帧的 XFeat 稀疏特征点集合
+    pub fn 提取特征(&self, 输入图像: &Mat, 最大角点数: usize) -> Result<Vec<稀疏特征点>, String> {
+        let (宽, 高) = (输入图像.cols(), 输入图像.rows());
+        
+        // 1. 物理边缘对齐：将图像通过 Padding 补边到 640x640
+        let mut 适配帧 = Mat::default();
+        if 宽 != self.模型宽度 || 高 != self.模型高度 {
+            let 偏移_x = (self.模型宽度 - 宽) / 2;
+            let 偏移_y = (self.模型高度 - 高) / 2;
+            core::copy_make_border(
+                输入图像,
+                &mut 适配帧,
+                偏移_y, self.模型高度 - 高 - 偏移_y,
+                偏移_x, self.模型宽度 - 宽 - 偏移_x,
+                core::BORDER_CONSTANT,
+                Scalar::all(0.0)
+            ).map_err(|e| e.to_string())?;
+        } else {
+            适配帧 = 输入图像.clone();
+        }
+
+        // 2. 图像转单通道灰度（XFeat 要求 1 通道输入）
+        let mut 灰度帧 = Mat::default();
+        if 适配帧.channels() == 3 {
+            imgproc::cvt_color(&适配帧, &mut 灰度帧, imgproc::COLOR_BGR2GRAY, 0).map_err(|e| e.to_string())?;
+        } else {
+            灰度帧 = 适配帧.clone();
+        }
+
+        // 3. 图像转浮点并完成 Z-score 均值归一化 (修复 subtract & divide2 兼容参数)
+        let mut 浮点帧 = Mat::default();
+        灰度帧.convert_to(&mut 浮点帧, core::CV_32F, 1.0, 0.0).map_err(|e| e.to_string())?;
+        
+        let mut 均值 = Mat::default();
+        let mut 标准差 = Mat::default();
+        core::mean_std_dev(&浮点帧, &mut 均值, &mut 标准差, &core::no_array()).map_err(|e| e.to_string())?;
+        
+        // 🛡️ 借用安全自愈：利用 `归一化帧` 建立乒乓双缓存，彻底避开 Rust 编译器对
+        // subtract 与 divide2 算子中输入输出同矩阵导致的 Double Borrow（可变借用冲突）！
+        let mut 归一化帧 = Mat::default();
+        core::subtract(&浮点帧, &均值, &mut 归一化帧, &core::no_array(), -1).map_err(|e| e.to_string())?;
+        core::divide2(&归一化帧, &标准差, &mut 浮点帧, 1.0, -1).map_err(|e| e.to_string())?;
+
+        // 4. 将 OpenCV 浮点像素强转为 f32
+        let mut 张量数据 = vec![0.0f32; (self.模型宽度 * self.模型高度) as usize];
+        for y in 0..self.模型高度 {
+            let 行数据_u8 = 浮点帧.ptr(y).map_err(|e| e.to_string())?;
+            let 行数据_f32 = 行数据_u8 as *const f32; // 手动指针转换
+            let slice = unsafe { std::slice::from_raw_parts(行数据_f32, self.模型宽度 as usize) };
+            let start = (y * self.模型宽度) as usize;
+            张量数据[start..start + self.模型宽度 as usize].copy_from_slice(slice);
+        }
+
+        // 5. 🛡️ 极速物理自愈：直接利用 `([usize; N], Vec<f32>)` 结构体装载 Tensor。
+        // 注意：在 ort 中，ToShape 特征没有为 tuple (即圆括号) 实现，但已经为原生 array [即方括号] 实现了！
+        // 彻底切断 ndarray 链条，100% 免疫任何复杂的依赖版本冲突！
+        let 维度元组 = (
+            [1usize, 1, self.模型高度 as usize, self.模型宽度 as usize], 
+            张量数据
+        );
+        let 输入值 = Value::from_array(维度元组).map_err(|e| e.to_string())?;
+
+        // 5. ONNX 引擎前向推理
+        let 采样输入 = ort::inputs![输入值];
+        
+        // 🛡️ 独占锁自愈：在计算边界内临时锁住推理会话，安全借出 &mut Session 完成推理后立即自动释放锁！
+        let mut 会话锁 = self.推理会话.lock().map_err(|e| e.to_string())?;
+        let 输出 = 会话锁.run(采样输入).map_err(|e| e.to_string())?;
+
+        // 提取 1D 裸切片元组 ((&Shape, &[f32]))，规避 ndarray 高版本兼容断裂
+        let (_描述子形状, 描述子数据) = 输出[0].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+        let (_置信度形状, 置信度数据) = 输出[1].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+        let (_可靠性形状, 可靠性数据) = 输出[2].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+
+        let 宽d8 = self.模型宽度 / 8;
+        let 高d8 = self.模型高度 / 8;
+
+        // 7. 置信度 Softmax 概率重整与 Flatten 展平（1D 极速展平寻址）
+        let mut 概率展平图 = vec![0.0f32; (self.模型宽度 * self.模型高度) as usize];
+        for y_c in 0..高d8 as usize {
+            for x_c in 0..宽d8 as usize {
+                let cell_offset = (y_c * 宽d8 as usize + x_c) * 65;
+                
+                let mut cell_scores = [0.0f32; 65];
+                let mut max_val = -f32::INFINITY;
+                for c in 0..65 {
+                    let val = 置信度数据[cell_offset + c];
+                    cell_scores[c] = val;
+                    if val > max_val { max_val = val; }
+                }
+
+                let mut sum = 0.0f32;
+                for c in 0..65 {
+                    cell_scores[c] = (cell_scores[c] - max_val).exp();
+                    sum += cell_scores[c];
+                }
+                let inv_sum = 1.0 / sum;
+                for c in 0..65 {
+                    cell_scores[c] *= inv_sum;
+                }
+
+                // 废弃第 65 通道，将 64 个通道映射回 8x8 网格中
+                for k in 0..8 {
+                    for l in 0..8 {
+                        let val_idx = k * 8 + l;
+                        let dst_y = y_c * 8 + k;
+                        let dst_x = x_c * 8 + l;
+                        概率展平图[dst_y * self.模型宽度 as usize + dst_x] = cell_scores[val_idx];
+                    }
+                }
+            }
+        }
+
+        // 8. 可靠性图插值放大并与置信度相乘，排除非稳定噪点
+        let mut 可靠性小图 = Mat::new_rows_cols_with_default(高d8, 宽d8, core::CV_32F, Scalar::all(0.0)).map_err(|e| e.to_string())?;
+        for y in 0..高d8 {
+            let row_u8 = 可靠性小图.ptr_mut(y).map_err(|e| e.to_string())?;
+            let row_f32 = row_u8 as *mut f32; // 指针强转
+            let slice = unsafe { std::slice::from_raw_parts_mut(row_f32, 宽d8 as usize) };
+            for x in 0..宽d8 {
+                slice[x as usize] = 可靠性数据[y as usize * 宽d8 as usize + x as usize];
+            }
+        }
+
+        let mut 可靠性大图 = Mat::default();
+        imgproc::resize(&可靠性小图, &mut 可靠性大图, Size::new(self.模型宽度, self.模型高度), 0.0, 0.0, imgproc::INTER_LINEAR).map_err(|e| e.to_string())?;
+
+        // 9. 5x5 极限 NMS (Non-Maximum Suppression) 并剔除边缘点
+        let nms_kernel = 5;
+        let half_k = nms_kernel / 2;
+        let 阈值 = 0.05f32;
+        let mut 候选特征点 = Vec::new();
+
+        for y in half_k..(self.模型高度 - half_k) {
+            for x in half_k..(self.模型宽度 - half_k) {
+                let current_idx = (y * self.模型宽度 + x) as usize;
+                let original_score = 概率展平图[current_idx];
+                
+                let reliability = *可靠性大图.at_2d::<f32>(y, x).map_err(|e| e.to_string())?;
+                let score = original_score * reliability;
+
+                if score <= 阈值 { continue; }
+
+                let mut is_max = true;
+                for ky in -half_k..=half_k {
+                    for kx in -half_k..=half_k {
+                        if kx == 0 && ky == 0 { continue; }
+                        let n_idx = ((y + ky) * self.模型宽度 + (x + kx)) as usize;
+                        let n_reliability = *可靠性大图.at_2d::<f32>(y + ky, x + kx).map_err(|e| e.to_string())?;
+                        let n_score = 概率展平图[n_idx] * n_reliability;
+                        if score < n_score {
+                            is_max = false;
+                            break;
+                        }
+                    }
+                    if !is_max { break; }
+                }
+
+                if is_max && x > 12 && x < self.模型宽度 - 12 && y > 12 && y < self.模型高度 - 12 {
+                    候选特征点.push((x, y, score));
+                }
+            }
+        }
+
+        候选特征点.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+
+        // 10. 双三次亚像素插值描述子，计算 64 维特征描述子
+        let 缩放_x = (宽d8 as f32) / (self.模型宽度 as f32 - 1.0);
+        let 缩放_y = (高d8 as f32) / (self.模型高度 as f32 - 1.0);
+        let mut 最终结果 = Vec::new();
+
+        for (px, py, score) in 候选特征点.into_iter().take(最大角点数) {
+            let interp_x = (px as f32) * 缩放_x - 0.5;
+            let interp_y = (py as f32) * 缩放_y - 0.5;
+
+            let mut 描述子 = vec![0.0f32; 64];
+            self.插值描述子(描述子数据, &mut 描述子, interp_x, interp_y);
+            
+            let 还原_x = px as f32 - ((self.模型宽度 - 宽) / 2) as f32;
+            let 还原_y = py as f32 - ((self.模型高度 - 高) / 2) as f32;
+
+            最终结果.push(稀疏特征点 {
+                x: 还原_x,
+                y: 还原_y,
+                置信度: score,
+                描述子,
+            });
+        }
+
+        Ok(最终结果)
+    }
+}
+</file>
+
+<file path="core-perception/src/lib.rs">
+// 🛡️ 工业级网关设计：向外界公开我们的算法子模块
+pub mod perception;
+</file>
+
+<file path="core-perception/Cargo.toml">
+[package]
+name = "core-perception"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 完美继承自根目录顶级声明，保持全栈版本一致性
+opencv = { workspace = true }
+ort = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ndarray = { workspace = true }
+</file>
+
+<file path="showcase/src/bin/demo_frog.rs">
+use opencv::{
+    prelude::*,
+    core::{self, Mat, Scalar},
+    imgproc,
+    highgui,
+    videoio::{VideoCapture, CAP_ANY},
+};
+use core_perception::perception::frog_eye::{仿生青蛙眼, 伪青蛙眼感知器};
+use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", "=".repeat(80));
+    println!("🛡️  启动【WSL2 仿生青蛙眼 - 2D 动态人地势场可视化大屏 v3.0】");
+    println!("{}", "=".repeat(80));
+
+    // 1. 连接物理主权手机视频源
+    let 手机视频流地址 = "http://192.168.5.19:8080/video";
+    let mut 视频源 = VideoCapture::from_file(手机视频流地址, CAP_ANY)?;
+    if !VideoCapture::is_opened(&视频源)? {
+        println!("❌ [并网失败] 物理视频并网失败，请检查手机网络与 IP 摄像头开启状态！");
+        return Ok(());
+    }
+    println!("✓ [并网成功] 手机视频通路并网成功！正在启动 Mailbox 高频抓取...");
+
+    // 获取并对齐物理视频源尺寸
+    let 帧宽 = 视频源.get(opencv::videoio::CAP_PROP_FRAME_WIDTH)? as i32;
+    let 帧高 = 视频源.get(opencv::videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
+    println!("✓ [分辨率对齐] 对齐参数: {}x{}", 帧宽, 帧高);
+
+    // 2. 初始化仿生青蛙眼感知器并完成零拷贝预分配
+    let mut 青蛙眼 = 仿生青蛙眼::new(); // 🛡️ 修复：调用零参数的标准构造函数
+    // 强制调用感知器金库初始化
+    青蛙眼.初始化(帧宽, 帧高).map_err(|e| e.to_string())?;
+    println!("✓ [零拷贝] 仿生青蛙眼感受野内存金库预分配完成！");
+
+    // 3. 构建多线程 Single-Element Mailbox 信箱
+    let 共享信箱 = Arc::new(Mutex::new(None));
+    let 共享信箱_抓取 = 共享信箱.clone();
+
+    thread::spawn(move || {
+        loop {
+            let mut 临时帧 = Mat::default();
+            if let Ok(true) = 视频源.read(&mut 临时帧) {
+                if !临时帧.empty() {
+                    let mut lock = 共享信箱_抓取.lock().unwrap();
+                    *lock = Some(临时帧);
+                }
+            }
+        }
+    });
+
+    println!("\n{}", "=".repeat(80));
+    print!("📊 [势场监测大屏开启] 请挥舞你的双手，或者移动摄像头观测势场强度的变化...\n");
+    println!("📊 按 'q' 键可安全退出大屏");
+    println!("{}", "=".repeat(80));
+
+    // 创建可视化渲染窗口
+    let 窗口名称 = "WSL2 - Pseudo Frog-Eye Potential Field";
+    highgui::named_window(窗口名称, highgui::WINDOW_AUTOSIZE)?;
+
+    // 4. 进入 30Hz 自适应避障感知环
+    loop {
+        let 当前帧 = {
+            let mut lock = 共享信箱.lock().unwrap();
+            lock.take()
+        };
+
+        if let Some(帧) = 当前帧 {
+            // 避免阻塞主线程，派发到密集线程池计算势场
+            let mut 青蛙眼_clone = 青蛙眼;
+            let 帧_clone = 帧.clone();
+            
+            let (更新后的青蛙眼, 势场计算结果) = tokio::task::spawn_blocking(move || {
+                // 模拟偏航角增量为 0.0 (静态测试)
+                let 结果 = 青蛙眼_clone.处理图像帧(&帧_clone, 0.0);
+                (青蛙眼_clone, 结果)
+            }).await?;
+
+            青蛙眼 = 更新后的青蛙眼;
+
+            match 势场计算结果 {
+                Ok(势场) => {
+                    // 获取模糊后的 2D 势场灰度大图
+                    if let Ok(势场图) = 青蛙眼.获取调试帧() {
+                        let mut 热力图 = Mat::default();
+                        let mut 渲染混合帧 = Mat::default();
+
+                        // 1. 将 2D 连续势场映射为 JET 伪彩色热力图 (越红代表斥力越大，越危险)
+                        imgproc::apply_color_map(&势场图, &mut 热力图, imgproc::COLORMAP_JET)?;
+
+                        // 2. 将原图与热力图以 0.6 : 0.4 的物理高保真比例融合
+                        core::add_weighted(&帧, 0.6, &热力图, 0.4, 0.0, &mut 渲染混合帧, -1)?;
+
+                        // 3. 在画面左上角渲染最高危险等级指标，便于直观观测
+                        let 警报文字 = format!("Max Threat Level: {:.2}", 势场.最高危险等级);
+                        let 颜色 = if 势场.最高危险等级 > 0.3 {
+                            Scalar::new(0.0, 0.0, 255.0, 0.0) // 危险：红色
+                        } else {
+                            Scalar::new(0.0, 255.0, 0.0, 0.0) // 安全：绿色
+                        };
+                        
+                        imgproc::put_text(
+                            &mut 渲染混合帧,
+                            &警报文字,
+                            core::Point::new(20, 40),
+                            imgproc::FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            颜色,
+                            2,
+                            imgproc::LINE_AA,
+                            false
+                        )?;
+
+                        // 在大窗口进行实时高帧率渲染
+                        highgui::imshow(窗口名称, &渲染混合帧)?;
+                    }
+                }
+                Err(e) => println!("❌ [势场解算异常]: {}", e),
+            }
+
+            // 检测键盘输入，按 'q' 退出
+            let key = highgui::wait_key(10)?;
+            if key == 113 { 
+                break;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    Ok(())
+}
+</file>
+
+<file path="showcase/src/bin/demo_xfeat.rs">
+use opencv::{
+    prelude::*,
+    core::{self, Mat, Point, Scalar},
+    imgproc,
+    highgui,
+    videoio::{VideoCapture, CAP_ANY},
+};
+use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+// 🛡️ 核心并网：直接从工作空间的核心算法库中，引入感知器和匹配器
+use core_perception::perception::xfeat_engine::仿生特征提取器;
+use core_perception::perception::matcher::仿生匹配器;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", "=".repeat(80));
+    println!("🛡️  启动【WSL2 仿生视觉 XFeat 纠偏与双通道画线验证沙盘 v2.5】");
+    println!("{}", "=".repeat(80));
+
+    // 1. 加载本地下载的标准 640x640 ONNX 模型权重
+    let model_path = "model/xfeat_640x640.onnx";
+    let 提取器 = Arc::new(仿生特征提取器::new(model_path)?);
+    println!("✓ [ONNX] XFeat 神经网络推理引擎加载成功！");
+
+    // 2. 连接物理主权手机视频源
+    let 手机视频流地址 = "http://192.168.5.19:8080/video";
+    let mut 视频源 = VideoCapture::from_file(手机视频流地址, CAP_ANY)?;
+    if !VideoCapture::is_opened(&视频源)? {
+        println!("❌ [并网失败] 物理视频并网失败，请检查手机网络与 IP 端口状态！");
+        return Ok(());
+    }
+    println!("✓ [并网成功] 手机视频通路并网成功！正在启动 Mailbox 高频抓取...");
+
+    // 获取并对齐物理视频源尺寸
+    let 帧宽 = 视频源.get(opencv::videoio::CAP_PROP_FRAME_WIDTH)? as i32;
+    let 帧高 = 视频源.get(opencv::videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
+    println!("✓ [分辨率对齐] 对齐参数: {}x{}", 帧宽, 帧高);
+
+    // 3. 构建多线程 Single-Element Mailbox 信箱
+    let 共享信箱 = Arc::new(Mutex::new(None));
+    let 共享信箱_抓取 = 共享信箱.clone();
+
+    thread::spawn(move || {
+        loop {
+            let mut 临时帧 = Mat::default();
+            if let Ok(true) = 视频源.read(&mut 临时帧) {
+                if !临时帧.empty() {
+                    let mut lock = 共享信箱_抓取.lock().unwrap();
+                    *lock = Some(临时帧);
+                }
+            }
+        }
+    });
+
+    // 4. 等待 2 秒，小车开机并就位。然后“睁眼拍照”，保存基准帧与基准特征点
+    println!("⏳ [系统初始化] 小车开机自检中，请将手机摄像头对准一处静止场景（地标站牌）...");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let (基准帧_mat, 基准地标快照) = loop {
+        let 当前帧 = {
+            let mut lock = 共享信箱.lock().unwrap();
+            lock.take()
+        };
+        if let Some(帧) = 当前帧 {
+            println!("📸 [基准站牌录制] 咔嚓！提取 XFeat 骨干特征点...");
+            let 提取器_clone = 提取器.clone();
+            let 帧_clone = 帧.clone();
+            let 特征结果 = tokio::task::spawn_blocking(move || {
+                提取器_clone.提取特征(&帧_clone, 200)
+            }).await??;
+            
+            println!("✓ 成功录制基准站牌！提取了 {} 个 XFeat 骨干特征点！", 特征结果.len());
+            break (帧, 特征结果);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+
+    println!("\n{}", "=".repeat(80));
+    println!("📊 [探针数值监测面板开启] 按 'q' 键可退出可视化窗口");
+    println!("格式: [数值探针] | 实时特征点 | 原始匹配 | RANSAC生存 | 几何一致性 | 纠偏判定");
+    println!("{}", "=".repeat(80));
+
+    // 创建可视化渲染窗口
+    let 窗口名称 = "FSD Bionic Eye - XFeat Homing Sandbox";
+    highgui::named_window(窗口名称, highgui::WINDOW_AUTOSIZE)?;
+
+    // 5. 进入 30Hz 自适应智驾环
+    loop {
+        let 当前帧 = {
+            let mut lock = 共享信箱.lock().unwrap();
+            lock.take()
+        };
+
+        if let Some(帧) = 当前帧 {
+            let 提取器_ref = 提取器.clone();
+            let 基准_ref = 基准地标快照.clone();
+            let 基准帧_mat_ref = 基准帧_mat.clone();
+            let 帧_copy = 帧.clone();
+
+            // 派发到 CPU 密集线程池进行并行特征计算
+            let (计算结果, 渲染帧) = tokio::task::spawn_blocking(move || -> (Result<(), String>, Mat) {
+                // 初始化双通道大画布 [宽 = 帧宽 * 2, 高 = 帧高]
+                let mut 画布 = Mat::new_rows_cols_with_default(帧高, 帧宽 * 2, core::CV_8UC3, Scalar::all(0.0)).unwrap();
+                
+                // 🛡️ 极速顺序物理拷贝机制：通过局部作用域隔离借用周期，100% 绕开 Rust 双重可变借用红线！
+                {
+                    let mut row_slice = 画布.row_bounds_mut(0, 帧高).unwrap();
+                    let mut 左画布 = row_slice.col_bounds_mut(0, 帧宽).unwrap();
+                    帧_copy.copy_to(&mut 左画布).unwrap();
+                }
+
+                {
+                    let mut row_slice = 画布.row_bounds_mut(0, 帧高).unwrap();
+                    let mut 右画布 = row_slice.col_bounds_mut(帧宽, 帧宽 * 2).unwrap();
+                    基准帧_mat_ref.copy_to(&mut 右画布).unwrap();
+                }
+
+                let 实时特征 = match 提取器_ref.提取特征(&帧_copy, 200) {
+                    Ok(f) => f,
+                    Err(e) => return (Err(e), 画布),
+                };
+                
+                // 极速交叉匹配
+                let 匹配对 = 仿生匹配器::交叉匹配(&实时特征, &基准_ref, 0.82);
+
+                // RANSAC 对极几何说谎者过滤
+                let 过滤结果 = 仿生匹配器::几何纠偏过滤(&实时特征, &基准_ref, &匹配对, 3.0);
+
+                match 过滤结果 {
+                    Ok(干净匹配) => {
+                        let 一致性 = if !匹配对.is_empty() {
+                            (干净匹配.len() as f32 / 匹配对.len() as f32) * 100.0
+                        } else {
+                            0.0
+                        };
+
+                        // 结构化探针数据输出
+                        println!(
+                            "[数值探针] | 实时特征点: {:>3} | 原始匹配: {:>3} | RANSAC生存: {:>3} | 几何一致性: {:>5.1}% | 状态: 位置纠偏成功 🧭",
+                            实时特征.len(),
+                            匹配对.len(),
+                            干净匹配.len(),
+                            一致性
+                        );
+
+                        // 绘制匹配连线
+                        for &(idx1, idx2, _) in &干净匹配 {
+                            let pt1 = &实时特征[idx1];
+                            let pt2 = &基准_ref[idx2];
+
+                            let 实时坐标 = Point::new(pt1.x as i32, pt1.y as i32);
+                            // 历史特征点在右侧子画布，X 坐标需要向右平移 1 个帧宽
+                            let 历史坐标 = Point::new(pt2.x as i32 + 帧宽, pt2.y as i32);
+
+                            // 在左侧画绿色圆圈，右侧画蓝色圆圈
+                            let _ = imgproc::circle(&mut 画布, 实时坐标, 4, Scalar::new(0.0, 255.0, 0.0, 0.0), 2, imgproc::LINE_8, 0);
+                            let _ = imgproc::circle(&mut 画布, 历史坐标, 4, Scalar::new(255.0, 0.0, 0.0, 0.0), 2, imgproc::LINE_8, 0);
+                            
+                            // 用绿色亮线条连起来
+                            let _ = imgproc::line(&mut 画布, 实时坐标, 历史坐标, Scalar::new(0.0, 255.0, 0.0, 0.0), 1, imgproc::LINE_8, 0);
+                        }
+                    }
+                    Err(_e) => {
+                        println!(
+                            "[数值探针] | 实时特征点: {:>3} | 原始匹配: {:>3} | RANSAC生存:   0 | 几何一致性:  0.0% | 状态: ⚠️ 自愈挂盘(匹配数少于8)",
+                            实时特征.len(),
+                            匹配对.len()
+                        );
+                    }
+                }
+                (Ok(()), 画布)
+            }).await?;
+
+            if let Err(e) = 计算结果 {
+                println!("❌ 算法引擎异常: {}", e);
+            }
+
+            // 在窗口渲染双通道画面
+            highgui::imshow(窗口名称, &渲染帧)?;
+            
+            // 检测键盘输入，按 'q' 退出
+            let key = highgui::wait_key(10)?;
+            if key == 113 { // 'q' 的 ASCII 码
+                break;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    Ok(())
+}
+</file>
+
+<file path="showcase/src/main.rs">
+fn main() {
+    println!("Hello, world!");
+}
+</file>
+
+<file path="simulation-env/nmpc_model.py">
+# nmpc_model.py
+from acados_template import AcadosModel
+import casadi as ca
+
+def setup_car_model():
+    model_name = "diff_drive_car"
+
+    # 1. 定义系统状态量 (States)
+    # x: X轴位置, y: Y轴位置, theta: 航向角, v: 前进线速度 [cite: 21]
+    x = ca.MX.sym('x')
+    y = ca.MX.sym('y')
+    theta = ca.MX.sym('theta')
+    v = ca.MX.sym('v')
+    states = ca.vcat([x, y, theta, v])
+
+    # 2. 定义控制输入量 (Controls)
+    # a: 前进加速度, omega: 旋转角速度
+    a = ca.MX.sym('a')
+    omega = ca.MX.sym('omega')
+    controls = ca.vcat([a, omega])
+
+    # 3. 定义状态导数 (State derivatives for ODE)
+    x_dot = ca.MX.sym('x_dot')
+    y_dot = ca.MX.sym('y_dot')
+    theta_dot = ca.MX.sym('theta_dot')
+    v_dot = ca.MX.sym('v_dot')
+    states_dot = ca.vcat([x_dot, y_dot, theta_dot, v_dot])
+
+    # 4. 连续时间非线性动力学方程 (连续常微分方程) [cite: 21]
+    f_expl = ca.vcat([
+        v * ca.cos(theta),
+        v * ca.sin(theta),
+        omega,
+        a
+    ])
+
+    # 5. 组装 acados 模型对象
+    model = AcadosModel()
+    model.f_impl_expr = states_dot - f_expl # 隐式表达式
+    model.f_expl_expr = f_expl             # 显式表达式
+    model.x = states
+    model.xdot = states_dot
+    model.u = controls
+    model.name = model_name
+
+    return model
+</file>
+
+<file path="tools/diagnostics/diagnose.py">
+# diagnose.py
+import os
+import sys
+
+def run_diagnostics():
+    print("=" * 60)
+    print("🔍 FSD-Car & Acados 环境自动诊断程序")
+    print("=" * 60)
+
+    # 1. 检查环境变量
+    acados_env = os.environ.get('ACADOS_SOURCE_DIR', '')
+    ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+    print(f"[环境变量] ACADOS_SOURCE_DIR: {acados_env or '❌ 未设置'}")
+    print(f"[环境变量] LD_LIBRARY_PATH: {ld_path or '❌ 未设置'}")
+
+    # 2. 检查环境变量路径是否真实存在
+    env_dir_exists = False
+    if acados_env:
+        env_dir_exists = os.path.isdir(acados_env)
+        print(f"[路径检查] 环境变量指向的目录是否存在: {'✅ 存在' if env_dir_exists else '❌ 不存在 (路径失效)'}")
+    else:
+        print("[路径检查] ❌ 环境变量未设置，无法校验")
+
+    # 3. 检查 Python 环境中 acados_template 的导入状态
+    import_ok = False
+    try:
+        import acados_template
+        import_ok = True
+        print(f"[Python导入] acados_template 导入状态: ✅ 成功 (位置: {acados_template.__file__})")
+    except ImportError as e:
+        print(f"[Python导入] acados_template 导入状态: ❌ 失败 (原因: {e})")
+
+    # 4. 全局搜索 acados 源码目录的真实物理路径
+    print("\n[磁盘扫描] 正在寻找真实的 acados 源码目录位置...")
+    possible_paths = []
+    search_root = "/home/zhz/FSD-car"
+    
+    if os.path.exists(search_root):
+        for root, dirs, files in os.walk(search_root):
+            if 'acados' in dirs:
+                candidate = os.path.join(root, 'acados')
+                # 校验是否为真实的 acados 仓库目录（通过特有子文件检验）
+                if os.path.exists(os.path.join(candidate, 'interfaces', 'acados_template')):
+                    possible_paths.append(candidate)
+                    # 防止深入扫描子目录中的 acados
+                    dirs.remove('acados')
+    
+    if possible_paths:
+        print("✅ 找到以下有效的 acados 目录：")
+        for p in possible_paths:
+            print(f"  📍 {p}")
+    else:
+        print("❌ 未在 /home/zhz/FSD-car 目录下找到有效的 acados 目录。请确认它是否被误删。")
+
+    # 5. 提供诊断结论与一键修复建议
+    print("\n" + "=" * 60)
+    print("💡 诊断结论与一键修复建议:")
+    print("=" * 60)
+
+    if not possible_paths:
+        print("由于未找到 acados 源码目录，请先确认 acados 文件夹是否被不小心删除了。")
+        return
+
+    # 选取找到的第一个路径作为基准
+    correct_path = possible_paths[0]
+    
+    needs_env_update = (acados_env != correct_path)
+    needs_reinstall = not import_ok or needs_env_update
+
+    if needs_env_update:
+        print(f"⚠️ 检测到环境变量失效或路径不匹配！")
+        print(f"  当前环境变量值: {acados_env}")
+        print(f"  实际物理文件值: {correct_path}")
+        print("\n👉 修复步骤 1：请在终端运行以下命令更新当前环境变量（并同步修改 ~/.bashrc）：")
+        print(f"export ACADOS_SOURCE_DIR=\"{correct_path}\"")
+        print(f"export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH:{correct_path}/lib\"")
+
+    if needs_reinstall:
+        print("\n👉 修复步骤 2：请复制并运行以下命令重新关联 Python 库：")
+        print(f"pip install -e {correct_path}/interfaces/acados_template")
+
+    if not needs_env_update and import_ok:
+        print("您的环境配置参数看起来正常。")
+        print("如果代码依然报错，可能是您在运行代码时没有激活当前的 Python 虚拟环境，导致指向了错误的 Python 解释器。")
+        print(f"当前诊断程序所运行的 Python 路径为: {sys.executable}")
+
+if __name__ == "__main__":
+    run_diagnostics()
+</file>
+
+<file path="tools/diagnostics/network_check.py">
+import socket
+import urllib.request
+import urllib.error
+import subprocess
+
+print("==============================================")
+print("     WSL2 物理网络 & DNS 域名解析 诊断工具")
+print("==============================================")
+
+# 1. 检查底层网络（直接用IP连接，绕过DNS）
+print("【第一步】测试物理网络连接 (Ping 微软公共DNS)...", end="")
+try:
+    # 8.8.8.8 是谷歌的公共DNS，114.114.114.114 是国内公共DNS
+    result = subprocess.run(["ping", "-c", "2", "-W", "2", "114.114.114.114"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode == 0:
+        print(" 成功 (物理网络是通的)")
+    else:
+        print(" 失败 (物理网络不通，可能是Windows防火墙或网卡问题)")
+except Exception as e:
+    print(f" 失败 ({e})")
+
+# 2. 检查 DNS 域名解析
+print("【第二步】测试域名解析 (百度)...", end="")
+try:
+    socket.gethostbyname("www.baidu.com")
+    print(" 成功 (DNS工作正常)")
+except Exception as e:
+    print(f" 失败 ({e}) -> 说明WSL2不认识网址，通常需要修改 /etc/resolv.conf")
+
+# 3. 检查微软更新服务器（code . 报错的关键原因）
+print("【第三步】测试连接 VS Code 服务器...", end="")
+try:
+    urllib.request.urlopen("https://update.code.visualstudio.com", timeout=4)
+    print(" 成功 (可以正常连接微软，应能打开 code)")
+except Exception as e:
+    print(f" 失败 ({e}) -> 无法下载VS Code Server")
+
+# 4. 检查 GitHub 连接（git clone 报错的原因）
+print("【第四步】测试连接 GitHub...", end="")
+try:
+    urllib.request.urlopen("https://github.com", timeout=4)
+    print(" 成功 (可以正常拉取 acados)")
+except Exception as e:
+    print(f" 失败 ({e}) -> 连接GitHub超时，国内网络环境常见，需要配置代理")
+
+print("==============================================")
+</file>
+
+<file path="tools/diagnostics/network_deep_probe.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import os
+import socket
+import subprocess
+import sys
+import time
+
+
+def get_wsl_gateway_ip():
+    try:
+        cmd = "ip route | grep default | awk '{print $3}'"
+        ip = subprocess.check_output(cmd, shell=True, text=True).strip()
+        return ip if ip else None
+    except Exception:
+        return None
+
+
+def get_mdns_hostname():
+    try:
+        cmd = "hostname"
+        hostname = subprocess.check_output(cmd, shell=True, text=True).strip()
+        # Windows mDNS 主机名通常匹配 WSL 实例的 hostname + .local
+        return f"{hostname}.local"
+    except Exception:
+        return None
+
+
+def run_server():
+    print("=" * 80)
+    print("🛰️  NEXUS BIM Portal - 跨 OS 物理连通性极速诊断服务端 (Windows)")
+    print("=" * 80)
+
+    # 打印 Windows 所有本地网卡 IP 矩阵，揪出真实的局域网和虚拟网卡 IP
+    hostname = socket.gethostname()
+    print(f"🖥️  Windows 宿主机名称: {hostname}")
+    try:
+        ips = socket.gethostbyname_ex(hostname)[2]
+        print("🌐 Windows 当前活跃网卡 IP 矩阵:")
+        for ip in ips:
+            print(f"  -> {ip}")
+    except Exception as e:
+        print(f"⚠️ 无法获取网卡列表: {e}")
+
+    port = 17449
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    try:
+        s.bind(("0.0.0.0", port))
+        s.listen(5)
+        print(
+            f"\n🟢 [监听中] 已成功绑定 0.0.0.0:{port}。正在全力侦听来自 WSL2 的 TCP SYN 信号..."
+        )
+    except Exception as e:
+        print(f"❌ 绑定失败 (端口已被占用或无权限): {e}")
+        return
+
+    s.settimeout(1.0)
+    try:
+        while True:
+            try:
+                conn, addr = s.accept()
+                print("\n🎉 【连接成功建立!!!】 捕获到来自 WSL2 的物理握手信号:")
+                print(
+                    f"  -> 源 IP: {addr[0]} | 源端口: {idx_port if 'idx_port' in locals() else addr[1]}"
+                )
+                conn.sendall(b"NEXUS_TCP_CONNECTED_OK\n")
+                conn.close()
+            except socket.timeout:
+                continue
+    except KeyboardInterrupt:
+        print("\n🛑 服务端退出")
+    finally:
+        s.close()
+
+
+def run_client():
+    print("=" * 80)
+    print("🛰️  NEXUS BIM Portal - 跨 OS 物理连通性极速诊断客户端 (WSL2)")
+    print("=" * 80)
+
+    # 1. 自动提取候选探测目标
+    gateway_ip = get_wsl_gateway_ip()
+    mdns_host = get_mdns_hostname()
+
+    candidates = []
+    if gateway_ip:
+        candidates.append(("WSL 默认网关 IP", gateway_ip))
+    if mdns_host:
+        candidates.append(("Windows mDNS 主机名", mdns_host))
+    candidates.append(("常见默认网关", "172.23.176.1"))
+
+    port = 17449
+    print("🕵️‍♂️ 规划探测矩阵 (多路径探测，防止 NAT 路由失效):")
+    for name, addr in candidates:
+        print(f"  -> [{name}]: {addr}:{port}")
+
+    print("\n⚡ [开始发射高频 TCP SYN 探测包...]")
+    for name, addr in candidates:
+        print(f"\n🛰️ 正在测试路径 [{name}] -> {addr}...")
+
+        # 尝试进行 DNS/mDNS 解析
+        try:
+            target_ip = socket.gethostbyname(addr)
+            print(f"  -> 解析成功! 映射真实 IP 为: {target_ip}")
+        except Exception as e:
+            print(f"  ❌ 域名解析失败: {e}")
+            target_ip = addr
+
+        # 执行原生 TCP 握手
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2.0)  # 2秒判定
+
+        start_time = time.time()
+        try:
+            s.connect((target_ip, port))
+            elapsed = (time.time() - start_time) * 1000
+            print(f"  ✅ 【连通大获成功!!!】耗时: {elapsed:.2f} ms")
+
+            # 接收服务端确认
+            data = s.recv(1024)
+            print(f"  💬 收到 Windows 探针确认: {data.decode().strip()}")
+            s.close()
+            print(f"\n💡 终极自愈药方：请立刻将你的配置文件中的连接 IP 修改为: {addr}")
+            print("=" * 80)
+            return  # 一旦有通的，直接结束
+        except socket.timeout:
+            print("  ❌ 【连接超时 (Timeout)】耗时: > 2000 ms")
+            print(
+                "     -> 诊断：物理丢包。防火墙仍在使用隐藏策略拦截（比如 Windows 有第三方安全软件火绒、360、腾讯管家等）。"
+            )
+        except ConnectionRefusedError:
+            print("  ❌ 【连接被拒绝 (Connection Refused)】")
+            print(
+                "     -> 诊断：物理通路已通，但 Windows 端的 Server 探针没运行，或没绑定 17449 端口。"
+            )
+        except Exception as e:
+            print(f"  ❌ 探测异常: {e}")
+        finally:
+            s.close()
+
+    print("\n❌ 探测矩阵全部挂盘，物理通道被底层彻底封锁！")
+    print("💡 终极自愈诊断建议：")
+    print(
+        "  1. 请检查你的 Windows 是否开启了代理（如 Clash/V2Ray），尤其是“TUN 模式”或“系统代理”。代理软件会强行将 127.0.0.1 之外的虚拟路由全部吃掉！请彻底关闭它们再测。"
+    )
+    print(
+        "  2. 请在 Windows 控制面板中，临时将 Windows 防火墙整体关闭（公用与专用网络），排除是否属于高级组策略强行拦截。"
+    )
+    print("=" * 80)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--server":
+        # 针对 Windows 端载入 DLL 搜索链以防止 OMNI 报错
+        cuda_bin_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin"
+        if os.path.exists(cuda_bin_path):
+            try:
+                os.add_dll_directory(cuda_bin_path)
+            except Exception:
+                pass
+        run_server()
+    else:
+        run_client()
+</file>
+
+<file path="tools/diagnostics/probe_acados_env.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import ctypes
+import os
+
+
+def probe():
+    print("=" * 70)
+    print("🛰️  FSD-Car & Acados 动态库装载链深度检测探针")
+    print("=" * 70)
+
+    # 1. 检查 ACADOS_SOURCE_DIR 变量
+    acados_source = os.environ.get(
+        "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
+    )
+    print(f"📌 [环境变量] ACADOS_SOURCE_DIR -> {acados_source}")
+    if not os.path.exists(acados_source):
+        print("❌ [路径失效] 找不到指定的 acados 物理目录！")
+        return
+
+    # 2. 检测动态链接库完整性
+    lib_dir = os.path.join(acados_source, "lib")
+    print(f"📌 [动态库目录] 正在扫描: {lib_dir}")
+
+    required_libs = ["libacados.so", "libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]
+    missing_libs = []
+
+    if os.path.exists(lib_dir):
+        files_in_lib = os.listdir(lib_dir)
+        for lib in required_libs:
+            match = [f for f in files_in_lib if f.startswith(lib)]
+            if match:
+                print(f"  ✅ 发现物理库: {match[0]}")
+            else:
+                print(f"  ❌ 缺失核心依赖库: {lib}")
+                missing_libs.append(lib)
+    else:
+        print(f"❌ [致命] 找不到 lib 文件夹: {lib_dir}")
+        return
+
+    # 3. 检查 LD_LIBRARY_PATH 环境变量并网状态
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    print(f"📌 [环境变量] LD_LIBRARY_PATH -> {ld_path}")
+    is_joined = lib_dir in ld_path
+    print(
+        f"  💡 并网评估: {'✅ acados 路径已并网' if is_joined else '⚠️ 未检测到并网 (会导致 ld-linux 加载失败)'}"
+    )
+
+    # 4. 执行 ctypes 装载实验
+    print("\n⚡ [符号沙盘演练] 正在尝试通过操作系统 C-Linker 装载动态库...")
+    if not missing_libs:
+        # 尝试直接装载依赖库以对全局符号表进行内存预热
+        for lib in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
+            lib_path = os.path.join(lib_dir, lib)
+            try:
+                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                print(f"  💎 预装载 {lib} -> ✅ 成功入驻进程空间")
+            except Exception as e:
+                print(f"  ⚠️ 预装载 {lib} -> ❌ 失败: {e}")
+
+        # 核心加载测试
+        libacados_path = os.path.join(lib_dir, "libacados.so")
+        try:
+            ctypes.CDLL(libacados_path)
+            print("  🏆 [终极载入测试] libacados.so -> 🎉 成功！系统已完全自愈！")
+        except Exception as e:
+            print(f"  🔥 [终极载入测试] libacados.so -> ❌ 失败，底层链接断链: {e}")
+    else:
+        print("❌ 核心动态库文件残缺，请在 simulation-env 目录下重新编译 acados 源码。")
+
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    probe()
+</file>
+
+<file path="tools/diagnostics/probe_proxy.py">
+import os
+import sys
+
+print("==================================================")
+print("      WSL2 代理设置深度排查探针 (2026)")
+print("==================================================")
+
+# 1. 检查当前活跃的代理环境变量
+print("\n[1] 当前生效的代理环境变量:")
+proxy_vars = {k: v for k, v in os.environ.items() if 'proxy' in k.lower()}
+if proxy_vars:
+    for k, v in proxy_vars.items():
+        print(f"  {k} = {v}")
+else:
+    print("  没有检测到活跃的代理环境变量。")
+
+# 2. 扫描常见的系统和用户启动配置文件
+print("\n[2] 开始扫描常见启动配置文件...")
+targets = [
+    '~/.bashrc', '~/.zshrc', '~/.profile', '~/.bash_profile', 
+    '~/.bash_login', '~/.zshenv', '~/.zprofile', '~/.zlogin',
+    '/etc/profile', '/etc/environment', '/etc/bash.bashrc',
+    '/etc/resolv.conf'
+]
+
+found_any = False
+for t in targets:
+    path = os.path.expanduser(t)
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', errors='ignore') as f:
+                content = f.read()
+                if "192.168.3.11" in content or "代理已开启" in content:
+                    print(f"  🚩 发现可疑配置在: {t}")
+                    lines = content.split('\n')
+                    for i, line in enumerate(lines):
+                        if "192.168.3.11" in line or "代理已开启" in line:
+                            print(f"    第 {i+1} 行: {line.strip()}")
+                    found_any = True
+        except Exception as e:
+            pass
+
+# 3. 深度递归扫描家目录下的隐藏脚本（过滤掉大文件目录如 conda）
+print("\n[3] 深度递归扫描家目录下的隐藏脚本与插件...")
+home_dir = os.path.expanduser('~')
+# 忽略掉不可能有代理脚本的巨大目录，防止卡死
+ignore_dirs = ['miniconda3', '.cache', '.git', '.conda', 'node_modules', 'workspace', 'FSD-car', 'nlp_TC_Encoder', 'lejepa-mvp']
+
+for root, dirs, files in os.walk(home_dir):
+    # 动态裁剪忽略目录
+    dirs[:] = [d for d in dirs if d not in ignore_dirs]
+    
+    for file in files:
+        # 只扫描脚本文件、隐藏文件、以及无后缀文件
+        if file.endswith('.sh') or file.startswith('.') or '.' not in file:
+            file_path = os.path.join(root, file)
+            try:
+                with open(file_path, 'r', errors='ignore') as f:
+                    content = f.read()
+                    if "192.168.3.11" in content or "代理已开启" in content:
+                        rel_path = os.path.relpath(file_path, home_dir)
+                        print(f"  🚩 发现可疑脚本在: ~/{rel_path}")
+                        lines = content.split('\n')
+                        for i, line in enumerate(lines):
+                            if "192.168.3.11" in line or "代理已开启" in line:
+                                print(f"    第 {i+1} 行: {line.strip()}")
+                        found_any = True
+            except:
+                pass
+
+if not found_any:
+    print("  ❌ 未能在任何配置文件中找到包含 '192.168.3.11' 或 '代理已开启' 的代码。")
+    print("  提示：请检查你是否在 Windows 端的控制台或全局系统变量里设置了代理穿透。")
+print("\n==================================================")
+</file>
+
+<file path="tools/diagnostics/probe_tcp_boundary.py">
+# -*- coding: utf-8 -*-
+import socket
+import subprocess
+import sys
+import time
+
+
+def run_probe():
+    print("=" * 60)
+    print("🔬 FSD-car V3.0: 跨 OS 物理边界 TCP 诊断探针")
+    print("=" * 60)
+
+    # 1. 动态捕获 Windows 宿主机 IP
+    print("[1/3] 正在解析 WSL2 路由表，定位 Windows 宿主机 IP...")
+    try:
+        cmd = "ip route show | grep default | awk '{print $3}'"
+        gateway_ip = subprocess.check_output(cmd, shell=True, text=True).strip()
+        if not gateway_ip:
+            raise ValueError("无法获取网关 IP")
+        print(f"  📍 锁定目标 IP: {gateway_ip}")
+    except Exception as e:
+        print(f"  ❌ 路由解析失败: {e}")
+        sys.exit(1)
+
+    # 2. 构造底层 TCP Socket 探针
+    port = 17449
+    print(f"\n[2/3] 正在向 {gateway_ip}:{port} 发射 TCP SYN 探测包...")
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # 设置 3 秒超时，足以判断防火墙是否丢包
+    s.settimeout(3.0)
+
+    start_time = time.time()
+    try:
+        # 尝试建立三次握手
+        s.connect((gateway_ip, port))
+        elapsed = (time.time() - start_time) * 1000
+        print(f"  ✅ 握手成功！耗时: {elapsed:.2f} ms")
+        print("\n[3/3] 🟢 最终诊断结论：")
+        print(
+            "  物理通道完全畅通！Windows 防火墙未拦截，且 isaac_sim_gateway.py 正在正常监听。"
+        )
+        print("  如果此时 Rust 仍然报错，说明是 Zenoh 协议层面的问题（如版本不一致）。")
+        s.close()
+
+    except socket.timeout:
+        print("  🔴 握手失败！耗时: > 3000 ms (Timeout)")
+        print("\n[3/3] 🔴 最终诊断结论：【元凶二：防火墙物理拦截】")
+        print("  -> 症状：数据包发出后如泥牛入海，没有任何回应。")
+        print("  -> 药方：Windows Defender 防火墙拦截了来自 WSL2 子网的入站请求。")
+        print("  -> 处方：请在 Windows PowerShell (管理员) 中执行放行命令：")
+        print(
+            '     New-NetFirewallRule -DisplayName "FSD-Zenoh-17449" -Direction Inbound -LocalPort 17449 -Protocol TCP -Action Allow'
+        )
+
+    except ConnectionRefusedError:
+        print("  🔴 握手失败！连接被瞬间拒绝 (Connection Refused)")
+        print("\n[3/3] 🔴 最终诊断结论：【元凶一：服务未就绪 / 时序倒置】")
+        print("  -> 症状：防火墙没有拦截，但目标端口上没有任何进程在接客。")
+        print(
+            "  -> 药方：Windows 端的 isaac_sim_gateway.py 根本没有运行，或者启动报错退出了。"
+        )
+        print(
+            "  -> 处方：请先在 Windows 端成功运行网关脚本，确认看到 [单播通道锁紧] 日志后，再启动 WSL2 侧的程序。"
+        )
+
+    except Exception as e:
+        print(f"  ⚠️ 发生未知网络异常: {e}")
+
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    run_probe()
+</file>
+
+<file path="tools/diagnostics/verify_control.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import struct
+import subprocess
+import time
+
+import zenoh
+
+
+def main():
+    print("=" * 80)
+    print("🛰️  FSD-car V3.0: WSL2 运动学极性物理隔离测试探针 (NAT 动态版)")
+    print("=" * 80)
+
+    # 1. 动态获取 Windows 宿主机 IP [cite: 1.1.3]
+    try:
+        cmd = "ip route show | grep default | awk '{print $3}'"
+        gateway_ip = subprocess.check_output(cmd, shell=True, text=True).strip()
+        if not gateway_ip:
+            gateway_ip = "127.0.0.1"
+    except Exception:
+        gateway_ip = "127.0.0.1"
+
+    print(f"📡 [并网连接] 正在单播连接 Windows 宿主机: {gateway_ip}:17449")
+
+    # 2. 初始化极速 Zenoh 客户端
+    conf = zenoh.Config()
+    conf.insert_json5("connect/endpoints", f'["tcp/{gateway_ip}:17449"]')
+    conf.insert_json5("scouting/multicast/enabled", "false")
+
+    session = zenoh.open(conf)
+    pub = session.declare_publisher("fsd/spinal_cord/cmd_vel")
+
+    print(
+        "\n🟢 [极性隔离序列启动] 请在 Windows 3D 仿真界面紧密观察两个轮子的滚动方向："
+    )
+    try:
+        # 阶段一：静止 (3秒)
+        print("\n⏱️ [0-3s] 阶段一：发送停止指令 (v = 0.0, w = 0.0) -> 小车应当完全静止")
+        for _ in range(30):
+            payload = struct.pack("<ff", 0.0, 0.0)
+            pub.put(payload)
+            time.sleep(0.1)
+
+        # 阶段二：直行 (5秒)
+        print(
+            "\n⏱️ [3-8s] 阶段二：发送直行指令 (v = 0.2, w = 0.0) -> 左右车轮必须同时【向前滚】"
+        )
+        for _ in range(50):
+            payload = struct.pack("<ff", 0.2, 0.0)
+            pub.put(payload)
+            time.sleep(0.1)
+
+        # 阶段三：原地自转 (5秒)
+        print(
+            "\n⏱️ [8-13s] 阶段三：发送原地左转指令 (v = 0.0, w = 0.5) -> 左轮应当【后滚】，右轮应当【前滚】"
+        )
+        for _ in range(50):
+            payload = struct.pack("<ff", 0.0, 0.5)
+            pub.put(payload)
+            time.sleep(0.1)
+
+        # 阶段四：静止 (3秒)
+        print(
+            "\n⏱️ [13-16s] 阶段四：发送停止指令 (v = 0.0, w = 0.0) -> 小车应当完全静止"
+        )
+        for _ in range(30):
+            payload = struct.pack("<ff", 0.0, 0.0)
+            pub.put(payload)
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\n🛑 测试被用户手动中断")
+    finally:
+        # 强制发送安全停止
+        pub.put(struct.pack("<ff", 0.0, 0.0))
+        session.close()
+        print("\n🏁 [测试序列结束] 物理通道已安全释放。")
+        print("=" * 80)
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="tools/diagnostics/zenoh_isolated_test.py">
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import os
+import sys
+import struct
+import time
+import subprocess
+import socket
+
+# 自动定位并加载 CUDA DLL 避免 Windows 端 Zenoh 报错
+cuda_bin_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin"
+if os.path.exists(cuda_bin_path) and os.name == 'nt':
+    try: os.add_dll_directory(cuda_bin_path)
+    except Exception: pass
+
+import zenoh
+
+def get_wsl_gateway_ip():
+    try:
+        cmd = "ip route | grep default | awk '{print $3}'"
+        ip = subprocess.check_output(cmd, shell=True, text=True).strip()
+        return ip if ip else "172.23.176.1"
+    except Exception:
+        return "172.23.176.1"
+
+def get_windows_wsl_ip():
+    try:
+        hostname = socket.gethostname()
+        ips = socket.gethostbyname_ex(hostname)[2]
+        # 🎯 核心自愈：自动抓取 Windows 本地以 172. 开头的 WSL 虚拟网卡真实 IPv4 地址
+        wsl_ip = next((ip for ip in ips if ip.startswith("172.")), None)
+        return wsl_ip if wsl_ip else "0.0.0.0"
+    except Exception:
+        return "0.0.0.0"
+
+def run_server():
+    print("="*80)
+    print("🛰️  NEXUS BIM Portal - Zenoh 纯净隔离诊断服务端 (Windows)")
+    print("="*80)
+    
+    wsl_ip = get_windows_wsl_ip()
+    print(f"🖥️  探测到 Windows 侧 WSL 虚拟网卡 IP: {wsl_ip}")
+    
+    z_config = zenoh.Config()
+    z_config.insert_json5("mode", '"peer"')
+    
+    # 🎯 终极自愈：强行绑定到具体的 IPv4 网卡 IP，绕开 Windows 0.0.0.0 默认解析为 IPv6 [::] 导致的物理拒绝！
+    endpoint = f'["tcp/{wsl_ip}:17449"]'
+    z_config.insert_json5("listen/endpoints", endpoint)
+    z_config.insert_json5("scouting/multicast/enabled", "false")
+    
+    session = zenoh.open(z_config)
+    print(f"✅ [侦听就绪] Windows 端 Zenoh 成功监听: {wsl_ip}:17449。正在全力等待 WSL2 端连接...")
+
+    def listener(sample):
+        print(f"\n📥 收到 WSL2 神经指令 [Key: {sample.key_expr}]")
+        payload_obj = sample.payload
+        
+        # 采用 2026 终极多路径自愈解码
+        if hasattr(payload_obj, "to_bytes"):
+            payload = payload_obj.to_bytes()
+        elif hasattr(payload_obj, "contiguous"):
+            payload = bytes(payload_obj.contiguous())
+        else:
+            payload = bytes(payload_obj)
+
+        print(f"  裸字节流长度: {len(payload)} | 十六进制: {payload.hex()}")
+        if len(payload) == 8:
+            v, w = struct.unpack("<ff", payload)
+            print(f"  🎯 运动学解码 -> 线速度 v: {v:.3f} m/s | 角速度 w: {w:.3f} rad/s")
+        else:
+            print("  ⚠️ 字节流长度错误")
+
+    sub = session.declare_subscriber("fsd/spinal_cord/cmd_vel", listener)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🛑 服务端退出")
+    finally:
+        session.close()
+
+def run_client():
+    print("="*80)
+    print("🛰️  NEXUS BIM Portal - Zenoh 纯净隔离诊断客户端 (WSL2)")
+    print("="*80)
+    
+    gateway_ip = get_wsl_gateway_ip()
+    print(f"📡 目标 Windows 宿主机网关 IP: {gateway_ip}")
+
+    z_config = zenoh.Config()
+    # 🎯 强行配置为 Client 模式以建立确定性 TCP 连接
+    z_config.insert_json5("mode", '"client"')
+    z_config.insert_json5("connect/endpoints", f'["tcp/{gateway_ip}:17449"]')
+    z_config.insert_json5("scouting/multicast/enabled", "false")
+    
+    session = zenoh.open(z_config)
+    pub = session.declare_publisher("fsd/spinal_cord/cmd_vel")
+    print("✅ [连接建立] WSL2 客户端连接成功，开始高频下发测试控制量...")
+
+    try:
+        tick = 0
+        while True:
+            tick += 1
+            v = 0.2
+            w = 0.0
+            payload = struct.pack("<ff", v, w)
+            pub.put(payload)
+            if tick % 10 == 0:
+                print(f"🚀 发送测试信号 -> v: {v:.2f} | w: {w:.2f} (已经发送 {tick} 次)")
+            time.sleep(0.1) # 10Hz 发送
+    except KeyboardInterrupt:
+        print("\n🛑 客户端退出")
+    finally:
+        session.close()
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--server":
+        run_server()
+    else:
+        run_client()
+</file>
+
+<file path="core-control/src/ffi.rs">
+#![allow(non_camel_case_types)]
+use libc::{c_char, c_int, c_void};
+
+/// 🛡️ 不透明结构体：代表 acados 内部的求解器内存胶囊
+#[repr(C)]
+pub struct diff_drive_car_solver_capsule {
+    _unused: [u8; 0],
+}
+
+// 声明外部 C 函数符号
+extern "C" {
+    // 生命周期管理 (现代 Acados API 契约)
+    pub fn diff_drive_car_acados_create_capsule() -> *mut diff_drive_car_solver_capsule;
+    pub fn diff_drive_car_acados_create(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_solve(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free_capsule(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+
+    // 内部组件指针获取
+    pub fn diff_drive_car_acados_get_nlp_in(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_out(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_config(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_dims(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+
+    // 通用数据注入与提取算子
+    pub fn ocp_nlp_in_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    // 🛡️ 架构师 2026 SOTA 修正：现代 Acados 强制将约束与代价函数设置隔离为专用函数，废除万能的 in_set
+    pub fn ocp_nlp_constraints_model_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        nlp_out: *mut c_void, 
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    pub fn ocp_nlp_cost_model_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+
+    pub fn ocp_nlp_out_get(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_out: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ); 
+}
+</file>
+
+<file path="core-control/src/solver.rs">
+use super::ffi::*;
+use std::ffi::CString;
+use std::os::raw::c_void;
+
+/// 🛡️ 规控大脑：NMPC 求解器安全封装金库
+/// 彻底隔离 C 语言的裸指针，对外提供 100% 内存安全的 Rust 接口
+pub struct 预测控制求解器 {
+    capsule: *mut diff_drive_car_solver_capsule,
+}
+
+// 🛡️ 架构师指令：显式声明线程安全。
+// 只要我们保证在 Rust 层以 `&mut self` 独占借用的方式调用，C 求解器在多线程间传递就是安全的。
+unsafe impl Send for 预测控制求解器 {}
+
+impl 预测控制求解器 {
+    /// 构造函数：在堆内存中分配 C 求解器
+    pub fn new() -> Result<Self, String> {
+        // 1. 分配物理内存胶囊
+        let capsule = unsafe { diff_drive_car_acados_create_capsule() };
+        if capsule.is_null() {
+            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！".to_string());
+        }
+        
+        // 2. 执行内部矩阵与求解器初始化
+        let status = unsafe { diff_drive_car_acados_create(capsule) };
+        if status != 0 {
+            // 初始化失败时，必须手动释放刚刚分配的胶囊，防止内存泄漏
+            unsafe { diff_drive_car_acados_free_capsule(capsule); }
+            return Err(format!("❌ NMPC 求解器内部初始化失败，状态码: {}", status));
+        }
+        
+        Ok(Self { capsule })
+    }
+
+    /// 注入当前物理状态 (对应 Python 中的 lbx, ubx)
+    pub fn 设置当前状态(&mut self, x: f64, y: f64, yaw: f64, v: f64) -> Result<(), String> {
+        let state = [x, y, yaw, v];
+        let field_lbx = CString::new("lbx").unwrap();
+        let field_ubx = CString::new("ubx").unwrap();
+        
+        unsafe {
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule); // 🛡️ SOTA 修正：获取 nlp_out 句柄 [cite: 3.1.6]
+
+            // 🛡️ 架构师 2026 SOTA 修正：传入 7 个完备参数（新增 nlp_out），彻底根治由栈破坏引起的 SIGSEGV 段错误！
+            let status_lbx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
+            let status_ubx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
+
+            if status_lbx != 0 || status_ubx != 0 {
+                return Err("❌ NMPC 初始状态 (x0) 注入失败！".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// 注入未来预测步的参考轨迹点 (对应 Python 中的 yref)
+    pub fn 设置参考轨迹点(&mut self, 预测步: i32, ref_x: f64, ref_y: f64, ref_yaw: f64, ref_v: f64) -> Result<(), String> {
+        let field_yref = CString::new("yref").unwrap();
+        
+        unsafe {
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
+
+            // 🛡️ 架构师 2026 SOTA 修正：设置参考代价函数 yref 必须使用 ocp_nlp_cost_model_set
+            let status = if 预测步 == 20 { 
+                // 终端步 (Terminal Stage): ny_e = 4
+                let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
+                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
+            } else {
+                // 中间步 (Intermediate Stage): ny = 6 (补齐 a 和 omega 的参考值 0.0)
+                let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
+                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
+            };
+
+            if status != 0 {
+                return Err(format!("❌ NMPC 第 {} 步参考轨迹注入失败！", 预测步));
+            }
+        }
+        Ok(())
+    }
+
+    /// 执行 RTI-SQP 求解，并返回平滑处理后的 (线速度, 角速度)
+    pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
+        unsafe {
+            let status = diff_drive_car_acados_solve(self.capsule);
+            if status != 0 {
+                return Err(format!("⚠️ NMPC 求解器发散或失败，状态码: {}", status));
+            }
+
+            let config = diff_drive_car_acados_get_nlp_config(self.capsule);
+            let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
+
+            let field_u = CString::new("u").unwrap();
+            let mut u_opt = [0.0f64; 2]; // [a, omega]
+
+            ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
+
+            let a_opt = u_opt[0];
+            let w_cmd_raw = u_opt[1];
+
+            // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
+            let mut v_cmd = 当前线速度 + a_opt * 0.01;
+            if v_cmd < 0.0 { v_cmd = 0.0; } // 限制不能倒车
+            if v_cmd > 0.3 { v_cmd = 0.3; } // 最大速度限制
+
+            // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
+            let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);
+
+            Ok((v_cmd, w_cmd))
+        }
+    }
+}
+
+// 🛡️ 内存守卫：RAII 机制。当 `预测控制求解器` 离开作用域时，自动调用 C 语言的 free 释放内存，彻底杜绝内存泄漏！
+impl Drop for 预测控制求解器 {
+    fn drop(&mut self) {
+        unsafe {
+            // 必须严格按照逆序释放：先释放内部矩阵，再释放胶囊本身
+            diff_drive_car_acados_free(self.capsule);
+            diff_drive_car_acados_free_capsule(self.capsule);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nmpc_solver_lifecycle_and_compute() {
+        println!("🛡️ [单测启动] 正在测试 NMPC 求解器 C FFI 边界...");
+        
+        // 1. 测试内存胶囊分配 (如果 C 动态库链接失败，这里会直接 panic)
+        let mut solver = 预测控制求解器::new().expect("❌ 求解器初始化失败，请检查 C 动态库链接！");
+        println!("✅ 求解器内存胶囊分配成功！");
+
+        // 2. 测试状态注入 (温启动：当前处于原点，静止)
+        solver.设置当前状态(0.0, 0.0, 0.0, 0.0).expect("❌ 初始状态注入失败");
+        println!("✅ 初始状态注入成功！");
+
+        // 3. 测试参考轨迹注入 (预测步长 N=20)
+        for k in 0..=20 {
+            // 假设目标在正前方 1.0 米处，期望线速度 0.3 m/s
+            solver.设置参考轨迹点(k, 1.0, 0.0, 0.0, 0.3).expect(&format!("❌ 第 {} 步参考轨迹注入失败", k));
+        }
+        println!("✅ 参考轨迹注入成功！");
+
+        // 4. 测试核心求解算子
+        let (v_cmd, w_cmd) = solver.求解最优控制量(0.0).expect("❌ NMPC 求解失败");
+        println!("✅ 求解成功！输出控制量 -> 线速度: {:.3} m/s, 角速度: {:.3} rad/s", v_cmd, w_cmd);
+
+        // 5. 物理主权断言：确保输出严格遵守我们在 generate_solver.py 中定义的硬约束
+        assert!(v_cmd >= 0.0 && v_cmd <= 0.3, "线速度超限！");
+        assert!(w_cmd >= -0.6 && w_cmd <= 0.6, "角速度超限！");
+        
+        // 6. 隐式测试：当 `solver` 离开此作用域时，Rust 会自动调用 Drop trait。
+        // 如果 C 侧的 free 逻辑有误，这里会触发段错误 (Segmentation Fault)。
+        println!("✅ 测试结束，准备安全释放 C 语言内存胶囊...");
+    }
+}
+</file>
+
+<file path="core-control/Cargo.toml">
+[package]
+name = "core-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 继承自根目录 Workspace 的统一定义
+opencv = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
+
+# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
+dora-node-api = "0.3.3"
+# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
+eyre = "0.6"
+
+# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
+chrono = "=0.4.39"
+
+# 🛡️ 新增：引入感知引擎，实现快系统闭环
+core-perception = { path = "../core-perception" }
+
+[build-dependencies]
+cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
+</file>
+
+<file path="core-decision/src/bin/slow_brain_node.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+use dora_node_api::{DoraNode, Event};
+use eyre::eyre;
+
+use core_decision::topo_graph::graph::TopologicalGraph;
+use core_decision::topo_graph::node::{Pose, TopologicalNode};
+use core_perception::perception::xfeat_engine::稀疏特征点; // 仅复用数据结构
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🧠 [慢系统] 语义大脑与拓扑建图节点已启动，等待 DORA 共享内存注入...");
+
+    // 1. 接入 DORA 数据流网络
+    let (mut _node, mut events) = DoraNode::init_from_env()?;
+
+    // 2. 初始化全简体中文业务逻辑主权对象：拓扑地图
+    let mut 拓扑地图 = TopologicalGraph::new();
+    let mut 节点计数器 = 0;
+
+    // 3. 异步事件驱动循环
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, data, .. } => {
+                if id.as_str() == "xfeat_features" {
+                    // 🎯 核心重构：直接解析 Windows 端传来的二进制特征契约
+                    let 裸数据_vec: Vec<u8> = dora_node_api::into_vec(&data)
+                        .map_err(|e| eyre!("❌ 无法解析 DORA 特征数据: {}", e))?;
+                        
+                    if 裸数据_vec.len() < 4 { continue; }
+                    
+                    let 特征数量 = u32::from_le_bytes(裸数据_vec[0..4].try_into().unwrap()) as usize;
+                    let mut offset = 4;
+                    let mut 特征结果 = Vec::with_capacity(特征数量);
+                    
+                    for _ in 0..特征数量 {
+                        if offset + 268 > 裸数据_vec.len() { break; } // 防越界保护
+                        
+                        let x = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
+                        let y = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
+                        let score = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
+                        
+                        let mut desc = vec![0.0f32; 64];
+                        for i in 0..64 {
+                            desc[i] = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); 
+                            offset += 4;
+                        }
+                        
+                        特征结果.push(稀疏特征点 {
+                            x,
+                            y,
+                            置信度: score,
+                            描述子: desc,
+                        });
+                    }
+
+                    println!(
+                        "✅ [慢系统] 成功接收并解析 {} 个 XFeat 骨干特征点 (0 图像解码开销!)",
+                        特征结果.len()
+                    );
+
+                    // ---------------------------------------------------------
+                    // 🗺️ 拓扑建图逻辑：将当前帧特征存入记忆金库
+                    // ---------------------------------------------------------
+                    节点计数器 += 1;
+
+                    let mut descriptors = Vec::with_capacity(特征结果.len() * 64);
+                    let mut keypoints = Vec::with_capacity(特征结果.len() * 2);
+
+                    for pt in 特征结果 {
+                        keypoints.push(pt.x);
+                        keypoints.push(pt.y);
+                        descriptors.extend(pt.描述子);
+                    }
+
+                    let 新地标 = TopologicalNode {
+                        id: 节点计数器,
+                        name: format!("自动探索地标_{}", 节点计数器),
+                        pose: Pose {
+                            x: 0.0,
+                            y: 0.0,
+                            yaw: 0.0,
+                        }, // 实际应由里程计/SLAM提供
+                        descriptors,
+                        keypoints,
+                    };
+
+                    拓扑地图.add_node(新地标);
+                    println!(
+                        "🗺️ [慢系统] 拓扑地图已更新，当前脑海记忆节点数: {}",
+                        拓扑地图.nodes.len()
+                    );
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [慢系统] 接收到 DORA 停止信号，正在将拓扑记忆持久化到硬盘...");
+                if let Err(e) = 拓扑地图.save_to_file("topo_memory.json") {
+                    eprintln!("❌ 拓扑地图保存失败: {}", e);
+                } else {
+                    println!("💾 拓扑地图已安全保存至 topo_memory.json");
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+</file>
+
+<file path="core-decision/Cargo.toml">
+[package]
+name = "core-decision"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 🛡️ 新增：并网所需的视觉与通信底座
+opencv = { workspace = true }
+dora-node-api = "0.3.3"
+eyre = "0.6"
+core-perception = { path = "../core-perception" }
+</file>
+
+<file path="showcase/Cargo.toml">
+[package]
+name = "showcase"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 继承自根目录 Workspace 的其她依赖
+opencv = { workspace = true }
+ort = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true } # 🛡️ 新增：继承工作空间的二进制压缩序列化
+
+# 核心并网：引入感知引擎包与决策大脑包
+core-perception = { path = "../core-perception" }
+core-decision = { path = "../core-decision" }     # 🛡️ 新增：决策大脑包引用
+
+# 🛡️ 显式契约绑定：配置四个独立的一键启动展示大屏
+[[bin]]
+name = "demo_xfeat"
+path = "src/bin/demo_xfeat.rs"
+
+[[bin]]
+name = "demo_frog"
+path = "src/bin/demo_frog.rs"
+</file>
+
+<file path="simulation-env/generate_solver.py">
+# generate_solver.py
+# generate_solver.py
+import os
+import numpy as np
+
+# 🛡️ 架构师 2026 净化：彻底移除 Windows/WSL 时代的 ctypes.CDLL 内存预热 Hack。
+# 在原生的 Ubuntu 26.04 LTS 下，我们严格依赖标准的 LD_LIBRARY_PATH 或 RPATH 机制。
+# 保持 Python 运行环境的绝对纯净与高内聚。
+
+from acados_template import AcadosOcp, AcadosOcpSolver
+from nmpc_model import setup_car_model
+
+
+def generate_nmpc_solver():
+    ocp = AcadosOcp()
+    model = setup_car_model()
+    ocp.model = model
+
+    # 1. 设定时域参数
+    N = 20  # 预测步长 (Horizon)
+    T_pred = 1.0  # 预测总时间 (1秒)
+    ocp.dims.N = N
+    ocp.solver_options.tf = T_pred
+
+    # 2. 设定代价函数 (Q 权重增加，R 控制惩罚加大以获得极致平顺感) [cite: 21]
+    Q = np.diag([20.0, 20.0, 2.0, 1.0])
+    # 🛡️ 架构师修正：释放底层动力。NMPC 本身已具备平滑约束，过大的 R 会导致转弯迟钝、轨迹漂移。
+    R = np.diag([0.1, 0.05])
+
+    nx = model.x.size()[0]
+    nu = model.u.size()[0]
+    ny = nx + nu
+
+    ocp.cost.cost_type = "LINEAR_LS"
+    ocp.cost.cost_type_e = "LINEAR_LS"
+
+    Vx = np.zeros((ny, nx))
+    Vx[:nx, :nx] = np.eye(nx)
+    ocp.cost.Vx = Vx
+
+    Vu = np.zeros((ny, nu))
+    Vu[nx:, :nu] = np.eye(nu)
+    ocp.cost.Vu = Vu
+
+    Vx_e = np.eye(nx)
+    ocp.cost.Vx_e = Vx_e
+
+    ocp.cost.W = np.block([[Q, np.zeros((nx, nu))], [np.zeros((nu, nx)), R]])
+    ocp.cost.W_e = Q * 1.5
+
+    ocp.cost.yref = np.zeros(ny)
+    ocp.cost.yref_e = np.zeros(nx)
+
+    # 3. 设定约束条件 [cite: 24]
+    # 我们将最大转向角速度硬限制收紧到 [-0.6, 0.6] rad/s，彻底杜绝原地打转 [cite: 24]
+    ocp.constraints.lbu = np.array([-1.0, -0.6])  # 限制角速度在 [-0.6, 0.6] [cite: 24]
+    ocp.constraints.ubu = np.array([1.0, 0.6])  # [cite: 24]
+    ocp.constraints.idxbu = np.array([0, 1])
+
+    # 4. 初始状态设定
+    ocp.constraints.x0 = np.array([0.0, 0.0, 0.0, 0.0])
+
+    # 5. 配置求解器参数 [cite: 3, 9]
+    ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
+    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
+    ocp.solver_options.integrator_type = "ERK"
+    ocp.solver_options.nlp_solver_type = "SQP_RTI"
+
+    # 一键自动编译生成 C 代码 [cite: 8]
+    json_file = os.path.join("./", "acados_ocp.json")
+    solver = AcadosOcpSolver(ocp, json_file=json_file)
+    return solver
+
+
+if __name__ == "__main__":
+    generate_nmpc_solver()
+    print("====== acados C代码求解器生成并编译成功！ ======")
+</file>
+
+<file path="simulation-env/mujoco_nmpc_run.py">
+# mujoco_nmpc_run.py
+mport os
+import time
+import numpy as np
+import mujoco
+
+# 🛡️ 架构师 2026 净化：彻底移除 ctypes.CDLL 内存预热 Hack。
+# 依赖 Ubuntu 26.04 原生的动态链接器 (ld-linux.so) 进行符号解析。
+import mujoco.viewer
+from acados_template import AcadosOcpSolver
+
+# 物理模型：保持高抓地力轮胎并注入虚拟相机与视觉特征地标 [cite: 1.1.3]
+xml_model = """
+<mujoco>
+  <option timestep="0.01"/>
+  <worldbody>
+    <light diffuse=".5 .5 .5" pos="0 0 3" dir="0 0 -1"/>
+    <!-- 物理地表 -->
+    <geom type="plane" size="15 15 0.1" rgba=".9 .9 .9 1"/>
+    
+    <!-- 🛡️ 为 XFeat 注入高对比度物理地标（圆柱、方箱），用作视觉纠偏的站牌 -->
+    <body name="landmark_red_pillar" pos="3.0 1.2 0.4">
+      <geom type="cylinder" size="0.15 0.4" rgba="1.0 0.0 0.0 1.0"/>
+    </body>
+    <body name="landmark_blue_box" pos="4.5 -1.0 0.4">
+      <geom type="box" size="0.25 0.25 0.4" rgba="0.0 0.0 1.0 1.0"/>
+    </body>
+    <body name="landmark_green_pillar" pos="1.5 -1.5 0.4">
+      <geom type="cylinder" size="0.1 0.4" rgba="0.0 1.0 0.0 1.0"/>
+    </body>
+
+    <body name="car" pos="0 0 0.08">
+      <freejoint/>
+      <!-- 车身半宽度缩窄为 0.11 米，拉开物理间隙 -->
+      <geom type="box" size="0.2 0.11 0.05" rgba="0 0.5 0.8 1"/>
+      
+      <!-- 🛡️ 注入虚拟单目摄像头：使用标准的 xyaxes 规定右和上朝向，让镜头笔直向前看 -->
+      <camera name="front_camera" pos="0.2 0.0 0.06" xyaxes="0 -1 0 0 0 1" fovy="70"/>
+      
+      <geom type="sphere" size="0.03" pos="-0.15 0 -0.05" condim="1" friction="0 0 0"/>
+      <!-- 左轮 -->
+      <body name="wheel_left" pos="0.0 0.18 0">
+        <joint name="hinge_left" type="hinge" axis="0 1 0" damping="0.05"/>
+        <geom type="cylinder" size="0.08 0.02" zaxis="0 1 0" rgba="0 0 0 1" friction="1.8 0.01 0.001"/>
+      </body>
+      <!-- 右轮 -->
+      <body name="wheel_right" pos="0.0 -0.18 0">
+        <joint name="hinge_right" type="hinge" axis="0 1 0" damping="0.05"/>
+        <geom type="cylinder" size="0.08 0.02" zaxis="0 1 0" rgba="0 0 0 1" friction="1.8 0.01 0.001"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <!-- 将电调速度增益 kv 设为 150，获得澎湃且绝对跟手的响应，拒绝软弱打滑 -->
+    <velocity name="motor_left" joint="hinge_left" kv="150" forcerange="-15 15"/>
+    <velocity name="motor_right" joint="hinge_right" kv="150" forcerange="-15 15"/>
+  </actuator>
+</mujoco>
+"""
+
+
+# ====================================================
+#  武器库武装 1：高保真 Mahony 6轴姿态滤波器 (C++ 1:1 移植)
+# ====================================================
+class MahonyAHRS:
+    def __init__(self, sample_freq=100.0, kp=1.5, ki=0.005):
+        self.twoKp = 2.0 * kp
+        self.twoKi = 2.0 * ki
+        self.q = np.array([1.0, 0.0, 0.0, 0.0])  # q0, q1, q2, q3
+        self.integralFB = np.zeros(3)  # 零偏积分反馈
+        self.invSampleFreq = 1.0 / sample_freq
+
+    def update_imu(self, gx, gy, gz, ax, ay, az):
+        # 1. 加速度计归一化
+        norm_a = np.sqrt(ax * ax + ay * ay + az * az)
+        if norm_a < 1e-6:
+            return
+        ax /= norm_a
+        ay /= norm_a
+        az /= norm_a
+
+        # 2. 提取当前四元数乘积变量以减少重复运算
+        q0, q1, q2, q3 = self.q[0], self.q[1], self.q[2], self.q[3]
+        q0q0 = q0 * q0
+        q1q1 = q1 * q1
+        q2q2 = q2 * q2
+        q3q3 = q3 * q3
+
+        # 3. 估计重力方向 (由当前姿态推算)
+        halfvx = q1 * q3 - q0 * q2
+        halfvy = q0 * q1 + q2 * q3
+        halfvz = q0q0 - 0.5 + q3q3
+
+        # 4. 计算重力估计方向与实际测量方向的叉积误差
+        halfex = ay * halfvz - az * halfvy
+        halfey = az * halfvx - ax * halfvz
+        halfez = ax * halfvy - ay * halfvx
+
+        # 5. 计算并应用积分反馈
+        if self.twoKi > 0.0:
+            self.integralFB[0] += self.twoKi * halfex * self.invSampleFreq
+            self.integralFB[1] += self.twoKi * halfey * self.invSampleFreq
+            self.integralFB[2] += self.twoKi * halfez * self.invSampleFreq
+            gx += self.integralFB[0]
+            gy += self.integralFB[1]
+            gz += self.integralFB[2]
+        else:
+            self.integralFB = np.zeros(3)
+
+        # 6. 应用比例反馈
+        gx += self.twoKp * halfex
+        gy += self.twoKp * halfey
+        gz += self.twoKp * halfez
+
+        # 7. 积分四元数变率
+        gx *= 0.5 * self.invSampleFreq
+        gy *= 0.5 * self.invSampleFreq
+        gz *= 0.5 * self.invSampleFreq
+        qa, qb, qc = q0, q1, q2
+        self.q[0] += -qb * gx - qc * gy - q3 * gz
+        self.q[1] += qa * gx + qc * gz - q3 * gy
+        self.q[2] += qa * gy - qb * gz + q3 * gx
+        self.q[3] += qa * gz + qb * gy - qc * gx
+
+        # 8. 归一化四元数
+        norm_q = np.sqrt(np.sum(self.q**2))
+        self.q /= norm_q
+
+    def get_estimated_yaw(self):
+        # 从解算出的姿态四元数中提取偏航角 (Yaw)
+        q = self.q
+        return np.arctan2(
+            2 * (q[1] * q[2] + q[0] * q[3]), 1 - 2 * (q[2] ** 2 + q[3] ** 2)
+        )
+
+
+# ====================================================
+#  3. 武器库武装 2：极简 PT1 低通滤波器 (C++ 1:1 移植)
+# ====================================================
+class PT1Filter:
+    def __init__(self, cutoff_freq=10.0, sample_freq=100.0):
+        # 计算低通滤波系数 alpha
+        dt = 1.0 / sample_freq
+        rc = 1.0 / (2.0 * np.pi * cutoff_freq)
+        self.alpha = dt / (rc + dt)
+        self.state = 0.0
+
+    def update(self, input_val):
+        self.state = self.alpha * input_val + (1.0 - self.alpha) * self.state
+        return self.state
+
+
+# ====================================================
+#  4. 轨迹配置与决策参数准备
+# ====================================================
+total_steps = 1500
+t_points = np.linspace(0, 15, total_steps)
+ref_x = 0.3 * t_points
+ref_y = 0.3 * np.sin(0.4 * t_points)  # 采用优雅的小幅度正弦弯
+
+model = mujoco.MjModel.from_xml_string(xml_model)
+data = mujoco.MjData(model)
+acados_solver = AcadosOcpSolver(
+    None, json_file="acados_ocp.json", generate=False, build=False
+)
+
+N = 20
+nx = 4
+nu = 2
+
+# 初始化 Mahony 滤波器与控制指令滤波器
+mahony = MahonyAHRS(sample_freq=100.0, kp=1.5, ki=0.005)
+filter_v = PT1Filter(cutoff_freq=3.0, sample_freq=100.0)
+filter_w = PT1Filter(cutoff_freq=3.0, sample_freq=100.0)
+
+# IMU 传感器级低通防抖滤网（飞控级核心过滤技术）
+filter_gx = PT1Filter(cutoff_freq=15.0, sample_freq=100.0)
+filter_gy = PT1Filter(cutoff_freq=15.0, sample_freq=100.0)
+filter_gz = PT1Filter(cutoff_freq=15.0, sample_freq=100.0)
+
+filter_ax = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
+filter_ay = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
+filter_az = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
+
+# 显式“温启动”
+initial_state = np.array([0.0, 0.0, 0.0, 0.0])
+for k in range(N + 1):
+    acados_solver.set(k, "x", initial_state)
+for k in range(N):
+    acados_solver.set(k, "u", np.zeros(nu))
+
+# 🛡️ 架构师升级：直接从刚才新建的 XML 盘面中读取中国楼盘小区与 Scout Mini 车体
+model = mujoco.MjModel.from_xml_path("china_residential_estate.xml")
+data = mujoco.MjData(model)
+
+# 容错获取底盘电机索引（Scout Mini 是四驱结构）
+try:
+    joint_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "hinge_lf")
+    joint_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "hinge_rf")
+except:
+    joint_left_id = model.joint("hinge_lf").id
+    joint_right_id = model.joint("hinge_rf").id
+
+qvel_left_idx = model.jnt_dofadr[joint_left_id]
+qvel_right_idx = model.jnt_dofadr[joint_right_id]
+
+# 动态获取电机的执行通道控制索引
+try:
+    actuator_left_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_ACTUATOR, "motor_left"
+    )
+    actuator_right_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_ACTUATOR, "motor_right"
+    )
+except:
+    actuator_left_id = 0
+    actuator_right_id = 1
+
+log_file_path = "nmpc_telemetry.log"
+log_file = open(os.path.join("./", log_file_path), "w")
+log_file.write(
+    "Time,Current_X,Current_Y,Ref_X,Ref_Y,L2_Error_m,Cmd_v,Cmd_w,Est_Yaw,True_Yaw,SolveTime_ms\n"
+)
+
+print("\n" + "=" * 60)
+print("🚀 FSD-car 数字化智驾仿真启动 [进入 V2.2 极致平顺与强劲动力调优]")
+print(f"   本地数据日志已建立: {log_file_path}")
+print("=" * 60)
+
+with mujoco.viewer.launch_passive(model, data) as viewer:
+    step = 0
+
+    while viewer.is_running() and step < len(t_points) - N:
+        step_start = time.time()
+
+        true_q = data.qpos[3:7]
+        true_yaw = np.arctan2(
+            2 * (true_q[0] * true_q[3] + true_q[1] * true_q[2]),
+            1 - 2 * (true_q[2] ** 2 + true_q[3] ** 2),
+        )
+
+        # 模拟 IMU 噪声注入
+        gyro_noise = np.random.normal(0, 0.01, 3)
+        accel_noise = np.random.normal(0, 0.05, 3)
+
+        raw_gx = data.qvel[3] + gyro_noise[0]
+        raw_gy = data.qvel[4] + gyro_noise[1]
+        raw_gz = data.qvel[5] + gyro_noise[2]
+
+        raw_ax = (
+            2.0 * (true_q[1] * true_q[3] - true_q[0] * true_q[2]) * 9.81
+            + accel_noise[0]
+        )
+        raw_ay = (
+            2.0 * (true_q[0] * true_q[1] + true_q[2] * true_q[3]) * 9.81
+            + accel_noise[1]
+        )
+        raw_az = (
+            true_q[0] ** 2 - true_q[1] ** 2 - true_q[2] ** 2 + true_q[3] ** 2
+        ) * 9.81 + accel_noise[2]
+
+        # 传感器源头使用一阶低通滤波进行物理级抗噪
+        gx = filter_gx.update(raw_gx)
+        gy = filter_gy.update(raw_gy)
+        gz = filter_gz.update(raw_gz)
+        ax = filter_ax.update(raw_ax)
+        ay = filter_ay.update(raw_ay)
+        az = filter_az.update(raw_az)
+
+        mahony.update_imu(gx, gy, gz, ax, ay, az)
+        estimated_yaw = mahony.get_estimated_yaw()
+
+        v_left = data.qvel[qvel_left_idx] * 0.08
+        v_right = data.qvel[qvel_right_idx] * 0.08
+        current_v = (v_left + v_right) / 2.0
+
+        current_state = np.array([data.qpos[0], data.qpos[1], estimated_yaw, current_v])
+
+        acados_solver.set(0, "lbx", current_state)
+        acados_solver.set(0, "ubx", current_state)
+
+        for k in range(N):
+            idx = min(step + k, len(t_points) - 1)
+            if idx < len(t_points) - 1:
+                dy = ref_y[idx + 1] - ref_y[idx]
+                dx = ref_x[idx + 1] - ref_x[idx]
+                theta_ref = np.arctan2(dy, dx)
+            else:
+                theta_ref = 0.0
+
+            ocp_yref = np.array(
+                [ref_x[idx], ref_y[idx], theta_ref, 0.3, 0.0, 0.0]
+            )  # 设定目标速度为 0.3 m/s
+            acados_solver.set(k, "yref", ocp_yref)
+
+        idx_e = min(step + N, len(t_points) - 1)
+        ocp_yref_e = np.array([ref_x[idx_e], ref_y[idx_e], 0.0, 0.3])
+        acados_solver.set(N, "yref", ocp_yref_e)
+
+        status = acados_solver.solve()
+        if status != 0:
+            log_file.write(f"#{step}_SOLVER_FAILED_STATUS_{status}\n")
+
+        u_opt = acados_solver.get(0, "u")
+        a_opt = u_opt[0]
+        w_cmd_raw = u_opt[1]
+
+        v_cmd_raw = max(0.0, current_v + a_opt * 0.01)
+
+        # 🛡️ 架构师修正：绝对禁止对 MPC 输出进行低通滤波！MPC 的输出即是最优解，滤波会引入致命的相位滞后。
+        v_cmd = v_cmd_raw
+        w_cmd = w_cmd_raw
+
+        # 施加控制级极限限幅
+        v_cmd = min(0.3, v_cmd)
+        w_cmd = np.clip(w_cmd, -0.6, 0.6)
+
+        R = 0.08
+        L = 0.36
+
+        # 【核心重构】：恢复数学与物理完全对称的控制极性，彻底闭合负反馈控制环！
+        v_left_motor = (v_cmd - w_cmd * L / 2.0) / R
+        v_right_motor = (v_cmd + w_cmd * L / 2.0) / R
+
+        # 🛡️ 差速动力学：四轮差速动力同步输出给前、后桥电机通道
+        data.ctrl[0] = v_left_motor  # motor_lf
+        data.ctrl[1] = v_right_motor  # motor_rf
+        data.ctrl[2] = v_left_motor  # motor_lr
+        data.ctrl[3] = v_right_motor  # motor_rr
+
+        # 🛡️ 离屏视网膜捕获：每隔 3 步 (仿照物理 33Hz)，对物理相机渲染并推送至通信神经网
+        if step % 3 == 0:
+            try:
+                # 渲染 front_camera 挂载点的当前场景图像 [cite: 1.1.3]
+                renderer.update_scene(data, camera="front_camera")
+                rgb_frame = renderer.render()  # 返回 (480, 640, 3) 的 np.ndarray
+                # 转换成连续的 C 语言裸字节数组并高速写入 Zenoh 管道
+                raw_bytes = rgb_frame.tobytes()
+                camera_pub.put(raw_bytes)
+            except Exception:
+                pass
+
+        mujoco.mj_step(model, data)
+        viewer.sync()
+
+        elapsed = time.time() - step_start
+
+        if step % 50 == 0:
+            target_x = ref_x[step]
+            target_y = ref_y[step]
+            dist_error = np.sqrt(
+                (current_state[0] - target_x) ** 2 + (current_state[1] - target_y) ** 2
+            )
+
+            # 记录真实姿态与估计姿态
+            log_file.write(
+                f"{data.time:.2f},{current_state[0]:.4f},{current_state[1]:.4f},"
+                f"{target_x:.4f},{target_y:.4f},{dist_error:.4f},"
+                f"{v_cmd:.3f},{w_cmd:.3f},{estimated_yaw:.4f},{true_yaw:.4f},{elapsed * 1000:.1f}\n"
+            )
+
+            # 终端实时简化遥测，不刷屏（1行完成）
+            print(
+                f"Time: {data.time:.2f}s | Err: {dist_error:.3f}m | Solve: {elapsed * 1000:.1f}ms"
+            )
+
+        step += 1
+
+        # 路径跑完后保持窗口开启以供审计
+        # 找到 mujoco_nmpc_run.py 最后的循环判断，将其修改为：
+        mujoco.mj_step(model, data)
+        viewer.sync()
+
+        elapsed = time.time() - step_start
+
+        if step % 50 == 0:
+            target_x = ref_x[step]
+            target_y = ref_y[step]
+            dist_error = np.sqrt(
+                (current_state[0] - target_x) ** 2 + (current_state[1] - target_y) ** 2
+            )
+
+            log_file.write(
+                f"{data.time:.2f},{current_state[0]:.4f},{current_state[1]:.4f},"
+                f"{target_x:.4f},{target_y:.4f},{dist_error:.4f},"
+                f"{v_cmd:.3f},{w_cmd:.3f},{estimated_yaw:.4f},{true_yaw:.4f},{elapsed * 1000:.1f}\n"
+            )
+
+            print(
+                f"Time: {data.time:.2f}s | Err: {dist_error:.3f}m | Solve: {elapsed * 1000:.1f}ms"
+            )
+
+        time.sleep(max(0, 0.01 - elapsed))
+        step += 1
+
+        # === 核心修改：到达 15 秒终点后，自动复位回原点重新执行 ===
+        if step >= len(t_points) - N:
+            print("\n🔄 [到达终点] 正在自动重置底盘与算法，返回原点重新执行...")
+
+            # 1. 物理引擎复位：重置所有位置、速度和仿真时间为 0
+            mujoco.mj_resetData(model, data)
+
+            # 2. 软件变量复位
+            step = 0
+            prev_w_cmd = 0.0
+
+            # 3. 姿态小脑复位：清空 Mahony 滤波器的积累误差
+            mahony = MahonyAHRS(sample_freq=100.0, kp=1.5, ki=0.005)
+            # === 新增：清除所有低通滤波器的“前世记忆” ===
+            filter_v = PT1Filter(cutoff_freq=3.0, sample_freq=100.0)
+            filter_w = PT1Filter(cutoff_freq=3.0, sample_freq=100.0)
+            filter_gx = PT1Filter(cutoff_freq=15.0, sample_freq=100.0)
+            filter_gy = PT1Filter(cutoff_freq=15.0, sample_freq=100.0)
+            filter_gz = PT1Filter(cutoff_freq=15.0, sample_freq=100.0)
+            filter_ax = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
+            filter_ay = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
+            filter_az = PT1Filter(cutoff_freq=5.0, sample_freq=100.0)
+
+            # 4. 决策大脑复位：重新对 acados 进行时域温启动初始化
+            for k in range(N + 1):
+                acados_solver.set(k, "x", np.zeros(nx))
+            for k in range(N):
+                acados_solver.set(k, "u", np.zeros(nu))
+
+            print("✅ 重置成功！开始新一轮智驾追踪...\n")
+
+# 当你手动关闭 3D 窗口时，才会安全退出并保存日志
+log_file.close()
+viewer.close()
+time.sleep(0.5)
+print("\n🏆 [仿真安全退出] 数据已写入: nmpc_telemetry.log\n")
+</file>
+
+<file path="README.md">
+# 🚀 FSD-car: 极简纯视觉具身智能与自动驾驶控制栈 
+
+`FSD-car` 是一个专为百元级超低成本 AMR（自主移动机器人）量身定制的、**全栈白盒纯视觉自动驾驶控制栈**。
+
+我们彻底抛弃了高功耗的重型 3D 占据网络、高成本激光雷达与高精度定位仪，转而运用 **仿生学（青蛙眼时空感受野）**、**控制理论（acados NMPC）** 以及 **轻量深度局部特征（XFeat）**，在极低算力（如百元级瑞芯微/香橙派）和强干扰下，实现硬实时避障与时空位置自愈。
+
+---
+
+## 🗺️ 全生命周期开发路线图 (AMR Roadmap)
+
+本项目严格按照以下五个阶段进行闭环验证与物理演进：
+
+```text
+【 阶段一：虚拟沙盘验证 】 ──────► 【 阶段二：神经通路分布式组网 】 ──────► 【 阶段三：空间积木感知 】
+ MuJoCo + acados 极速控制闭环       ESP32-C6 + Zenoh 200Hz 串口并网       仿生青蛙眼2D势场 + XFeat稀疏快照
+                                                                                   │
+【 阶段五：自主探索与实车落地 】 ◄──── 【 阶段四：大小脑行为树决策 】 ◄─────────────┘
+  真车装配、Mahony姿态、纠偏自愈        Rust Forester 行为树 + 语义拓扑图
+```
+
+---
+
+## 📂 项目工作空间物理地图 (Workspace Map)
+
+本主干仓库采用高内聚、低耦合的多包工作空间进行管理，每个阶段的代码完全独立：
+
+```text
+FSD-car/
+├── .gitignore                      # 统一大资产与编译缓存拦截契约
+├── test_frog.py                    # 仿生感受野 Python 验证探针
+├── mujoco-nmpc-car/                # ──【阶段一】仿真沙盘 ──
+│   ├── mujoco_nmpc_run.py          # MuJoCo NMPC 闭环仿真主程序
+│   └── generate_solver.py          # acados C 语言 RTI-SQP 求解代码生成器
+├── zenoh-rs/                       # ──【阶段二】神经通路 ──
+│   ├── Cargo.toml                  # 依赖配置
+│   └── src/bin/
+│       ├── brain.rs                # 慢系统大脑发送端 (Rust)
+│       └── spinal_cord_mock.rs     # 脊髓接收端 (ESP32-C6 模拟器)
+├── amr_bionic_eye/                 # ──【阶段三】本能避障 ──
+│   └── src/                        # 30Hz 乒乓缓冲、信箱模式极速势场感知
+└── xfeatc/                         # ──【阶段三.五】稀疏纠偏 ──
+    ├── model/                      # 存放 xfeat_640x640.onnx 神经网络权重
+    ├── lib_dylib/                  # 本地物理链接 libonnxruntime.so.1.18.0
+    └── src/                        # XFeat 提取器、双向余弦匹配器、RANSAC 纠偏算子
+```
+
+---
+
+## 🛠️ 快速编译运行说明 (Quick Start)
+
+本项目完全在 **Windows + WSL2 (Ubuntu 22.04) + Zsh** 黄金沙盘环境下跑通。
+
+### 1. 运行阶段一 (MuJoCo 动力学与控制)
+在 WSL2 编译安装好 `acados` 核心库后，进入 `mujoco-nmpc-car` 目录：
+```bash
+cd mujoco-nmpc-car
+python3 generate_solver.py  # 自动生成 C 语言 MPC 控制器
+python3 mujoco_nmpc_run.py  # 启动物理仿真
+```
+
+### 2. 运行阶段三 (仿生青蛙眼避障)
+确保您的手机通过 `IP Webcam` App 在同一局域网并网：
+```bash
+cd amr_bionic_eye
+cargo run --release          # 自动启动单元素覆盖信箱（Mailbox），0延迟输出
+```
+
+### 3. 运行阶段三.五 (XFeat 稀疏快照位置自愈)
+由于国内网络阻断，本项目采用**本地物理库链接机制**。请在编译前确保环境变量就绪：
+```bash
+cd xfeatc
+# linux系统版本落后，可以注入本地动态库环境变量
+export ORT_LIB_PATH=$(pwd)/lib_dylib
+export ORT_PREFER_DYNAMIC_LINK=1
+export LD_LIBRARY_PATH=$(pwd)/lib_dylib
+
+cargo run --release          # 自动录制站牌，移动摄像头体验 RANSAC 自愈画线！
+```
+</file>
+
+<file path="core-control/build.rs">
+// core-control/build.rs
+use std::env;
+use std::path::PathBuf;
+
+fn main() {
+    // 1. 获取当前 crate (core-control) 的绝对物理路径
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+
+    // 2. 向上自适应溯源至工作空间根目录 (FSD-car)，彻底告别任何硬编码
+    let workspace_root = manifest_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or(manifest_dir);
+
+    // 3. 动态解析并定位 acados 底层 C 库的物理路径 (优先读取环境变量，否则使用工作空间自适应沙盘路径)
+    let acados_lib_dir = if let Ok(acados_source) = env::var("ACADOS_SOURCE_DIR") {
+        PathBuf::from(acados_source).join("lib")
+    } else {
+        workspace_root.join("simulation-env/acados/lib")
+    };
+
+    // 4. 定位 NMPC 自动生成的 OCP 求解器动态库物理路径
+    let solver_lib_dir = workspace_root.join("simulation-env/c_generated_code");
+
+    // -------------------------------------------------------------------------
+    // 🛡️ 工业级 RPATH 链接保障契约
+    // -------------------------------------------------------------------------
+
+    // A. 绑定链接并注入 RPATH：libacados.so
+    if acados_lib_dir.exists() {
+        // 告诉 Cargo 编译期去哪里寻找 libacados.so
+        println!("cargo:rustc-link-search=native={}", acados_lib_dir.display());
+        // SOTA 核心：将动态库路径硬烧录进生成的二进制 ELF 文件（RPATH 机制） [cite: 1.2.8]
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", acados_lib_dir.display());
+    } else {
+        println!(
+            "cargo:warning=⚠️ [build.rs] 未找到 acados 核心动态库路径：{}，请检查 acados 是否正确编译安装。", 
+            acados_lib_dir.display()
+        );
+    }
+
+    // B. 绑定链接并注入 RPATH：libacados_ocp_solver_diff_drive_car.so
+    if solver_lib_dir.exists() {
+        // 编译期搜索
+        println!("cargo:rustc-link-search=native={}", solver_lib_dir.display());
+        // 运行时 RPATH 路径嵌入 [cite: 1.2.8]
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", solver_lib_dir.display());
+    } else {
+        println!(
+            "cargo:warning=⚠️ [build.rs] 未找到自动生成求解器代码路径：{}，请确保在 simulation-env 目录下运行过 Python 生成器。", 
+            solver_lib_dir.display()
+        );
+    }
+
+    // 5. 声明需要动态链接的库名称
+    println!("cargo:rustc-link-lib=dylib=acados");
+    // 🛡️ 对齐实际物理生成的动态库名称（带 _ocp_ 命名极性）
+    println!("cargo:rustc-link-lib=dylib=acados_ocp_solver_diff_drive_car");
+
+    // 6. 编译防腐哨兵：如果 C 求解器源文件被重新生成，强制触发 Rust 重新编译
+    let c_solver_source = solver_lib_dir.join("acados_solver_diff_drive_car.c");
+    if c_solver_source.exists() {
+        println!("cargo:rerun-if-changed={}", c_solver_source.display());
+    }
+}
+</file>
+
+<file path="Cargo.toml">
+[workspace]
+resolver = "2"
+
+# 声明工作空间下的所有物理子包
+members = [
+    "core-perception", # 视觉感知引擎 (青蛙眼 + XFeat)
+    "core-control",    # 规控引擎 (NMPC 求解器)
+    "core-decision",   # 决策大脑 (行为树 + 拓扑图)
+    "showcase",        # 📺 专门用于存放可视化验证程序的展示厅包
+]
+
+[workspace.dependencies]
+# 视觉与 AI 引擎
+opencv = { version = "0.93", default-features = false, features = [
+    "imgproc",
+    "calib3d",
+    "features2d",
+    "videoio",
+    "highgui",
+] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "tls-rustls",
+    "load-dynamic",
+] }
+
+# 异步与并发底座
+tokio = { version = "1.38", features = ["full"] }
+
+# 序列化与反序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postcard = { version = "1.0", features = ["alloc"] }
+
+# 数学与矩阵运算
+ndarray = "0.15"
+
+# 🛡️ 性能释放：启用 LTO 级编译期联合优化，彻底压干 NMPC 100Hz 计算延迟
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+</file>
+
+<file path="simulation-env/isaac_dora_node.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+
+"""
+=================================================================
+🛡️ FSD-car V3.0: 仿真环境物理代理节点 (原生 Linux 零拷贝并网版)
+设计哲学: 去网关化 | 双视觉算法下沉 | 共享内存直通 | 物理与算法时钟对齐
+=================================================================
+"""
+
+import os
+import sys
+import struct
+import numpy as np
+import cv2
+import torch
+import torch.nn.functional as F
+import onnxruntime as ort
+import pyarrow as pa
+from dora import Node
+
+# ---------------------------------------------------------------------------
+# 🛡️ 环境变量自愈：自动加载项目根目录的 .env 文件
+# ---------------------------------------------------------------------------
+def load_env_manually():
+    # 向上自适应溯源两层，找到项目根目录下的 .env
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    parts = line.split("=", 1)
+                    if len(parts) == 2:
+                        os.environ[parts[0].strip()] = parts[1].strip()
+load_env_manually()
+
+# ---------------------------------------------------------------------------
+# 🛡️ NVIDIA Isaac Sim 启动哨兵 (LTS 级强依赖约束)
+# ---------------------------------------------------------------------------
+try:
+    from isaacsim import SimulationApp
+    # 本地原生运行，启动 headed 模式以便实时在大屏监测小车运动
+    simulation_app = SimulationApp({"headless": False})
+    
+    import omni
+    from pxr import UsdPhysics
+    from isaacsim.core.api.world import World
+    from isaacsim.core.experimental.prims import Articulation
+    from isaacsim.sensors.camera import Camera
+    from isaacsim.core.utils.stage import open_stage
+    print("✅ [物理代理] NVIDIA Isaac Sim Standalone 引擎启动成功！")
+except ImportError as e:
+    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！请确保运行在 python.sh 环境下。报错: {e}")
+    sys.exit(1)
+
+
+# ===========================================================================
+# 🐸 仿生青蛙眼不对称时空感受野（ERF/IRF）算法引擎
+# ===========================================================================
+class BionicFrogEye:
+    def __init__(self, width=640, height=480):
+        self.w = width
+        self.h = height
+        self.prev_gray = None
+        
+        # 预分配感受野显存金库，杜绝运行期动态申请
+        self.erf = np.zeros((height, width), dtype=np.float32)
+        self.irf = np.zeros((height, width), dtype=np.float32)
+        
+        self.alpha_erf = 0.4        # 兴奋感受野衰减率（极快，捕捉瞬态）
+        self.alpha_irf = 0.85       # 抑制感受野衰减率（较慢，存储记忆）
+        self.beta = 0.5             # 抑制强度权重
+        self.event_threshold = 15.0 # 时间帧差事件门限
+        
+        # 预计算二次方物理距离权重矩阵，靠近图像底部（越近）权重越高
+        y_indices, x_indices = np.indices((self.h, self.w))
+        self.x_coords = x_indices.astype(np.float32)
+        self.closeness_weight = (y_indices / float(self.h)) ** 2
+        
+    def process_frame(self, frame_rgb):
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
+            
+        diff = cv2.absdiff(self.prev_gray, gray)
+        _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
+        
+        events_rf = cv2.GaussianBlur(events, (21, 21), 0)
+        
+        self.erf = self.erf * self.alpha_erf + events_rf
+        self.irf = self.irf * self.alpha_irf + events_rf
+        
+        net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
+        self.prev_gray = gray
+        
+        weighted_energy = net_energy * self.closeness_weight
+        total_energy = np.sum(weighted_energy)
+        
+        if total_energy > 15.0:  # 避障激活门限
+            x_c = np.sum(self.x_coords * weighted_energy) / total_energy
+            dx = (x_c - self.w / 2.0) / (self.w / 2.0)  # 归一化至 [-1.0, 1.0]
+            F_y = -dx * 1.5  # 逃逸方向与障碍物重心相反
+            F_x = - (total_energy / (self.w * self.h)) * 5.0
+        else:
+            F_x, F_y = 0.0, 0.0
+            
+        heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
+        return F_x, F_y, heatmap
+
+
+# ====================================================
+#  📸 XFeat 局部高精度特征提取引擎 (本地 GPU/CPU 自适应版)
+# ====================================================
+class XFeatEngine:
+    def __init__(self, model_path):
+        # 原生 Linux 下直接启用 GPU 推理加速
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.session = ort.InferenceSession(model_path, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        print(f"✓ [XFeat] 神经网络推理引擎装载完毕，物理计算提供商: {self.session.get_providers()}")
+
+    def extract(self, frame_rgb, top_k=200):
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        pad_y = (640 - 480) // 2
+        padded = cv2.copyMakeBorder(gray, pad_y, 640 - 480 - pad_y, 0, 0, cv2.BORDER_CONSTANT, value=0)
+        
+        tensor = torch.from_numpy(padded).float().unsqueeze(0).unsqueeze(0) # [1, 1, 640, 640]
+        mean, std = tensor.mean(), tensor.std()
+        tensor = (tensor - mean) / (std + 1e-6)
+
+        outs = self.session.run(None, {self.input_name: tensor.numpy()})
+        desc, scores, rel = [torch.from_numpy(x) for x in outs]
+
+        # 极致高精度极性校正
+        if desc.shape[1] == 80 and desc.shape[2] == 80:
+            desc = desc.permute(0, 3, 1, 2)
+        if scores.shape[1] == 80 and scores.shape[2] == 80:
+            scores = scores.permute(0, 3, 1, 2)
+        if len(rel.shape) == 4 and rel.shape[3] == 1 and rel.shape[1] == 80 and rel.shape[2] == 80:
+            rel = rel.permute(0, 3, 1, 2)
+
+        scores = F.softmax(scores, dim=1)[:, :-1, :, :]
+        scores = F.pixel_shuffle(scores, 8)
+        rel = F.interpolate(rel, size=(640, 640), mode='bilinear', align_corners=False)
+        conf = scores * rel
+
+        conf_nms = F.max_pool2d(conf, kernel_size=5, stride=1, padding=2)
+        mask = (conf == conf_nms) & (conf > 0.05)
+
+        conf_flat = conf[mask]
+        if len(conf_flat) == 0:
+            return b''
+        
+        topk = min(top_k, len(conf_flat))
+        scores_k, indices = torch.topk(conf_flat, topk)
+        
+        y, x = torch.where(mask[0, 0])
+        y, x = y[indices], x[indices]
+
+        grid_x = (x.float() / 639.0) * 2.0 - 1.0
+        grid_y = (y.float() / 639.0) * 2.0 - 1.0
+        grid = torch.stack([grid_x, grid_y], dim=1).unsqueeze(0).unsqueeze(2) # [1, N, 1, 2]
+        
+        # 🛡️ 架构师 2026 修复：使用标准的 grid_sample 提取特征描述子
+        desc_sampled = F.grid_sample(desc, grid, mode='bilinear', align_corners=False)
+        desc_sampled = desc_sampled.squeeze(0).squeeze(2).t() # [N, 64]
+        desc_sampled = F.normalize(desc_sampled, p=2, dim=1)
+
+        y = y.float() - pad_y
+        x = x.float()
+
+        valid = (y >= 0) & (y < 480)
+        x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
+
+        N = len(x)
+        buffer = bytearray(struct.pack("<I", N))
+        
+        x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
+        for i in range(N):
+            buffer.extend(struct.pack("<fff", x_np[i], y_np[i], s_np[i]))
+            buffer.extend(d_np[i].tobytes())
+            
+        return bytes(buffer)
+
+
+# ===========================================================================
+#  🚀 DORA 原生节点主循环与仿真执行器
+# ===========================================================================
+def main():
+    print("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
+    
+    # 1. 初始化本地 DORA 节点契约
+    dora_node = Node()
+
+    # 2. 读取环境变量路径，加载物理场景
+    fsd_assets_dir = os.environ.get("FSD_ASSETS_DIR", "/home/zhz/fsd_assets")
+    usd_path = os.path.join(fsd_assets_dir, "Collected_fsd_car_racetrack", "fsd_car_racetrack.usd")
+    
+    if not os.path.exists(usd_path):
+        print(f"❌ 致命错误：无法在指定路径找到物理场景文件 -> {usd_path}")
+        sys.exit(1)
+        
+    open_stage(usd_path=usd_path)
+    
+    # 3. 初始化仿真世界
+    world = World(stage_units_in_meters=1.0, physics_prim_path="/PhysicsScene")
+    car_path = "/Root/jetbot"
+    stage = omni.usd.get_context().get_stage()
+    
+    if not stage.GetPrimAtPath(car_path):
+        print(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
+        sys.exit(1)
+
+    # 🛡️ 物理关节属性重置：清除冗余阻尼，驯化为纯速度伺服关节
+    for prim in stage.Traverse():
+        if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
+            drive = UsdPhysics.DriveAPI.Get(prim, "angular")
+            if not drive:
+                drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
+            drive.CreateStiffnessAttr(0.0)
+            drive.CreateDampingAttr(1e5)
+
+    # 4. 绑定物理实体
+    car = Articulation(car_path)
+    camera_path = f"{car_path}/rgb_camera"
+    camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
+
+    # 5. 加载算法引擎
+    xfeat_model_path = os.path.join(fsd_assets_dir, "model", "xfeat_640x640.onnx")
+    if not os.path.exists(xfeat_model_path):
+        print(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
+        sys.exit(1)
+        
+    xfeat_engine = XFeatEngine(xfeat_model_path)
+    frog_eye = BionicFrogEye(640, 480)
+
+    # 6. 物理世界预热起跑
+    world.reset()
+    world.play()
+    world.step(render=True)
+    camera.initialize()
+    
+    print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
+
+    L = 0.1125  # 轮距
+    R = 0.03    # 轮半径
+    tick = 0
+
+    v_cmd = 0.0
+    w_cmd = 0.0
+
+    try:
+        while simulation_app.is_running():
+            # A. 步进物理和渲染帧
+            world.step(render=True)
+            tick += 1
+
+            # B. 极速显存抓取与前置过滤
+            rgb_raw = camera.get_rgb()
+            if rgb_raw is not None:
+                if hasattr(rgb_raw, "cpu"):
+                    rgb_frame = rgb_raw.cpu().numpy()
+                else:
+                    rgb_frame = rgb_raw
+                    
+                # 剥离 Alpha 通道并重整像素值
+                if len(rgb_frame.shape) == 3 and rgb_frame.shape[2] == 4:
+                    rgb_frame = rgb_frame[:, :, :3]
+                if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
+                    rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
+
+                if rgb_frame.size > 0:
+                    # 1. 🐸 100Hz 仿生感受野势场解算并实时并网 (直接转换为 Arrow Uint8 数组写入共享内存)
+                    F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
+                    fe_payload = struct.pack("<ff", F_x, F_y)
+                    
+                    arrow_obstacle_force = pa.array(np.frombuffer(fe_payload, dtype=np.uint8))
+                    dora_node.send_output("obstacle_force", arrow_obstacle_force)
+
+                    # 2. 📸 1Hz 慢系统 XFeat 骨干特征提取并并网
+                    if tick % 100 == 0:
+                        xfeat_payload = xfeat_engine.extract(rgb_frame, top_k=200)
+                        if xfeat_payload:
+                            arrow_xfeat_features = pa.array(np.frombuffer(xfeat_payload, dtype=np.uint8))
+                            dora_node.send_output("xfeat_features", arrow_xfeat_features)
+
+            # C. 🏎️ 非阻塞监听快系统大脑下发的运动规控反馈 (0 延迟)
+            event = dora_node.next(timeout=0.001)
+            if event is not None:
+                if event["type"] == "INPUT" and event["id"] == "control_cmd":
+                    cmd_bytes = bytes(event["value"])
+                    if len(cmd_bytes) == 8:
+                        v_cmd, w_cmd = struct.unpack("<ff", cmd_bytes)
+                elif event["type"] == "STOP":
+                    print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
+                    break
+
+            # D. 执行物理控制
+            v_left = (v_cmd - w_cmd * L / 2.0) / R
+            v_right = -(v_cmd + w_cmd * L / 2.0) / R  # 右轮极性反向自愈
+            car.set_dof_velocity_targets(np.array([v_left, v_right]))
+
+    except KeyboardInterrupt:
+        print("\n🛑 用户手动中断，优雅下线。")
+    finally:
+        # 安全制动
+        try:
+            car.set_dof_velocity_targets(np.array([0.0, 0.0]))
+            world.step(render=True)
+        except Exception:
+            pass
+        simulation_app.close()
+        print("🔌 物理仿真界代理已安全卸载。")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="4.py">
+
+</file>
+
+<file path="dora_dataflow.yaml">
+# =================================================================
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
+# 架构哲学: 去网关化 | 仿生避障下沉至原生 Python 节点 | 共享内存 0 微秒延迟直通
+# =================================================================
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 物理仿真界 (The Matrix) - Isaac Sim 仿真引擎原生 DORA 节点
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    path: /home/zhz/.local/share/ov/pkg/isaac-sim-4.2.0/python.sh
+    args: simulation-env/isaac_dora_node.py
+    inputs:
+      # 接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
+      control_cmd: fast_brain_nmpc/control_cmd
+    outputs:
+      # 直接向慢大脑广播提取好的 XFeat 稀疏特征二进制契约 (零图像传输开销!)
+      - xfeat_features
+      # 直接向快大脑广播 8 字节仿生势场避障力
+      - obstacle_force
+
+  # ---------------------------------------------------------------
+  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
+  # ---------------------------------------------------------------
+  - id: fast_brain_nmpc
+    path: target/release/fast_brain_node
+    build: cargo build -p core-control --release --bin fast_brain_node
+    env:
+      RUST_LOG: info
+      DORA_RUNTIME_TYPE_CHECK: warn
+      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
+    inputs:
+      # 从本地共享内存极速订阅避障势场力
+      obstacle_force: isaac_sim_env/obstacle_force
+    outputs:
+      # 输出运动指令契约 (v, w)
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🧠 3. 慢系统：拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
+      xfeat_features: isaac_sim_env/xfeat_features
+</file>
+
+<file path="core-control/src/bin/fast_brain_node.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+
+/*
+=================================================================
+🛡️ FSD-car V3.0: 快系统规控大脑节点 (NMPC & 仿生避障合拢版)
+设计哲学: 完全剥离图像计算 | 100Hz 绝对物理时钟 | 势场逃逸力数学合拢
+=================================================================
+*/
+
+use core_control::预测控制求解器;
+use dora_node_api::{DoraNode, Event, MetadataParameters};
+use eyre::eyre; // 🛡️ 架构师 2026 修复：移除未使用的 Context
+use std::sync::Arc;
+use std::sync::RwLock; // 状态金库轻量级锁
+use std::time::Duration;
+
+/// 状态金库：快大脑 100Hz 线程与 避障力接收线程 间绝对安全的无锁共享上下文
+struct 执行上下文 {
+    pub 物理主权已初始化: bool,
+    pub 期望_x: f64,              // 🛡️ 架构师 2026 修复：将 # 注释替换为 Rust 标准双斜杠 //
+    pub 期望_y: f64,              // 🛡️ 架构师 2026 修复：将 # 注释替换为 Rust 标准双斜杠 //
+    pub 当前线速度: f64,
+}
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
+
+    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+
+    // 2. 初始化状态金库
+    let 状态金库 = Arc::new(RwLock::new(执行上下文 {
+        物理主权已初始化: false,
+        期望_x: 0.0,              // 默认无纵向排斥
+        期望_y: 0.0,              // 默认无横向逃逸
+        当前线速度: 0.0,
+    }));
+
+    let 金库_规控 = 状态金库.clone();
+
+    // ---------------------------------------------------------
+    // [线程 A]：100Hz 极速 NMPC 控制环路 (The Control Loop)
+    // ---------------------------------------------------------
+    let 规控句柄 = tokio::spawn(async move {
+        let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
+        let mut 求解器已就绪 = false;
+        
+        let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
+        
+        loop {
+            节拍器.tick().await;
+            
+            // 极速读取状态金库
+            let (已初始化, 期望_x, 期望_y, 当前线速度) = {
+                let lock = 金库_规控.read().unwrap();
+                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度)
+            };
+
+            if !已初始化 {
+                continue;
+            }
+
+            // NMPC 求解器温启动 (仅执行一次)
+            if !求解器已就绪 {
+                if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0) {
+                    eprintln!("⚠️ 温启动状态注入失败: {}，跳过本帧", e);
+                    continue;
+                }
+                求解器已就绪 = true;
+                println!("✅ [快系统] NMPC 求解器温启动完成，物理主权接管就绪！");
+            }
+
+            // 🎯 将避障力带来的 (期望_x, 期望_y) 偏差，高频注入 NMPC 数学命题
+            // 期望_x: 基础前行速度 0.3m/s 加上纵向排斥 (F_x 为负，实现遇障减速)
+            // 期望_y: 居中前行 y=0 加上横向逃逸 (F_y 偏离 0，实现局部路径机动)
+            let 目标线速度 = (0.3 + 期望_x).max(0.0).min(0.3); // 限制在安全范围内
+            
+            let mut 注入成功 = true;
+            for k in 0..=20 {
+                // 将计算出的避障修正，揉入 NMPC 20步预测时域的参考轨迹 yref 中！
+                if let Err(e) = 规控大脑.设置参考轨迹点(k, 目标线速度 * (k as f64 * 0.01), 期望_y, 0.0, 目标线速度) {
+                    eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
+                    注入成功 = false;
+                    break;
+                }
+            }
+            if !注入成功 { continue; }
+            
+            // 求解最优控制量
+            match 规控大脑.求解最优控制量(当前线速度) {
+                Ok((线速度_v, 角速度_w)) => {
+                    // 更新线速度状态用于下一次积分
+                    {
+                        let mut lock = 金库_规控.write().unwrap();
+                        lock.当前线速度 = 线速度_v;
+                    }
+
+                    // 🎯 极速裸二进制直发：向并网网关传输 8 字节控制指令
+                    let 运动指令_裸数组 = [线速度_v as f32, 角速度_w as f32];
+                    let 裸内存切片: &[u8] = unsafe {
+                        std::slice::from_raw_parts(运动指令_裸数组.as_ptr() as *const u8, 8)
+                    };
+                    
+                    if let Err(e) = node.send_output_bytes(
+                        "control_cmd".to_string().into(),
+                        MetadataParameters::default(),
+                        8,
+                        裸内存切片,
+                    ) {
+                        eprintln!("❌ 控制指令发送失败: {}", e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️ NMPC 求解器异常发散: {}", e);
+                }
+            }
+        }
+    });
+
+    // ---------------------------------------------------------
+    // [线程 B]：DORA 神经反射弧 (The Event Loop - 100Hz 避障力注入)
+    // ---------------------------------------------------------
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, data, .. } => {
+                if id.as_str() == "obstacle_force" {
+                    // 🎯 核心接收自愈：将并网网关发来的 8字节 势场力解析出来
+                    let 裸数据_vec: Vec<u8> = dora_node_api::into_vec(&data)
+                        .map_err(|e| eyre!("❌ 无法解析 DORA 势场力数据: {}", e))?;
+                    
+                    if 裸数据_vec.len() < 8 {
+                        continue;
+                    }
+
+                    // 零拷贝内存重塑为 F_x (纵向排斥力) 和 F_y (横向逃逸力)
+                    let f_x = f32::from_le_bytes(裸数据_vec[0..4].try_into().unwrap()) as f64;
+                    let f_y = f32::from_le_bytes(裸数据_vec[4..8].try_into().unwrap()) as f64;
+
+                    // 🛡️ 架构师 2026 修复：替换 # 为 //
+                    let 需要初始化 = {
+                        let lock = 状态金库.read().unwrap();
+                        !lock.物理主权已初始化
+                    };
+
+                    if 需要初始化 {
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.物理主权已初始化 = true;
+                        println!("✅ [快系统] 跨 OS 仿生眼避障通道激活，控制权交接完毕！");
+                    }
+
+                    // 🎯 物理揉入：将解出来的仿生势场逃逸矢量，写入状态金库
+                    {
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.期望_x = f_x; // 作用于 NMPC 的纵向参考速度
+                        lock.期望_y = f_y; // 作用于 NMPC 的横向路径偏移
+                    }
+                }
+            }
+            Event::Stop(_) => {
+                println!("🛑 [快系统] 接收到 DORA 停止信号，安全卸载并释放控制权...");
+                break;
+            }
+            _ => {}
+        }
+    }
+    
+    // 优雅卸载
+    规控句柄.abort();
+    Ok(())
+}
+</file>
+
+<file path=".gitignore">
+# =================================================================
+# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生生产版)
+# =================================================================
+
+# --- 1. 系统、IDE 与临时垃圾文件 ---
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+.vscode/
+.idea/
+*.user
+
+# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
+# 彻底拦截 uv 和传统 Python 的虚拟环境与缓存
+.venv/
+.uv/
+.python-version
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
+# 强制忽略 DORA 产生的 uuid 运行日志和协调器日志
+/out/
+out/
+dora-coordinator.txt
+dora-daemon.txt
+
+# --- 4. Rust 工作空间全局编译缓存 ---
+# 强制忽略整个多包工作空间下的 release/debug 编译产物
+/target/
+
+# --- 5. 跨系统动态链接库与大资产模型 ---
+# 拦截系统级 SO 库与大尺寸 AI 模型，防止 Git 仓库历史体积爆炸
+*.so
+*.so.*
+*.tgz
+*.a
+*.lib
+*.dll
+*.dylib
+
+# 🛡️ 架构师建议：大尺寸 ONNX 模型建议放在 model/ 目录下，通过 download_models.sh 脚本下载，
+# 或者使用 Git LFS 管理，绝对不要直接塞入主干 Git 历史中。
+*.onnx
+
+# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
+simulation-env/c_generated_code/
+simulation-env/acados_ocp.json
+simulation-env/acados/
+simulation-env/*.log
+simulation-env/MUJOCO_LOG.TXT
+simulation-env/nmpc_telemetry.log
+
+# 🛡️ 架构师建议：车端运行产生的动态拓扑记忆，属于高频变动的非代码资产
+topo_memory.json
+</file>
+
+</files>

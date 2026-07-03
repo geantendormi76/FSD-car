@@ -11,7 +11,7 @@ serde = { workspace = true }
 libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
 
 # 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
-dora-node-api = "0.3.3"
+dora-node-api = "0.3.13"
 # ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
 eyre = "0.6"
 

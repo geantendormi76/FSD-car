@@ -7,7 +7,7 @@ nodes:
   # 🌌 1. 物理仿真界 (The Matrix) - Isaac Sim 仿真引擎原生 DORA 节点
   # ---------------------------------------------------------------
   - id: isaac_sim_env
-    path: /home/zhz/.local/share/ov/pkg/isaac-sim-4.2.0/python.sh
+    path: /home/zhz/isaacsim/python.sh
     args: simulation-env/isaac_dora_node.py
     inputs:
       # 接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
