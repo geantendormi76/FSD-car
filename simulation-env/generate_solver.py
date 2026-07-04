@@ -1,5 +1,5 @@
 # generate_solver.py
-# generate_solver.py
+
 import os
 import numpy as np
 
