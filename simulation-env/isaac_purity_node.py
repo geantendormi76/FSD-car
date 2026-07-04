@@ -177,6 +177,11 @@ def main():
     open_stage(usd_path=usd_path)
     
     world = World(physics_dt=0.01, rendering_dt=0.01, backend="numpy")
+    
+    # 🎯 架构师级并网：启用 2026 级确定性时间环路运行器，强制将 Omniverse Kit 的时钟线、渲染主循环、物理步长锁死在 100Hz 确定性步长下 [cite: 2.3.1]
+    from isaacsim.core.rendering_manager import RenderingManager
+    RenderingManager.set_dt(0.01)
+    
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
 

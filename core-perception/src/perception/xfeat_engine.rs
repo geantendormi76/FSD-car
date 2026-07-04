@@ -29,6 +29,20 @@ pub struct 仿生特征提取器 {
     模型高度: i32,
 }
 
+#[inline]
+fn fast_exp(mut x: f32) -> f32 {
+    const A_VAL: f32 = (1 << 23) as f32 / std::f32::consts::LN_2;
+    const B_VAL: f32 = (1 << 23) as f32 * (127.0 - 0.043677448);
+    x = A_VAL * x + B_VAL;
+
+    const C_VAL: f32 = (1 << 23) as f32;
+    const D_VAL: f32 = (1 << 23) as f32 * 255.0;
+    if x < C_VAL || x > D_VAL {
+        x = if x < C_VAL { 0.0 } else { D_VAL };
+    }
+    f32::from_bits(x as u32)
+}
+
 impl 仿生特征提取器 {
     /// 实例化提取器并加载本地 ONNX 权重
     pub fn new<P: std::convert::AsRef<std::path::Path>>(model_path: P) -> Result<Self, String> {
@@ -222,7 +236,8 @@ impl 仿生特征提取器 {
 
                 let mut sum = 0.0f32;
                 for c in 0..65 {
-                    cell_scores[c] = (cell_scores[c] - max_val).exp();
+                    // 🚀 架构师对齐优化：使用 fast_exp 代替 std::f32::exp()，解除 CPU 超额求冥算力占用
+                    cell_scores[c] = fast_exp(cell_scores[c] - max_val);
                     sum += cell_scores[c];
                 }
                 let inv_sum = 1.0 / sum;
@@ -262,37 +277,68 @@ impl 仿生特征提取器 {
         let 阈值 = 0.05f32;
         let mut 候选特征点 = Vec::new();
 
-        for y in half_k..(self.模型高度 - half_k) {
-            for x in half_k..(self.模型宽度 - half_k) {
-                let current_idx = (y * self.模型宽度 + x) as usize;
-                let original_score = 概率展平图[current_idx];
-                
-                let reliability = *可靠性大图.at_2d::<f32>(y, x).map_err(|e| e.to_string())?;
-                let score = original_score * reliability;
+        let cols = self.模型宽度 as usize;
+        let rows = self.模型高度 as usize;
 
-                if score <= 阈值 { continue; }
+        let mut mask = vec![1u8; rows * cols];
 
-                let mut is_max = true;
-                for ky in -half_k..=half_k {
-                    for kx in -half_k..=half_k {
-                        if kx == 0 && ky == 0 { continue; }
-                        let n_idx = ((y + ky) * self.模型宽度 + (x + kx)) as usize;
-                        let n_reliability = *可靠性大图.at_2d::<f32>(y + ky, x + kx).map_err(|e| e.to_string())?;
-                        let n_score = 概率展平图[n_idx] * n_reliability;
-                        if score < n_score {
-                            is_max = false;
-                            break;
-                        }
-                    }
-                    if !is_max { break; }
+        let mut ptr_offsets = Vec::with_capacity(24);
+        for i in -(half_k as isize)..=(half_k as isize) {
+            for j in -(half_k as isize)..=(half_k as isize) {
+                if i == 0 && j == 0 { continue; }
+                ptr_offsets.push(i * (cols as isize) + j);
+            }
+        }
+
+        // 🚀 架构师对齐优化：提前在外部计算好最终融合的分数图，确保 CPU 高速缓存（Cache L1/L2）预取命中率
+        let mut 融合分数图 = vec![0.0f32; rows * cols];
+        for y in 0..rows {
+            let row_offset = y * cols;
+            for x in 0..cols {
+                let reliability = *可靠性大图.at_2d::<f32>(y as i32, x as i32).map_err(|e| e.to_string())?;
+                融合分数图[row_offset + x] = 概率展平图[row_offset + x] * reliability;
+            }
+        }
+
+        for y in half_k..rows - half_k {
+            let row_offset = y * cols;
+            for x in half_k..cols - half_k {
+                let addr = row_offset + x;
+
+                if mask[addr] == 0 { continue; }
+
+                let score = 融合分数图[addr];
+                if score <= 阈值 {
+                    mask[addr] = 0;
+                    continue;
                 }
 
-                if is_max && x > 12 && x < self.模型宽度 - 12 && y > 12 && y < self.模型高度 - 12 {
-                    候选特征点.push((x, y, score));
+                let mut is_max = true;
+                for &offset in &ptr_offsets {
+                    let neighbor_addr = (addr as isize + offset) as usize;
+                    if score < 融合分数图[neighbor_addr] {
+                        mask[addr] = 0;
+                        is_max = false;
+                        break;
+                    }
+                }
+
+                if is_max {
+                    // 12px 物理边界剔除：
+                    if x > 12 && x < cols - 12 && y > 12 && y < rows - 12 {
+                        候选特征点.push((x, y, score));
+                    }
+
+                    // 🚀 架构师对齐优化：极速一维邻域状态斩杀，彻底切断后续循环中的冗余判断！
+                    for &offset in &ptr_offsets {
+                        let neighbor_addr = (addr as isize + offset) as usize;
+                        mask[neighbor_addr] = 0;
+                    }
                 }
             }
         }
 
+        候选特征点.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
         候选特征点.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
 
         // 10. 双三次亚像素插值描述子，计算 64 维特征描述子

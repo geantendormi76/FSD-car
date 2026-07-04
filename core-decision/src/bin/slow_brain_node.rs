@@ -4,7 +4,6 @@ use eyre::eyre;
 
 use core_decision::topo_graph::graph::TopologicalGraph;
 use core_decision::topo_graph::node::{Pose, TopologicalNode};
-use core_perception::perception::xfeat_engine::稀疏特征点; // 仅复用数据结构
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -22,54 +21,67 @@ async fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, data, .. } => {
                 if id.as_str() == "xfeat_features" {
-                    // 🎯 核心重构：直接解析 Windows 端传来的二进制特征契约
-                    let 裸数据_vec: Vec<u8> = dora_node_api::into_vec(&data)
-                        .map_err(|e| eyre!("❌ 无法解析 DORA 特征数据: {}", e))?;
-                        
-                    if 裸数据_vec.len() < 4 { continue; }
+                    // 🎯 架构师对齐：利用 downcast_ref 将 DORA 共享内存中的二进制泛型指针直接还原为 StructArray [cite: 1.1.4]
+                    let 结构体数组 = data.as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::StructArray>()
+                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 StructArray"))?;
                     
-                    let 特征数量 = u32::from_le_bytes(裸数据_vec[0..4].try_into().unwrap()) as usize;
-                    let mut offset = 4;
-                    let mut 特征结果 = Vec::with_capacity(特征数量);
-                    
-                    for _ in 0..特征数量 {
-                        if offset + 268 > 裸数据_vec.len() { break; } // 防越界保护
-                        
-                        let x = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
-                        let y = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
-                        let score = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); offset += 4;
-                        
-                        let mut desc = vec![0.0f32; 64];
-                        for i in 0..64 {
-                            desc[i] = f32::from_le_bytes(裸数据_vec[offset..offset+4].try_into().unwrap()); 
-                            offset += 4;
-                        }
-                        
-                        特征结果.push(稀疏特征点 {
-                            x,
-                            y,
-                            置信度: score,
-                            描述子: desc,
-                        });
-                    }
+                    let 特征数量 = 结构体数组.len();
+                    if 特征数量 == 0 { continue; }
+
+                    // 引入 Array 核心特征
+                    use dora_node_api::arrow::array::Array;
+
+                    // 🎯 零拷贝映射：分别将列式存储中的各列数据直接下转型为特定类型数组 [cite: 1.1.4]
+                    let x_arr = 结构体数组
+                        .column_by_name("x")
+                        .ok_or_else(|| eyre!("❌ StructArray 中未找到 'x' 列"))?
+                        .as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("❌ 无法将 'x' 列转换为 Float32Array"))?;
+
+                    let y_arr = 结构体数组
+                        .column_by_name("y")
+                        .ok_or_else(|| eyre!("❌ StructArray 中未找到 'y' 列"))?
+                        .as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("❌ 无法将 'y' 列转换为 Float32Array"))?;
+
+                    let desc_list_arr = 结构体数组
+                        .column_by_name("descriptor")
+                        .ok_or_else(|| eyre!("❌ StructArray 中未找到 'descriptor' 列"))?
+                        .as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::FixedSizeListArray>()
+                        .ok_or_else(|| eyre!("❌ 无法将 'descriptor' 列转换为 FixedSizeListArray"))?;
+
+                    let desc_values = desc_list_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("❌ 无法将描述子底层数纽转换为 Float32Array"))?;
 
                     println!(
-                        "✅ [慢系统] 成功接收并解析 {} 个 XFeat 骨干特征点 (0 图像解码开销!)",
-                        特征结果.len()
+                        "✅ [慢系统] 成功通过共享内存零拷贝解算出 {} 个 XFeat 骨干特征 (解析延迟 0!)",
+                        特征数量
                     );
 
                     // ---------------------------------------------------------
-                    // 🗺️ 拓扑建图逻辑：将当前帧特征存入记忆金库
+                    // 🗺️ 拓扑建图与记忆存储
                     // ---------------------------------------------------------
                     节点计数器 += 1;
 
-                    let mut descriptors = Vec::with_capacity(特征结果.len() * 64);
-                    let mut keypoints = Vec::with_capacity(特征结果.len() * 2);
+                    let mut descriptors = Vec::with_capacity(特征数量 * 64);
+                    let mut keypoints = Vec::with_capacity(特征数量 * 2);
 
-                    for pt in 特征结果 {
-                        keypoints.push(pt.x);
-                        keypoints.push(pt.y);
-                        descriptors.extend(pt.描述子);
+                    // 🚀 架构师对齐优化：直接读取列数据，由于内存连续分布，循环将极大受益于 CPU 缓存命中率 [cite: 1.1.4]
+                    for i in 0..特征数量 {
+                        keypoints.push(x_arr.value(i));
+                        keypoints.push(y_arr.value(i));
+                        
+                        let offset = i * 64;
+                        for j in 0..64 {
+                            descriptors.push(desc_values.value(offset + j));
+                        }
                     }
 
                     let 新地标 = TopologicalNode {

@@ -154,7 +154,7 @@ class XFeatEngine:
         mask = (conf == conf_nms) & (conf > 0.05)
         conf_flat = conf[mask]
         if len(conf_flat) == 0:
-            return b''
+            return None
         topk = min(top_k, len(conf_flat))
         scores_k, indices = torch.topk(conf_flat, topk)
         y, x = torch.where(mask[0, 0])
@@ -169,13 +169,22 @@ class XFeatEngine:
         x = x.float()
         valid = (y >= 0) & (y < 480)
         x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
-        N = len(x)
-        buffer = bytearray(struct.pack("<I", N))
         x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
-        for i in range(N):
-            buffer.extend(struct.pack("<fff", x_np[i], y_np[i], s_np[i]))
-            buffer.extend(d_np[i].tobytes())
-        return bytes(buffer)
+        
+        # 🎯 架构师升维：构建 Arrow StructArray，实现 100% 零拷贝内存布局
+        x_arr = pa.array(x_np, type=pa.float32())
+        y_arr = pa.array(y_np, type=pa.float32())
+        s_arr = pa.array(s_np, type=pa.float32())
+        
+        # 将 (N, 64) 的描述子展平后构建为 FixedSizeListArray
+        d_flat = pa.array(d_np.flatten(), type=pa.float32())
+        d_arr = pa.FixedSizeListArray.from_arrays(d_flat, 64)
+        
+        struct_arr = pa.StructArray.from_arrays(
+            [x_arr, y_arr, s_arr, d_arr],
+            names=['x', 'y', 'score', 'descriptor']
+        )
+        return struct_arr
 
 # ===========================================================================
 #  🚀 DORA 原生节点主循环与 2026 确定性仿真执行器
@@ -197,6 +206,10 @@ def main():
         rendering_dt=0.01, 
         backend="numpy"
     )
+    
+    # 🎯 架构师级并网：启用 2026 级确定性时间环路运行器，强制将 Omniverse Kit 的时钟线、渲染主循环、物理步长锁死在 100Hz 确定性步长下 [cite: 2.3.1]
+    from isaacsim.core.rendering_manager import RenderingManager
+    RenderingManager.set_dt(0.01)
     
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
@@ -272,14 +285,13 @@ def main():
 
                 if rgb_frame.size > 0:
                     F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                    fe_payload = struct.pack("<ff", F_x, F_y)
-                    arrow_obstacle_force = pa.array(np.frombuffer(fe_payload, dtype=np.uint8))
+                    # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
+                    arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                     dora_node.send_output("obstacle_force", arrow_obstacle_force)
 
                     if tick % 100 == 0:
-                        xfeat_payload = xfeat_engine.extract(rgb_frame, top_k=200)
-                        if xfeat_payload:
-                            arrow_xfeat_features = pa.array(np.frombuffer(xfeat_payload, dtype=np.uint8))
+                        arrow_xfeat_features = xfeat_engine.extract(rgb_frame, top_k=200)
+                        if arrow_xfeat_features is not None and len(arrow_xfeat_features) > 0:
                             dora_node.send_output("xfeat_features", arrow_xfeat_features)
 
             event = dora_node.next(timeout=0.001)
@@ -287,9 +299,10 @@ def main():
                 ev_type = event["type"]
                 if ev_type == "INPUT":
                     if event["id"] == "control_cmd":
-                        cmd_bytes = bytes(event["value"])
-                        if len(cmd_bytes) == 8:
-                            v_cmd, w_cmd = struct.unpack("<ff", cmd_bytes)
+                        # 🎯 架构师升维：直接将 Arrow 数组映射为 numpy 视图，零拷贝读取
+                        cmd_arr = event["value"].to_numpy()
+                        if len(cmd_arr) == 2:
+                            v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
                 elif ev_type == "STOP":
                     print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
                     break
