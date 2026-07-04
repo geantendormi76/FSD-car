@@ -32,6 +32,10 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", acados_lib_dir.display());
         // SOTA 核心：将动态库路径硬烧录进生成的二进制 ELF 文件（RPATH 机制） [cite: 1.2.8]
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", acados_lib_dir.display());
+        // 🛡️ 架构师 2026 级自愈：现代 Ubuntu 默认启用 '--enable-new-dtags'，从而写入不具传递性的 RUNPATH。
+        // 这会导致可执行文件无法自动加载依赖库的次级依赖（如 libacados.so 所需的 libqpOASES_e.so）。
+        // 强制禁用 new-dtags 回归经典 RPATH，从而实现次级依赖的自动传递解析！
+        println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
     } else {
         println!(
             "cargo:warning=⚠️ [build.rs] 未找到 acados 核心动态库路径：{}，请检查 acados 是否正确编译安装。", 

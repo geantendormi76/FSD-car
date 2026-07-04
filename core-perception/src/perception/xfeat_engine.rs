@@ -5,6 +5,9 @@ use opencv::{
 };
 use ort::session::Session;
 use ort::value::Value;
+// 🛡️ 架构师 2026 级并网：引入 2026 SOTA 级图优化和执行提供商
+// 修正：将 GraphOptimizationLevel 的路径对齐到其真实的 session::builder 命名空间下
+use ort::{session::builder::GraphOptimizationLevel, ep::CUDA, ep::CPU};
 
 /// 🛡️ 领域模型：XFeat 单特征点数据载荷
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,9 +32,19 @@ pub struct 仿生特征提取器 {
 impl 仿生特征提取器 {
     /// 实例化提取器并加载本地 ONNX 权重
     pub fn new<P: std::convert::AsRef<std::path::Path>>(model_path: P) -> Result<Self, String> {
-        // 创建高性能 ONNX 运行环境
+        // 🛡️ 架构师 2026 级重构：创建高性能异构 ONNX 运行环境
         let 推理会话 = Session::builder()
             .map_err(|e| e.to_string())?
+            // 1. SOTA 级级联执行器分配：首选 GPU-CUDA 加速，次选 CPU 安全阻尼兜底
+            .with_execution_providers([
+                CUDA::default().build(),
+                CPU::default().build(),
+            ])
+            .map_err(|e| e.to_string())?
+            // 2. SOTA 级极致图优化（Level3 / ORT_ENABLE_ALL）：强制开启显存内算子融合，消除全局 Round-Trip 延迟
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| e.to_string())?
+            // 3. 线程防抖锁：GPU 运行时仅保留 1 个 CPU 调度线程，彻底杜绝主频超额订阅抖动
             .with_intra_threads(1)
             .map_err(|e| e.to_string())?
             .commit_from_file(model_path)

@@ -2,14 +2,14 @@
 
 /*
 =================================================================
-🛡️ FSD-car V3.0: 快系统规控大脑节点 (NMPC & 仿生避障合拢版)
-设计哲学: 完全剥离图像计算 | 100Hz 绝对物理时钟 | 势场逃逸力数学合拢
+🛡️ FSD-car V3.1: 快系统规控大脑节点 (NMPC & 仿生避障全自愈版)
+设计哲学: 局部相对坐标系强制锚定 | 100Hz 物理步长完全对齐 | 零拷贝内存重塑
 =================================================================
 */
 
 use core_control::预测控制求解器;
 use dora_node_api::{DoraNode, Event, MetadataParameters};
-use eyre::eyre; // 🛡️ 架构师 2026 修复：移除未使用的 Context
+use eyre::eyre;
 use std::sync::Arc;
 use std::sync::RwLock; // 状态金库轻量级锁
 use std::time::Duration;
@@ -17,9 +17,9 @@ use std::time::Duration;
 /// 状态金库：快大脑 100Hz 线程与 避障力接收线程 间绝对安全的无锁共享上下文
 struct 执行上下文 {
     pub 物理主权已初始化: bool,
-    pub 期望_x: f64,              // 🛡️ 架构师 2026 修复：将 # 注释替换为 Rust 标准双斜杠 //
-    pub 期望_y: f64,              // 🛡️ 架构师 2026 修复：将 # 注释替换为 Rust 标准双斜杠 //
-    pub 当前线速度: f64,
+    pub 期望_x: f64,              // 纵向势场排斥力 (避障减速)
+    pub 期望_y: f64,              // 横向势场逃逸力 (变道机动)
+    pub 当前线速度: f64,           // 上一帧 NMPC 输出并在物理世界执行后的真实线速度
 }
 
 #[tokio::main]
@@ -29,7 +29,7 @@ async fn main() -> eyre::Result<()> {
     // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    // 2. 初始化状态金库
+    // 2. 初始化全简体中文状态金库
     let 状态金库 = Arc::new(RwLock::new(执行上下文 {
         物理主权已初始化: false,
         期望_x: 0.0,              // 默认无纵向排斥
@@ -48,6 +48,7 @@ async fn main() -> eyre::Result<()> {
         let mut 循环计数: u64 = 0;
         
         let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
+        节拍器.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         
         loop {
             节拍器.tick().await;
@@ -63,25 +64,33 @@ async fn main() -> eyre::Result<()> {
                 continue;
             }
 
-            // NMPC 求解器温启动 (仅执行一次)
+            // NMPC 求解器温启动
             if !求解器已就绪 {
-                if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 0.0) {
-                    eprintln!("⚠️ 温启动状态注入失败: {}，跳过本帧", e);
-                    continue;
-                }
-                求解器已就绪 = true;
                 println!("✅ [快系统] NMPC 求解器温启动完成，物理主权接管就绪！");
+                求解器已就绪 = true;
             }
 
-            // 🎯 将避障力带来的 (期望_x, 期望_y) 偏差，高频注入 NMPC 数学命题
-            // 期望_x: 基础前行速度 0.3m/s 加上纵向排斥 (F_x 为负，实现遇障减速)
-            // 期望_y: 居中前行 y=0 加上横向逃逸 (F_y 偏离 0，实现局部路径机动)
-            let 目标线速度 = (0.3 + 期望_x).max(0.0).min(0.3); // 限制在安全范围内
+            // 🎯 核心修复 1 (自愈锚定)
+            // 纯视觉无图导航采用“局部相对坐标系”。
+            // 必须在【每一帧】将当前状态强制锚定在原点 (0,0,0)，仅更新当前真实线速度！
+            // 否则 Acados 会使用上一帧的预测末端作为初始状态，导致控制坐标系漂移与疯狂旋转！
+            if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 当前线速度) {
+                eprintln!("⚠️ 局部状态锚定失败: {}，跳过本帧", e);
+                continue;
+            }
+
+            // 将避障力带来的期望偏差，高频注入 NMPC 数学命题
+            let 目标线速度 = (0.3 + 期望_x).clamp(0.0, 0.3); // 限制在安全范围内
             
             let mut 注入成功 = true;
             for k in 0..=20 {
-                // 将计算出的避障修正，揉入 NMPC 20步预测时域的参考轨迹 yref 中！
-                if let Err(e) = 规控大脑.设置参考轨迹点(k, 目标线速度 * (k as f64 * 0.01), 期望_y, 0.0, 目标线速度) {
+                // 🎯 核心修复 2 (时域步长对齐)
+                // NMPC 的预测总时间为 1.0s，共 20 步，单步时间间隔为 0.05s！
+                // 必须使用 0.05 替换原版的 0.01，使参考轨迹的时域与求解器时域完全对齐！
+                // 这样小车线速度便能顺利释放到真实的 0.3 m/s，绝不发生动力爬行或滞后。
+                let ref_x = 目标线速度 * (k as f64 * 0.05);
+                
+                if let Err(e) = 规控大脑.设置参考轨迹点(k, ref_x, 期望_y, 0.0, 目标线速度) {
                     eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
                     注入成功 = false;
                     break;
@@ -98,7 +107,7 @@ async fn main() -> eyre::Result<()> {
                         lock.当前线速度 = 线速度_v;
                     }
 
-                    // 📊 2026 工业级数值探针：每 100 轮对 NMPC 控制环输出高精度遥测
+                    // 📊 2026 工业级数值探针
                     if 循环计数 % 100 == 0 {
                         println!(
                             "[快大脑 100Hz 遥测] 步数: {:<6} | 目标线速: {:.3} m/s | 避障偏置: {:.3} m | NMPC输出 -> v: {:.3} m/s, w: {:.3} rad/s",
@@ -147,7 +156,6 @@ async fn main() -> eyre::Result<()> {
                     let f_x = f32::from_le_bytes(裸数据_vec[0..4].try_into().unwrap()) as f64;
                     let f_y = f32::from_le_bytes(裸数据_vec[4..8].try_into().unwrap()) as f64;
 
-                    // 🛡️ 架构师 2026 修复：替换 # 为 //
                     let 需要初始化 = {
                         let lock = 状态金库.read().unwrap();
                         !lock.物理主权已初始化

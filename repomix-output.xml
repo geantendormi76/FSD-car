@@ -94,69 +94,12 @@ simulation-env/
 4.py
 Cargo.toml
 dora_dataflow.yaml
-probe_isaac_headless.py
 README.md
+test_port_lock.py
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="probe_isaac_headless.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import os
-import sys
-import time
-
-print("="*80)
-print("🔍 [NEXUS 探针] Isaac Sim 2026 Headless 启动逆向分析")
-print("="*80)
-
-# 1. 审计核心环境变量
-print("\n📊 [1] 核心环境变量审计:")
-env_keys = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "VK_ICD_FILENAMES", "CUDA_VISIBLE_DEVICES"]
-for key in env_keys:
-    print(f"  -> {key}: {os.environ.get(key, '未设置 (None)')}")
-
-# 2. 审计物理渲染设备
-print("\n📊 [2] 物理渲染设备审计 (/dev/dri):")
-if os.path.exists("/dev/dri"):
-    for dev in os.listdir("/dev/dri"):
-        print(f"  -> 发现设备: /dev/dri/{dev}")
-else:
-    print("  -> ❌ 未找到 /dev/dri 目录！Vulkan 离屏渲染可能失败。")
-
-print("\n🚀 [3] 尝试启动 SimulationApp (Headless: True)...")
-try:
-    from isaacsim import SimulationApp
-    
-    # 记录启动前的时间
-    start_time = time.time()
-    
-    # 探针配置：开启 headless，并尝试加载 loop 扩展
-    app = SimulationApp({
-        "headless": True,
-        "exts": ["omni.kit.loop-isaac"]
-    })
-    
-    elapsed = time.time() - start_time
-    print(f"\n✅ [成功] SimulationApp 启动完成！耗时: {elapsed:.2f} 秒")
-    
-    print("\n🚀 [4] 尝试获取 RunLoopRunner 接口...")
-    import omni.kit.loop
-    loop_runner = omni.kit.loop.acquire_loop_interface()
-    print("✅ [成功] RunLoopRunner 接口获取成功！")
-    
-    app.close()
-    print("\n🎉 探针测试完美通过！问题出在 DORA 的环境隔离上。")
-
-except Exception as e:
-    print(f"\n❌ [崩溃] 启动过程中发生异常: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-</file>
 
 <file path="simulation-env/probe_isaac_stage.py">
 # -*- coding: utf-8 -*-
@@ -322,6 +265,31 @@ except Exception as e:
 finally:
     simulation_app.close()
     print("=" * 80)
+</file>
+
+<file path="test_port_lock.py">
+import socket
+import sys
+
+print("="*80)
+print("🔍 [NEXUS 探针] 正在审计 127.0.0.1:53290 物理端口状态...")
+print("="*80)
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+try:
+    # 尝试绑定端口，如果被 TIME_WAIT 锁定，这里会抛出 OSError
+    s.bind(("127.0.0.1", 53290))
+    print("  -> 🟢 [自愈成功] 端口 53290 已经完全释放，可以安全执行 `dora up`！")
+    s.close()
+    sys.exit(0)
+except OSError as e:
+    print(f"  -> ❌ [物理闭锁] 端口 53290 依然被 Linux 内核锁定在 TIME_WAIT 状态中！")
+    print(f"     错误详情: {e}")
+    print("  -> 💡 对策: 请在终端静静等待 20~30 秒，让内核释放端口，然后重新测试。")
+    s.close()
+    sys.exit(1)
 </file>
 
 <file path="core-control/src/lib.rs">
@@ -2751,6 +2719,10 @@ panic = "abort"
 strip = true
 </file>
 
+<file path="4.py">
+
+</file>
+
 <file path="simulation-env/isaac_dora_node.py">
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -2777,7 +2749,10 @@ from dora import Node
 # ---------------------------------------------------------------------------
 # 🛡️ 物理资产与环境变量自愈
 # ---------------------------------------------------------------------------
+# 🛡️ SOTA 核心：必须在 SimulationApp 实例化前，强行将底层 RTX 离屏相机渲染管道唤醒！
+os.environ["ENABLE_CAMERAS"] = "1"
 os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+
 
 def load_env_manually():
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
@@ -2796,11 +2771,10 @@ load_env_manually()
 # ---------------------------------------------------------------------------
 try:
     # 🛡️ 核心修复 1：通过 sys.argv 底层注入静默参数，防止海量日志塞满 DORA 管道！
-    # 完美规避 2026 版 SimulationApp API 签名变更导致的 TypeError
     sys.argv.extend(["--/log/level=error", "--/log/fileLogLevel=error"])
     from isaacsim import SimulationApp
     simulation_app = SimulationApp({
-        "headless": True,
+        "headless": False,
     })
     
     import omni
@@ -2808,8 +2782,9 @@ try:
     # 🛡️ 核心修复 2：使用 2026 核心 API，World 继承自 SimulationContext 并提供 scene 管理
     from isaacsim.core.api import World
     from isaacsim.core.prims import Articulation
-    from isaacsim.sensors.camera import Camera
     from isaacsim.core.utils.stage import open_stage
+    # 🛡️ SOTA 核心：引入 Replicator 离屏标注组件
+    import omni.replicator.core as rep
     print("✅ [物理代理] NVIDIA Isaac Sim 2026 核心引擎启动成功！(Headless 模式)")
 except ImportError as e:
     print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！报错: {e}")
@@ -2822,13 +2797,21 @@ class BionicFrogEye:
     def __init__(self, width=640, height=480):
         self.w = width
         self.h = height
-        self.prev_gray = None
+        
+        # 🛡️ 2026 SOTA 优化：引入历史帧滑动队列 (时间跨度为 5 帧，即 50ms 差分窗口)
+        # 完美解决 100Hz 高频采样下相邻帧位移过小、差分被门限熔断的问题！
+        self.frame_buffer = []
+        self.buffer_size = 5
+        
         self.erf = np.zeros((height, width), dtype=np.float32)
         self.irf = np.zeros((height, width), dtype=np.float32)
         self.alpha_erf = 0.4
         self.alpha_irf = 0.85
         self.beta = 0.5
-        self.event_threshold = 15.0
+        
+        # 适当调低门限至 10.0，增强对微观边缘运动的敏感度
+        self.event_threshold = 10.0
+        
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
         self.closeness_weight = (y_indices / float(self.h)) ** 2
@@ -2836,10 +2819,16 @@ class BionicFrogEye:
     def process_frame(self, frame_rgb):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        if self.prev_gray is None:
-            self.prev_gray = gray
+        
+        # 维持滑动窗口
+        self.frame_buffer.append(gray)
+        if len(self.frame_buffer) < self.buffer_size:
             return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-        diff = cv2.absdiff(self.prev_gray, gray)
+            
+        # 提取 50ms 前的历史帧进行差分计算，积累物理运动标量
+        history_frame = self.frame_buffer.pop(0)
+        
+        diff = cv2.absdiff(history_frame, gray)
         _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
         events_rf = cv2.GaussianBlur(events, (21, 21), 0)
         self.erf = self.erf * self.alpha_erf + events_rf
@@ -2953,8 +2942,15 @@ def main():
     world.scene.add(car)
 
     camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
-    camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
-    world.scene.add(camera)
+    
+    # 🛡️ SOTA 重构：直接将小车原生的 Camera 节点绑定为独立的离屏渲染产品 (Render Product)
+    print(f"🎯 [物理主权] 正在将 {camera_path} 绑定为离屏 Render Product...")
+    render_product = rep.create.render_product(camera_path, (640, 480))
+    
+    # 获取并注册 GPU 直接内存标注器 [cite: 1.1.4]
+    rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
+    rgb_annotator.attach([render_product])
+    print("✅ [物理主权] Replicator 离屏标注器并网完成！")
 
     xfeat_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
     if not os.path.exists(xfeat_model_path):
@@ -2967,16 +2963,14 @@ def main():
     world.reset()
     world.play()
     
-    # 🛡️ 2026 工业级预热：在 Headless 模式下，强制先步进 60 帧，让 Vulkan 材质与着色器完全加载入显存，消除全黑无效帧
-    print("⏳ [物理代理] 正在进行 Vulkan RTX 离屏渲染器硬件预热...")
+    # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
+    print("⏳ [物理代理] 正在进行离屏 RTX 渲染管道硬件预热...")
     for _ in range(60):
         world.step(render=True)
-        
-    camera.initialize()
-    print("✅ [物理代理] 离屏渲染器预热完成，开始捕捉高保真彩色视口！")
+    print("✅ [物理代理] RTX 渲染管道预热完毕，高保真图像流并网！")
 
     print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
-    
+
     L = 0.1125
     R = 0.03
     tick = 0
@@ -2989,13 +2983,14 @@ def main():
             world.step(render=True)
             tick += 1
 
-            rgb_raw = camera.get_rgb()
+            # B. 🛡️ SOTA 核心：直接从 Replicator 标注器中获取纯净的内存像素 [cite: 1.1.4]
+            # 剥离不兼容 headless 且存在多余包装的 camera.get_rgb()
+            rgb_raw = rgb_annotator.get_data()
             if rgb_raw is not None:
-                if hasattr(rgb_raw, "cpu"):
-                    rgb_frame = rgb_raw.cpu().numpy()
-                else:
-                    rgb_frame = rgb_raw
+                rgb_frame = rgb_raw
                     
+                # Replicator 吐出的是带 Alpha 通道的 (480, 640, 4) 矩阵
+                # 极速剥离 Alpha 通道，转为算法标准的 3 通道 RGB [cite: 1.1.4]
                 if len(rgb_frame.shape) == 3 and rgb_frame.shape[2] == 4:
                     rgb_frame = rgb_frame[:, :, :3]
                 if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
@@ -3054,10 +3049,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-</file>
-
-<file path="4.py">
-
 </file>
 
 <file path="core-control/src/bin/fast_brain_node.rs">

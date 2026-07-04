@@ -14,6 +14,9 @@ nodes:
       DISPLAY: ${DISPLAY}
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
       XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
+      # 🛡️ 架构师 2026 级并网防御：在 YAML 中固化 cuDNN 9 与系统 CUDA 路径
+      # 100% 杜绝 DORA 守护进程清洗用户环境变量导致运行时 libcudnn.so.9 链接断裂报错 [cite: 1.2.8]！
+      LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
     inputs:
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
