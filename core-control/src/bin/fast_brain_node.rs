@@ -45,11 +45,13 @@ async fn main() -> eyre::Result<()> {
     let 规控句柄 = tokio::spawn(async move {
         let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
         let mut 求解器已就绪 = false;
+        let mut 循环计数: u64 = 0;
         
         let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
         
         loop {
             节拍器.tick().await;
+            循环计数 += 1;
             
             // 极速读取状态金库
             let (已初始化, 期望_x, 期望_y, 当前线速度) = {
@@ -94,6 +96,14 @@ async fn main() -> eyre::Result<()> {
                     {
                         let mut lock = 金库_规控.write().unwrap();
                         lock.当前线速度 = 线速度_v;
+                    }
+
+                    // 📊 2026 工业级数值探针：每 100 轮对 NMPC 控制环输出高精度遥测
+                    if 循环计数 % 100 == 0 {
+                        println!(
+                            "[快大脑 100Hz 遥测] 步数: {:<6} | 目标线速: {:.3} m/s | 避障偏置: {:.3} m | NMPC输出 -> v: {:.3} m/s, w: {:.3} rad/s",
+                            循环计数, 目标线速度, 期望_y, 线速度_v, 角速度_w
+                        );
                     }
 
                     // 🎯 极速裸二进制直发：向并网网关传输 8 字节控制指令

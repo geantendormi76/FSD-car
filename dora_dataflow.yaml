@@ -9,13 +9,15 @@ nodes:
   - id: isaac_sim_env
     path: /home/zhz/isaacsim/python.sh
     args: simulation-env/isaac_dora_node.py
+    env:
+      # 🛡️ 强行透传宿主机的显示环境变量，防止 DORA 隔离导致 Vulkan 找不到设备
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
     inputs:
-      # 接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
-      # 直接向慢大脑广播提取好的 XFeat 稀疏特征二进制契约 (零图像传输开销!)
       - xfeat_features
-      # 直接向快大脑广播 8 字节仿生势场避障力
       - obstacle_force
 
   # ---------------------------------------------------------------

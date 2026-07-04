@@ -88,103 +88,240 @@ simulation-env/
   isaac_dora_node.py
   mujoco_nmpc_run.py
   nmpc_model.py
-tools/
-  diagnostics/
-    diagnose.py
-    mock_perception_node.py
-    network_check.py
-    network_deep_probe.py
-    probe_acados_env.py
-    probe_proxy.py
-    probe_tcp_boundary.py
-    verify_control.py
-    zenoh_isolated_test.py
+  probe_isaac_stage.py
+  test_isaac_loop.py
 .gitignore
 4.py
 Cargo.toml
 dora_dataflow.yaml
-isaac_deep_probe.py
+probe_isaac_headless.py
 README.md
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
 
-<file path="tools/diagnostics/mock_perception_node.py">
+<file path="probe_isaac_headless.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
 import time
-import struct
-import numpy as np
-import pyarrow as pa
-from dora import Node
 
-node = Node()
-print("🟢 [MOCK感知] 零拷贝模拟通道已并网！开始发送 100Hz 避障力...")
+print("="*80)
+print("🔍 [NEXUS 探针] Isaac Sim 2026 Headless 启动逆向分析")
+print("="*80)
 
-# 🎯 物理温启动：在进入阻塞循环前主动发射第一次避障力，打破时序死锁！
-fe_payload = struct.pack("<ff", -0.05, 0.1)
-node.send_output("obstacle_force", pa.array(np.frombuffer(fe_payload, dtype=np.uint8)))
+# 1. 审计核心环境变量
+print("\n📊 [1] 核心环境变量审计:")
+env_keys = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "VK_ICD_FILENAMES", "CUDA_VISIBLE_DEVICES"]
+for key in env_keys:
+    print(f"  -> {key}: {os.environ.get(key, '未设置 (None)')}")
 
-tick = 0
-for event in node:
-    if event["type"] == "INPUT" and event["id"] == "control_cmd":
-        v, w = struct.unpack("<ff", bytes(event["value"]))
-        print(f"📥 [收] 快脑反馈指令 -> 线速度: {v:.3f} m/s | 角速度: {w:.3f} rad/s")
-        tick += 1
-        if tick >= 20:
-            print("✅ [SHM测试] 控制环路完美闭环，正在安全退出...")
-            break
+# 2. 审计物理渲染设备
+print("\n📊 [2] 物理渲染设备审计 (/dev/dri):")
+if os.path.exists("/dev/dri"):
+    for dev in os.listdir("/dev/dri"):
+        print(f"  -> 发现设备: /dev/dri/{dev}")
+else:
+    print("  -> ❌ 未找到 /dev/dri 目录！Vulkan 离屏渲染可能失败。")
 
-        # 闭环状态下，高频持续发送避障力信号
-        node.send_output("obstacle_force", pa.array(np.frombuffer(fe_payload, dtype=np.uint8)))
-        time.sleep(0.01)
+print("\n🚀 [3] 尝试启动 SimulationApp (Headless: True)...")
+try:
+    from isaacsim import SimulationApp
+    
+    # 记录启动前的时间
+    start_time = time.time()
+    
+    # 探针配置：开启 headless，并尝试加载 loop 扩展
+    app = SimulationApp({
+        "headless": True,
+        "exts": ["omni.kit.loop-isaac"]
+    })
+    
+    elapsed = time.time() - start_time
+    print(f"\n✅ [成功] SimulationApp 启动完成！耗时: {elapsed:.2f} 秒")
+    
+    print("\n🚀 [4] 尝试获取 RunLoopRunner 接口...")
+    import omni.kit.loop
+    loop_runner = omni.kit.loop.acquire_loop_interface()
+    print("✅ [成功] RunLoopRunner 接口获取成功！")
+    
+    app.close()
+    print("\n🎉 探针测试完美通过！问题出在 DORA 的环境隔离上。")
+
+except Exception as e:
+    print(f"\n❌ [崩溃] 启动过程中发生异常: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 </file>
 
-<file path="isaac_deep_probe.py">
+<file path="simulation-env/probe_isaac_stage.py">
 # -*- coding: utf-8 -*-
 import sys
 import os
-import importlib
+
+# 🛡️ 架构师 2026 终极自愈：在 SimulationApp 启动前，强行将 75G 本地物理资产并网！
+os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+
+from isaacsim import SimulationApp
+simulation_app = SimulationApp({"headless": True})
+
+from pxr import Usd, UsdGeom, UsdPhysics
+import omni.usd
+from isaacsim.core.utils.stage import open_stage
 
 print("=" * 80)
-print("🛰️  NEXUS - NVIDIA Isaac Sim Python 命名空间深度逆向探针")
+print("🛰️  NEXUS - USD 空间场景与物理骨骼逆向探针 [本地资产并网版] 已启动！")
 print("=" * 80)
 
-# 1. 打印当前的运行环境
-print(f"📌 [Python 解释器]: {sys.executable}")
-print(f"📌 [当前工作目录]: {os.getcwd()}")
+fsd_assets_dir = "/home/zhz/fsd-car/assets"
+# 🛡️ 对齐至能完整显示资产的根级 USD 路径
+usd_path = os.path.join(fsd_assets_dir, "fsd_car_racetrack.usd")
+print(f"🎯 正在解析目标 USD 场景: {usd_path}")
 
-# 2. 核心诊断：审计 sys.path 优先级，看看是谁污染了搜索链
-print("\n🔍 [审计 sys.path 搜索链优先级]:")
-for idx, path in enumerate(sys.path):
-    print(f"  [{idx:02d}] -> {path}")
+if not os.path.exists(usd_path):
+    print(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
+    simulation_app.close()
+    sys.exit(1)
 
-# 3. 核心诊断：审计环境变量污染
-print("\n🔍 [审计系统环境变量]:")
-for var in ["PYTHONPATH", "LD_LIBRARY_PATH", "PATH"]:
-    print(f"  {var} = {os.environ.get(var, '❌ 未设置')}")
+open_stage(usd_path=usd_path)
+stage = omni.usd.get_context().get_stage()
 
-# 4. 逆向核心：探测 omni.kit.asset_converter 的物理加载源头
-def probe_module(mod_name):
-    print(f"\n⚡ [深度探测模块]: {mod_name}")
-    try:
-        # 尝试导入
-        mod = importlib.import_module(mod_name)
-        # 获取其物理路径（如果是 Namespace 包，通常会返回多个路径或 None）
-        mod_path = getattr(mod, "__path__", "Namespace / Unknown Location")
-        print(f"  ✅ 成功加载！")
-        print(f"  📍 物理加载源头 -> {mod_path}")
+if not stage:
+    print("❌ 致命错误：无法获取 USD 舞台句柄！")
+    simulation_app.close()
+    sys.exit(1)
+
+print("✓ 场景载入成功！开始遍历整个空间结构树...")
+
+all_articulation_roots = []
+potential_cars = []
+
+for prim in stage.Traverse():
+    prim_path = str(prim.GetPath())
+    typename = prim.GetTypeName()
+    applied_schemas = prim.GetAppliedSchemas()
+    
+    has_physx_articulation = any("Articulation" in schema for schema in applied_schemas)
+    
+    if has_physx_articulation:
+        all_articulation_roots.append((prim_path, typename, applied_schemas))
         
-        # 打印其暴露的公开属性，检查是否存在 AssetConverterContext
-        attrs = [attr for attr in dir(mod) if not attr.startswith("_")]
-        print(f"  📦 暴露的公开属性数: {len(attrs)}")
-        print(f"  📋 公开属性列表: {attrs[:15]} ...")
-    except Exception as e:
-        print(f"  ❌ 加载失败！报错信息: {e}")
+    lower_path = prim_path.lower()
+    if "jetbot" in lower_path or "car" in lower_path or "vehicle" in lower_path:
+        potential_cars.append((prim_path, typename, applied_schemas))
 
-probe_module("omni.kit.asset_converter")
-probe_module("omni.kit.tool.asset_importer")
+print("\n📈 【诊断结果 1：当前场景中所有被物理引擎识别的 Articulation 骨骼】:")
+if all_articulation_roots:
+    for p, t, s in all_articulation_roots:
+        print(f"  -> 📍 路径: {p:<30} | 类型: {t:<15} | 物理 API: {s}")
+else:
+    print("  ⚠️ 警告：当前场景树中没有找到任何被物理引擎激活的 Articulation 骨骼！")
 
-print("\n" + "=" * 80)
+print("\n📈 【诊断结果 2：当前场景中所有匹配机器人关键字 (jetbot/car) 的原始 Prim】:")
+if potential_cars:
+    for p, t, s in potential_cars:
+        print(f"  -> 📍 路径: {p:<30} | 类型: {t:<15} | 物理 API: {s}")
+
+target_path = "/Root/jetbot"
+target_prim = stage.GetPrimAtPath(target_path)
+print(f"\n🔍 【诊断结果 3：对 '{target_path}' 的物理状态进行深度显微镜审计】:")
+if target_prim.IsValid():
+    print(f"  - 是否存在: ✅ 是")
+    print(f"  - 图元类型: {target_prim.GetTypeName()}")
+    print(f"  - 已应用 API 面板: {target_prim.GetAppliedSchemas()}")
+    print(f"  - 子节点级联树:")
+    for child in target_prim.GetChildren():
+        print(f"    -> 🔹 子节点: {child.GetName():<15} | 类型: {child.GetTypeName()}")
+else:
+    print(f"  - 是否存在: ❌ 否")
+
+simulation_app.close()
+print("=" * 80)
+</file>
+
+<file path="simulation-env/test_isaac_loop.py">
+# -*- coding: utf-8 -*-
+import os
+# 🛡️ 架构师 2026 终极自愈：强行将 75G 本地物理资产并网！
+os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+
+import sys
+import numpy as np
+import time
+
+from isaacsim import SimulationApp
+simulation_app = SimulationApp({"headless": False})
+
+from isaacsim.core.api.world import World
+from isaacsim.core.prims import Articulation
+from isaacsim.sensors.camera import Camera
+from isaacsim.core.utils.stage import open_stage
+
+print("=" * 80)
+print("🛰️  NEXUS - Isaac Sim 本地主循环纯净闭环探针已启动！")
+print("=" * 80)
+
+fsd_assets_dir = "/home/zhz/fsd-car/assets"
+usd_path = os.path.join(fsd_assets_dir, "fsd_car_racetrack.usd")
+
+print(f"正在载入场景: {usd_path}")
+open_stage(usd_path=usd_path)
+
+world = World(stage_units_in_meters=1.0, physics_prim_path="/PhysicsScene")
+car_path = "/Root/jetbot"
+
+car = Articulation(prim_paths_expr=car_path, name="jetbot")
+world.scene.add(car)
+
+camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
+camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
+world.scene.add(camera)
+
+print("正在重置并播放物理世界...")
+world.reset()
+world.play()
+world.step(render=True)
+camera.initialize()
+
+print("✓ 探针主循环启动！开始运行 1000 步 (~10秒) 的物理闭环压力测试...")
+tick = 0
+try:
+    for i in range(1000):
+        if not simulation_app.is_running():
+            print("⚠️ 警告：simulation_app.is_running() 返回了 False！")
+            break
+            
+        # 步进物理和渲染
+        world.step(render=True)
+        tick += 1
+        
+        # 极速获取相机图像并审计其类型与形状
+        rgb_raw = camera.get_rgb()
+        if rgb_raw is not None:
+            if tick % 100 == 0:
+                print(f"[{tick:04d}] 相机图像抓取成功 | 类型: {type(rgb_raw)} | 形状: {getattr(rgb_raw, 'shape', '未知')}")
+                
+        # 给小车注入差速动力，验证物理引擎控制是否生效
+        # （左轮正转，右轮反转，小车应当在赛道上原地自转）
+        v_left = 5.0
+        v_right = -5.0
+        car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
+        
+        time.sleep(0.01)
+        
+    print("🏆 压力测试完成！未发生任何闪退崩溃，小车自转测试成功！")
+
+except Exception as e:
+    import traceback
+    print("❌ 核心循环发生致命崩溃！详细堆栈如下：")
+    traceback.print_exc()
+finally:
+    simulation_app.close()
+    print("=" * 80)
 </file>
 
 <file path="core-control/src/lib.rs">
@@ -1485,757 +1622,6 @@ def setup_car_model():
     return model
 </file>
 
-<file path="tools/diagnostics/diagnose.py">
-# diagnose.py
-import os
-import sys
-
-def run_diagnostics():
-    print("=" * 60)
-    print("🔍 FSD-Car & Acados 环境自动诊断程序")
-    print("=" * 60)
-
-    # 1. 检查环境变量
-    acados_env = os.environ.get('ACADOS_SOURCE_DIR', '')
-    ld_path = os.environ.get('LD_LIBRARY_PATH', '')
-    print(f"[环境变量] ACADOS_SOURCE_DIR: {acados_env or '❌ 未设置'}")
-    print(f"[环境变量] LD_LIBRARY_PATH: {ld_path or '❌ 未设置'}")
-
-    # 2. 检查环境变量路径是否真实存在
-    env_dir_exists = False
-    if acados_env:
-        env_dir_exists = os.path.isdir(acados_env)
-        print(f"[路径检查] 环境变量指向的目录是否存在: {'✅ 存在' if env_dir_exists else '❌ 不存在 (路径失效)'}")
-    else:
-        print("[路径检查] ❌ 环境变量未设置，无法校验")
-
-    # 3. 检查 Python 环境中 acados_template 的导入状态
-    import_ok = False
-    try:
-        import acados_template
-        import_ok = True
-        print(f"[Python导入] acados_template 导入状态: ✅ 成功 (位置: {acados_template.__file__})")
-    except ImportError as e:
-        print(f"[Python导入] acados_template 导入状态: ❌ 失败 (原因: {e})")
-
-    # 4. 全局搜索 acados 源码目录的真实物理路径
-    print("\n[磁盘扫描] 正在寻找真实的 acados 源码目录位置...")
-    possible_paths = []
-    search_root = "/home/zhz/FSD-car"
-    
-    if os.path.exists(search_root):
-        for root, dirs, files in os.walk(search_root):
-            if 'acados' in dirs:
-                candidate = os.path.join(root, 'acados')
-                # 校验是否为真实的 acados 仓库目录（通过特有子文件检验）
-                if os.path.exists(os.path.join(candidate, 'interfaces', 'acados_template')):
-                    possible_paths.append(candidate)
-                    # 防止深入扫描子目录中的 acados
-                    dirs.remove('acados')
-    
-    if possible_paths:
-        print("✅ 找到以下有效的 acados 目录：")
-        for p in possible_paths:
-            print(f"  📍 {p}")
-    else:
-        print("❌ 未在 /home/zhz/FSD-car 目录下找到有效的 acados 目录。请确认它是否被误删。")
-
-    # 5. 提供诊断结论与一键修复建议
-    print("\n" + "=" * 60)
-    print("💡 诊断结论与一键修复建议:")
-    print("=" * 60)
-
-    if not possible_paths:
-        print("由于未找到 acados 源码目录，请先确认 acados 文件夹是否被不小心删除了。")
-        return
-
-    # 选取找到的第一个路径作为基准
-    correct_path = possible_paths[0]
-    
-    needs_env_update = (acados_env != correct_path)
-    needs_reinstall = not import_ok or needs_env_update
-
-    if needs_env_update:
-        print(f"⚠️ 检测到环境变量失效或路径不匹配！")
-        print(f"  当前环境变量值: {acados_env}")
-        print(f"  实际物理文件值: {correct_path}")
-        print("\n👉 修复步骤 1：请在终端运行以下命令更新当前环境变量（并同步修改 ~/.bashrc）：")
-        print(f"export ACADOS_SOURCE_DIR=\"{correct_path}\"")
-        print(f"export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH:{correct_path}/lib\"")
-
-    if needs_reinstall:
-        print("\n👉 修复步骤 2：请复制并运行以下命令重新关联 Python 库：")
-        print(f"pip install -e {correct_path}/interfaces/acados_template")
-
-    if not needs_env_update and import_ok:
-        print("您的环境配置参数看起来正常。")
-        print("如果代码依然报错，可能是您在运行代码时没有激活当前的 Python 虚拟环境，导致指向了错误的 Python 解释器。")
-        print(f"当前诊断程序所运行的 Python 路径为: {sys.executable}")
-
-if __name__ == "__main__":
-    run_diagnostics()
-</file>
-
-<file path="tools/diagnostics/network_check.py">
-import socket
-import urllib.request
-import urllib.error
-import subprocess
-
-print("==============================================")
-print("     WSL2 物理网络 & DNS 域名解析 诊断工具")
-print("==============================================")
-
-# 1. 检查底层网络（直接用IP连接，绕过DNS）
-print("【第一步】测试物理网络连接 (Ping 微软公共DNS)...", end="")
-try:
-    # 8.8.8.8 是谷歌的公共DNS，114.114.114.114 是国内公共DNS
-    result = subprocess.run(["ping", "-c", "2", "-W", "2", "114.114.114.114"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode == 0:
-        print(" 成功 (物理网络是通的)")
-    else:
-        print(" 失败 (物理网络不通，可能是Windows防火墙或网卡问题)")
-except Exception as e:
-    print(f" 失败 ({e})")
-
-# 2. 检查 DNS 域名解析
-print("【第二步】测试域名解析 (百度)...", end="")
-try:
-    socket.gethostbyname("www.baidu.com")
-    print(" 成功 (DNS工作正常)")
-except Exception as e:
-    print(f" 失败 ({e}) -> 说明WSL2不认识网址，通常需要修改 /etc/resolv.conf")
-
-# 3. 检查微软更新服务器（code . 报错的关键原因）
-print("【第三步】测试连接 VS Code 服务器...", end="")
-try:
-    urllib.request.urlopen("https://update.code.visualstudio.com", timeout=4)
-    print(" 成功 (可以正常连接微软，应能打开 code)")
-except Exception as e:
-    print(f" 失败 ({e}) -> 无法下载VS Code Server")
-
-# 4. 检查 GitHub 连接（git clone 报错的原因）
-print("【第四步】测试连接 GitHub...", end="")
-try:
-    urllib.request.urlopen("https://github.com", timeout=4)
-    print(" 成功 (可以正常拉取 acados)")
-except Exception as e:
-    print(f" 失败 ({e}) -> 连接GitHub超时，国内网络环境常见，需要配置代理")
-
-print("==============================================")
-</file>
-
-<file path="tools/diagnostics/network_deep_probe.py">
-# -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-import os
-import socket
-import subprocess
-import sys
-import time
-
-
-def get_wsl_gateway_ip():
-    try:
-        cmd = "ip route | grep default | awk '{print $3}'"
-        ip = subprocess.check_output(cmd, shell=True, text=True).strip()
-        return ip if ip else None
-    except Exception:
-        return None
-
-
-def get_mdns_hostname():
-    try:
-        cmd = "hostname"
-        hostname = subprocess.check_output(cmd, shell=True, text=True).strip()
-        # Windows mDNS 主机名通常匹配 WSL 实例的 hostname + .local
-        return f"{hostname}.local"
-    except Exception:
-        return None
-
-
-def run_server():
-    print("=" * 80)
-    print("🛰️  NEXUS BIM Portal - 跨 OS 物理连通性极速诊断服务端 (Windows)")
-    print("=" * 80)
-
-    # 打印 Windows 所有本地网卡 IP 矩阵，揪出真实的局域网和虚拟网卡 IP
-    hostname = socket.gethostname()
-    print(f"🖥️  Windows 宿主机名称: {hostname}")
-    try:
-        ips = socket.gethostbyname_ex(hostname)[2]
-        print("🌐 Windows 当前活跃网卡 IP 矩阵:")
-        for ip in ips:
-            print(f"  -> {ip}")
-    except Exception as e:
-        print(f"⚠️ 无法获取网卡列表: {e}")
-
-    port = 17449
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-    try:
-        s.bind(("0.0.0.0", port))
-        s.listen(5)
-        print(
-            f"\n🟢 [监听中] 已成功绑定 0.0.0.0:{port}。正在全力侦听来自 WSL2 的 TCP SYN 信号..."
-        )
-    except Exception as e:
-        print(f"❌ 绑定失败 (端口已被占用或无权限): {e}")
-        return
-
-    s.settimeout(1.0)
-    try:
-        while True:
-            try:
-                conn, addr = s.accept()
-                print("\n🎉 【连接成功建立!!!】 捕获到来自 WSL2 的物理握手信号:")
-                print(
-                    f"  -> 源 IP: {addr[0]} | 源端口: {idx_port if 'idx_port' in locals() else addr[1]}"
-                )
-                conn.sendall(b"NEXUS_TCP_CONNECTED_OK\n")
-                conn.close()
-            except socket.timeout:
-                continue
-    except KeyboardInterrupt:
-        print("\n🛑 服务端退出")
-    finally:
-        s.close()
-
-
-def run_client():
-    print("=" * 80)
-    print("🛰️  NEXUS BIM Portal - 跨 OS 物理连通性极速诊断客户端 (WSL2)")
-    print("=" * 80)
-
-    # 1. 自动提取候选探测目标
-    gateway_ip = get_wsl_gateway_ip()
-    mdns_host = get_mdns_hostname()
-
-    candidates = []
-    if gateway_ip:
-        candidates.append(("WSL 默认网关 IP", gateway_ip))
-    if mdns_host:
-        candidates.append(("Windows mDNS 主机名", mdns_host))
-    candidates.append(("常见默认网关", "172.23.176.1"))
-
-    port = 17449
-    print("🕵️‍♂️ 规划探测矩阵 (多路径探测，防止 NAT 路由失效):")
-    for name, addr in candidates:
-        print(f"  -> [{name}]: {addr}:{port}")
-
-    print("\n⚡ [开始发射高频 TCP SYN 探测包...]")
-    for name, addr in candidates:
-        print(f"\n🛰️ 正在测试路径 [{name}] -> {addr}...")
-
-        # 尝试进行 DNS/mDNS 解析
-        try:
-            target_ip = socket.gethostbyname(addr)
-            print(f"  -> 解析成功! 映射真实 IP 为: {target_ip}")
-        except Exception as e:
-            print(f"  ❌ 域名解析失败: {e}")
-            target_ip = addr
-
-        # 执行原生 TCP 握手
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2.0)  # 2秒判定
-
-        start_time = time.time()
-        try:
-            s.connect((target_ip, port))
-            elapsed = (time.time() - start_time) * 1000
-            print(f"  ✅ 【连通大获成功!!!】耗时: {elapsed:.2f} ms")
-
-            # 接收服务端确认
-            data = s.recv(1024)
-            print(f"  💬 收到 Windows 探针确认: {data.decode().strip()}")
-            s.close()
-            print(f"\n💡 终极自愈药方：请立刻将你的配置文件中的连接 IP 修改为: {addr}")
-            print("=" * 80)
-            return  # 一旦有通的，直接结束
-        except socket.timeout:
-            print("  ❌ 【连接超时 (Timeout)】耗时: > 2000 ms")
-            print(
-                "     -> 诊断：物理丢包。防火墙仍在使用隐藏策略拦截（比如 Windows 有第三方安全软件火绒、360、腾讯管家等）。"
-            )
-        except ConnectionRefusedError:
-            print("  ❌ 【连接被拒绝 (Connection Refused)】")
-            print(
-                "     -> 诊断：物理通路已通，但 Windows 端的 Server 探针没运行，或没绑定 17449 端口。"
-            )
-        except Exception as e:
-            print(f"  ❌ 探测异常: {e}")
-        finally:
-            s.close()
-
-    print("\n❌ 探测矩阵全部挂盘，物理通道被底层彻底封锁！")
-    print("💡 终极自愈诊断建议：")
-    print(
-        "  1. 请检查你的 Windows 是否开启了代理（如 Clash/V2Ray），尤其是“TUN 模式”或“系统代理”。代理软件会强行将 127.0.0.1 之外的虚拟路由全部吃掉！请彻底关闭它们再测。"
-    )
-    print(
-        "  2. 请在 Windows 控制面板中，临时将 Windows 防火墙整体关闭（公用与专用网络），排除是否属于高级组策略强行拦截。"
-    )
-    print("=" * 80)
-
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--server":
-        # 针对 Windows 端载入 DLL 搜索链以防止 OMNI 报错
-        cuda_bin_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin"
-        if os.path.exists(cuda_bin_path):
-            try:
-                os.add_dll_directory(cuda_bin_path)
-            except Exception:
-                pass
-        run_server()
-    else:
-        run_client()
-</file>
-
-<file path="tools/diagnostics/probe_acados_env.py">
-# -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-import ctypes
-import os
-
-
-def probe():
-    print("=" * 70)
-    print("🛰️  FSD-Car & Acados 动态库装载链深度检测探针")
-    print("=" * 70)
-
-    # 1. 检查 ACADOS_SOURCE_DIR 变量
-    acados_source = os.environ.get(
-        "ACADOS_SOURCE_DIR", "/home/zhz/fsd-car/simulation-env/acados"
-    )
-    print(f"📌 [环境变量] ACADOS_SOURCE_DIR -> {acados_source}")
-    if not os.path.exists(acados_source):
-        print("❌ [路径失效] 找不到指定的 acados 物理目录！")
-        return
-
-    # 2. 检测动态链接库完整性
-    lib_dir = os.path.join(acados_source, "lib")
-    print(f"📌 [动态库目录] 正在扫描: {lib_dir}")
-
-    required_libs = ["libacados.so", "libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]
-    missing_libs = []
-
-    if os.path.exists(lib_dir):
-        files_in_lib = os.listdir(lib_dir)
-        for lib in required_libs:
-            match = [f for f in files_in_lib if f.startswith(lib)]
-            if match:
-                print(f"  ✅ 发现物理库: {match[0]}")
-            else:
-                print(f"  ❌ 缺失核心依赖库: {lib}")
-                missing_libs.append(lib)
-    else:
-        print(f"❌ [致命] 找不到 lib 文件夹: {lib_dir}")
-        return
-
-    # 3. 检查 LD_LIBRARY_PATH 环境变量并网状态
-    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-    print(f"📌 [环境变量] LD_LIBRARY_PATH -> {ld_path}")
-    is_joined = lib_dir in ld_path
-    print(
-        f"  💡 并网评估: {'✅ acados 路径已并网' if is_joined else '⚠️ 未检测到并网 (会导致 ld-linux 加载失败)'}"
-    )
-
-    # 4. 执行 ctypes 装载实验
-    print("\n⚡ [符号沙盘演练] 正在尝试通过操作系统 C-Linker 装载动态库...")
-    if not missing_libs:
-        # 尝试直接装载依赖库以对全局符号表进行内存预热
-        for lib in ["libqpOASES_e.so", "libblasfeo.so", "libhpipm.so"]:
-            lib_path = os.path.join(lib_dir, lib)
-            try:
-                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
-                print(f"  💎 预装载 {lib} -> ✅ 成功入驻进程空间")
-            except Exception as e:
-                print(f"  ⚠️ 预装载 {lib} -> ❌ 失败: {e}")
-
-        # 核心加载测试
-        libacados_path = os.path.join(lib_dir, "libacados.so")
-        try:
-            ctypes.CDLL(libacados_path)
-            print("  🏆 [终极载入测试] libacados.so -> 🎉 成功！系统已完全自愈！")
-        except Exception as e:
-            print(f"  🔥 [终极载入测试] libacados.so -> ❌ 失败，底层链接断链: {e}")
-    else:
-        print("❌ 核心动态库文件残缺，请在 simulation-env 目录下重新编译 acados 源码。")
-
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    probe()
-</file>
-
-<file path="tools/diagnostics/probe_proxy.py">
-import os
-import sys
-
-print("==================================================")
-print("      WSL2 代理设置深度排查探针 (2026)")
-print("==================================================")
-
-# 1. 检查当前活跃的代理环境变量
-print("\n[1] 当前生效的代理环境变量:")
-proxy_vars = {k: v for k, v in os.environ.items() if 'proxy' in k.lower()}
-if proxy_vars:
-    for k, v in proxy_vars.items():
-        print(f"  {k} = {v}")
-else:
-    print("  没有检测到活跃的代理环境变量。")
-
-# 2. 扫描常见的系统和用户启动配置文件
-print("\n[2] 开始扫描常见启动配置文件...")
-targets = [
-    '~/.bashrc', '~/.zshrc', '~/.profile', '~/.bash_profile', 
-    '~/.bash_login', '~/.zshenv', '~/.zprofile', '~/.zlogin',
-    '/etc/profile', '/etc/environment', '/etc/bash.bashrc',
-    '/etc/resolv.conf'
-]
-
-found_any = False
-for t in targets:
-    path = os.path.expanduser(t)
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', errors='ignore') as f:
-                content = f.read()
-                if "192.168.3.11" in content or "代理已开启" in content:
-                    print(f"  🚩 发现可疑配置在: {t}")
-                    lines = content.split('\n')
-                    for i, line in enumerate(lines):
-                        if "192.168.3.11" in line or "代理已开启" in line:
-                            print(f"    第 {i+1} 行: {line.strip()}")
-                    found_any = True
-        except Exception as e:
-            pass
-
-# 3. 深度递归扫描家目录下的隐藏脚本（过滤掉大文件目录如 conda）
-print("\n[3] 深度递归扫描家目录下的隐藏脚本与插件...")
-home_dir = os.path.expanduser('~')
-# 忽略掉不可能有代理脚本的巨大目录，防止卡死
-ignore_dirs = ['miniconda3', '.cache', '.git', '.conda', 'node_modules', 'workspace', 'FSD-car', 'nlp_TC_Encoder', 'lejepa-mvp']
-
-for root, dirs, files in os.walk(home_dir):
-    # 动态裁剪忽略目录
-    dirs[:] = [d for d in dirs if d not in ignore_dirs]
-    
-    for file in files:
-        # 只扫描脚本文件、隐藏文件、以及无后缀文件
-        if file.endswith('.sh') or file.startswith('.') or '.' not in file:
-            file_path = os.path.join(root, file)
-            try:
-                with open(file_path, 'r', errors='ignore') as f:
-                    content = f.read()
-                    if "192.168.3.11" in content or "代理已开启" in content:
-                        rel_path = os.path.relpath(file_path, home_dir)
-                        print(f"  🚩 发现可疑脚本在: ~/{rel_path}")
-                        lines = content.split('\n')
-                        for i, line in enumerate(lines):
-                            if "192.168.3.11" in line or "代理已开启" in line:
-                                print(f"    第 {i+1} 行: {line.strip()}")
-                        found_any = True
-            except:
-                pass
-
-if not found_any:
-    print("  ❌ 未能在任何配置文件中找到包含 '192.168.3.11' 或 '代理已开启' 的代码。")
-    print("  提示：请检查你是否在 Windows 端的控制台或全局系统变量里设置了代理穿透。")
-print("\n==================================================")
-</file>
-
-<file path="tools/diagnostics/probe_tcp_boundary.py">
-# -*- coding: utf-8 -*-
-import socket
-import subprocess
-import sys
-import time
-
-
-def run_probe():
-    print("=" * 60)
-    print("🔬 FSD-car V3.0: 跨 OS 物理边界 TCP 诊断探针")
-    print("=" * 60)
-
-    # 1. 动态捕获 Windows 宿主机 IP
-    print("[1/3] 正在解析 WSL2 路由表，定位 Windows 宿主机 IP...")
-    try:
-        cmd = "ip route show | grep default | awk '{print $3}'"
-        gateway_ip = subprocess.check_output(cmd, shell=True, text=True).strip()
-        if not gateway_ip:
-            raise ValueError("无法获取网关 IP")
-        print(f"  📍 锁定目标 IP: {gateway_ip}")
-    except Exception as e:
-        print(f"  ❌ 路由解析失败: {e}")
-        sys.exit(1)
-
-    # 2. 构造底层 TCP Socket 探针
-    port = 17449
-    print(f"\n[2/3] 正在向 {gateway_ip}:{port} 发射 TCP SYN 探测包...")
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # 设置 3 秒超时，足以判断防火墙是否丢包
-    s.settimeout(3.0)
-
-    start_time = time.time()
-    try:
-        # 尝试建立三次握手
-        s.connect((gateway_ip, port))
-        elapsed = (time.time() - start_time) * 1000
-        print(f"  ✅ 握手成功！耗时: {elapsed:.2f} ms")
-        print("\n[3/3] 🟢 最终诊断结论：")
-        print(
-            "  物理通道完全畅通！Windows 防火墙未拦截，且 isaac_sim_gateway.py 正在正常监听。"
-        )
-        print("  如果此时 Rust 仍然报错，说明是 Zenoh 协议层面的问题（如版本不一致）。")
-        s.close()
-
-    except socket.timeout:
-        print("  🔴 握手失败！耗时: > 3000 ms (Timeout)")
-        print("\n[3/3] 🔴 最终诊断结论：【元凶二：防火墙物理拦截】")
-        print("  -> 症状：数据包发出后如泥牛入海，没有任何回应。")
-        print("  -> 药方：Windows Defender 防火墙拦截了来自 WSL2 子网的入站请求。")
-        print("  -> 处方：请在 Windows PowerShell (管理员) 中执行放行命令：")
-        print(
-            '     New-NetFirewallRule -DisplayName "FSD-Zenoh-17449" -Direction Inbound -LocalPort 17449 -Protocol TCP -Action Allow'
-        )
-
-    except ConnectionRefusedError:
-        print("  🔴 握手失败！连接被瞬间拒绝 (Connection Refused)")
-        print("\n[3/3] 🔴 最终诊断结论：【元凶一：服务未就绪 / 时序倒置】")
-        print("  -> 症状：防火墙没有拦截，但目标端口上没有任何进程在接客。")
-        print(
-            "  -> 药方：Windows 端的 isaac_sim_gateway.py 根本没有运行，或者启动报错退出了。"
-        )
-        print(
-            "  -> 处方：请先在 Windows 端成功运行网关脚本，确认看到 [单播通道锁紧] 日志后，再启动 WSL2 侧的程序。"
-        )
-
-    except Exception as e:
-        print(f"  ⚠️ 发生未知网络异常: {e}")
-
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    run_probe()
-</file>
-
-<file path="tools/diagnostics/verify_control.py">
-# -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-import struct
-import subprocess
-import time
-
-import zenoh
-
-
-def main():
-    print("=" * 80)
-    print("🛰️  FSD-car V3.0: WSL2 运动学极性物理隔离测试探针 (NAT 动态版)")
-    print("=" * 80)
-
-    # 1. 动态获取 Windows 宿主机 IP [cite: 1.1.3]
-    try:
-        cmd = "ip route show | grep default | awk '{print $3}'"
-        gateway_ip = subprocess.check_output(cmd, shell=True, text=True).strip()
-        if not gateway_ip:
-            gateway_ip = "127.0.0.1"
-    except Exception:
-        gateway_ip = "127.0.0.1"
-
-    print(f"📡 [并网连接] 正在单播连接 Windows 宿主机: {gateway_ip}:17449")
-
-    # 2. 初始化极速 Zenoh 客户端
-    conf = zenoh.Config()
-    conf.insert_json5("connect/endpoints", f'["tcp/{gateway_ip}:17449"]')
-    conf.insert_json5("scouting/multicast/enabled", "false")
-
-    session = zenoh.open(conf)
-    pub = session.declare_publisher("fsd/spinal_cord/cmd_vel")
-
-    print(
-        "\n🟢 [极性隔离序列启动] 请在 Windows 3D 仿真界面紧密观察两个轮子的滚动方向："
-    )
-    try:
-        # 阶段一：静止 (3秒)
-        print("\n⏱️ [0-3s] 阶段一：发送停止指令 (v = 0.0, w = 0.0) -> 小车应当完全静止")
-        for _ in range(30):
-            payload = struct.pack("<ff", 0.0, 0.0)
-            pub.put(payload)
-            time.sleep(0.1)
-
-        # 阶段二：直行 (5秒)
-        print(
-            "\n⏱️ [3-8s] 阶段二：发送直行指令 (v = 0.2, w = 0.0) -> 左右车轮必须同时【向前滚】"
-        )
-        for _ in range(50):
-            payload = struct.pack("<ff", 0.2, 0.0)
-            pub.put(payload)
-            time.sleep(0.1)
-
-        # 阶段三：原地自转 (5秒)
-        print(
-            "\n⏱️ [8-13s] 阶段三：发送原地左转指令 (v = 0.0, w = 0.5) -> 左轮应当【后滚】，右轮应当【前滚】"
-        )
-        for _ in range(50):
-            payload = struct.pack("<ff", 0.0, 0.5)
-            pub.put(payload)
-            time.sleep(0.1)
-
-        # 阶段四：静止 (3秒)
-        print(
-            "\n⏱️ [13-16s] 阶段四：发送停止指令 (v = 0.0, w = 0.0) -> 小车应当完全静止"
-        )
-        for _ in range(30):
-            payload = struct.pack("<ff", 0.0, 0.0)
-            pub.put(payload)
-            time.sleep(0.1)
-
-    except KeyboardInterrupt:
-        print("\n🛑 测试被用户手动中断")
-    finally:
-        # 强制发送安全停止
-        pub.put(struct.pack("<ff", 0.0, 0.0))
-        session.close()
-        print("\n🏁 [测试序列结束] 物理通道已安全释放。")
-        print("=" * 80)
-
-
-if __name__ == "__main__":
-    main()
-</file>
-
-<file path="tools/diagnostics/zenoh_isolated_test.py">
-# -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-import os
-import sys
-import struct
-import time
-import subprocess
-import socket
-
-# 自动定位并加载 CUDA DLL 避免 Windows 端 Zenoh 报错
-cuda_bin_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin"
-if os.path.exists(cuda_bin_path) and os.name == 'nt':
-    try: os.add_dll_directory(cuda_bin_path)
-    except Exception: pass
-
-import zenoh
-
-def get_wsl_gateway_ip():
-    try:
-        cmd = "ip route | grep default | awk '{print $3}'"
-        ip = subprocess.check_output(cmd, shell=True, text=True).strip()
-        return ip if ip else "172.23.176.1"
-    except Exception:
-        return "172.23.176.1"
-
-def get_windows_wsl_ip():
-    try:
-        hostname = socket.gethostname()
-        ips = socket.gethostbyname_ex(hostname)[2]
-        # 🎯 核心自愈：自动抓取 Windows 本地以 172. 开头的 WSL 虚拟网卡真实 IPv4 地址
-        wsl_ip = next((ip for ip in ips if ip.startswith("172.")), None)
-        return wsl_ip if wsl_ip else "0.0.0.0"
-    except Exception:
-        return "0.0.0.0"
-
-def run_server():
-    print("="*80)
-    print("🛰️  NEXUS BIM Portal - Zenoh 纯净隔离诊断服务端 (Windows)")
-    print("="*80)
-    
-    wsl_ip = get_windows_wsl_ip()
-    print(f"🖥️  探测到 Windows 侧 WSL 虚拟网卡 IP: {wsl_ip}")
-    
-    z_config = zenoh.Config()
-    z_config.insert_json5("mode", '"peer"')
-    
-    # 🎯 终极自愈：强行绑定到具体的 IPv4 网卡 IP，绕开 Windows 0.0.0.0 默认解析为 IPv6 [::] 导致的物理拒绝！
-    endpoint = f'["tcp/{wsl_ip}:17449"]'
-    z_config.insert_json5("listen/endpoints", endpoint)
-    z_config.insert_json5("scouting/multicast/enabled", "false")
-    
-    session = zenoh.open(z_config)
-    print(f"✅ [侦听就绪] Windows 端 Zenoh 成功监听: {wsl_ip}:17449。正在全力等待 WSL2 端连接...")
-
-    def listener(sample):
-        print(f"\n📥 收到 WSL2 神经指令 [Key: {sample.key_expr}]")
-        payload_obj = sample.payload
-        
-        # 采用 2026 终极多路径自愈解码
-        if hasattr(payload_obj, "to_bytes"):
-            payload = payload_obj.to_bytes()
-        elif hasattr(payload_obj, "contiguous"):
-            payload = bytes(payload_obj.contiguous())
-        else:
-            payload = bytes(payload_obj)
-
-        print(f"  裸字节流长度: {len(payload)} | 十六进制: {payload.hex()}")
-        if len(payload) == 8:
-            v, w = struct.unpack("<ff", payload)
-            print(f"  🎯 运动学解码 -> 线速度 v: {v:.3f} m/s | 角速度 w: {w:.3f} rad/s")
-        else:
-            print("  ⚠️ 字节流长度错误")
-
-    sub = session.declare_subscriber("fsd/spinal_cord/cmd_vel", listener)
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n🛑 服务端退出")
-    finally:
-        session.close()
-
-def run_client():
-    print("="*80)
-    print("🛰️  NEXUS BIM Portal - Zenoh 纯净隔离诊断客户端 (WSL2)")
-    print("="*80)
-    
-    gateway_ip = get_wsl_gateway_ip()
-    print(f"📡 目标 Windows 宿主机网关 IP: {gateway_ip}")
-
-    z_config = zenoh.Config()
-    # 🎯 强行配置为 Client 模式以建立确定性 TCP 连接
-    z_config.insert_json5("mode", '"client"')
-    z_config.insert_json5("connect/endpoints", f'["tcp/{gateway_ip}:17449"]')
-    z_config.insert_json5("scouting/multicast/enabled", "false")
-    
-    session = zenoh.open(z_config)
-    pub = session.declare_publisher("fsd/spinal_cord/cmd_vel")
-    print("✅ [连接建立] WSL2 客户端连接成功，开始高频下发测试控制量...")
-
-    try:
-        tick = 0
-        while True:
-            tick += 1
-            v = 0.2
-            w = 0.0
-            payload = struct.pack("<ff", v, w)
-            pub.put(payload)
-            if tick % 10 == 0:
-                print(f"🚀 发送测试信号 -> v: {v:.2f} | w: {w:.2f} (已经发送 {tick} 次)")
-            time.sleep(0.1) # 10Hz 发送
-    except KeyboardInterrupt:
-        print("\n🛑 客户端退出")
-    finally:
-        session.close()
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--server":
-        run_server()
-    else:
-        run_client()
-</file>
-
 <file path="core-control/src/ffi.rs">
 #![allow(non_camel_case_types)]
 use libc::{c_char, c_int, c_void};
@@ -2469,34 +1855,6 @@ mod tests {
 }
 </file>
 
-<file path="core-control/Cargo.toml">
-[package]
-name = "core-control"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 继承自根目录 Workspace 的统一定义
-opencv = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
-
-# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
-dora-node-api = "0.3.3"
-# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
-eyre = "0.6"
-
-# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
-chrono = "=0.4.39"
-
-# 🛡️ 新增：引入感知引擎，实现快系统闭环
-core-perception = { path = "../core-perception" }
-
-[build-dependencies]
-cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
-</file>
-
 <file path="core-decision/src/bin/slow_brain_node.rs">
 // 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 use dora_node_api::{DoraNode, Event};
@@ -2606,25 +1964,6 @@ async fn main() -> eyre::Result<()> {
 
     Ok(())
 }
-</file>
-
-<file path="core-decision/Cargo.toml">
-[package]
-name = "core-decision"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-
-# 🛡️ 新增：并网所需的视觉与通信底座
-opencv = { workspace = true }
-dora-node-api = "0.3.3"
-eyre = "0.6"
-core-perception = { path = "../core-perception" }
 </file>
 
 <file path="showcase/Cargo.toml">
@@ -3318,6 +2657,53 @@ fn main() {
 }
 </file>
 
+<file path="core-control/Cargo.toml">
+[package]
+name = "core-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 继承自根目录 Workspace 的统一定义
+opencv = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
+
+# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
+dora-node-api = "0.3.13"
+# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
+eyre = "0.6"
+
+# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
+chrono = "=0.4.39"
+
+# 🛡️ 新增：引入感知引擎，实现快系统闭环
+core-perception = { path = "../core-perception" }
+
+[build-dependencies]
+cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
+</file>
+
+<file path="core-decision/Cargo.toml">
+[package]
+name = "core-decision"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 🛡️ 新增：并网所需的视觉与通信底座
+opencv = { workspace = true }
+dora-node-api = "0.3.13"
+eyre = "0.6"
+core-perception = { path = "../core-perception" }
+</file>
+
 <file path="Cargo.toml">
 [workspace]
 resolver = "2"
@@ -3368,12 +2754,12 @@ strip = true
 <file path="simulation-env/isaac_dora_node.py">
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 
 """
 =================================================================
-🛡️ FSD-car V3.0: 仿真环境物理代理节点 (原生 Linux 零拷贝并网版)
-设计哲学: 去网关化 | 双视觉算法下沉 | 共享内存直通 | 物理与算法时钟对齐
+🛡️ FSD-car V4.1: 仿真环境物理代理节点 (Ubuntu 26.04 绝对确定性版)
+设计哲学: Headless 离屏 | 100Hz 绝对物理时钟锁定 | 共享内存直通
+核心规范: Isaac Sim 2026 Core API (SimulationContext)
 =================================================================
 """
 
@@ -3389,10 +2775,11 @@ import pyarrow as pa
 from dora import Node
 
 # ---------------------------------------------------------------------------
-# 🛡️ 环境变量自愈：自动加载项目根目录的 .env 文件
+# 🛡️ 物理资产与环境变量自愈
 # ---------------------------------------------------------------------------
+os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+
 def load_env_manually():
-    # 向上自适应溯源两层，找到项目根目录下的 .env
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:
@@ -3405,24 +2792,28 @@ def load_env_manually():
 load_env_manually()
 
 # ---------------------------------------------------------------------------
-# 🛡️ NVIDIA Isaac Sim 启动哨兵 (LTS 级强依赖约束)
+# 🛡️ NVIDIA Isaac Sim 2026 启动哨兵 (防管道死锁版)
 # ---------------------------------------------------------------------------
 try:
+    # 🛡️ 核心修复 1：通过 sys.argv 底层注入静默参数，防止海量日志塞满 DORA 管道！
+    # 完美规避 2026 版 SimulationApp API 签名变更导致的 TypeError
+    sys.argv.extend(["--/log/level=error", "--/log/fileLogLevel=error"])
     from isaacsim import SimulationApp
-    # 本地原生运行，启动 headed 模式以便实时在大屏监测小车运动
-    simulation_app = SimulationApp({"headless": False})
+    simulation_app = SimulationApp({
+        "headless": True,
+    })
     
     import omni
     from pxr import UsdPhysics
-    from isaacsim.core.api.world import World
-    from isaacsim.core.experimental.prims import Articulation
+    # 🛡️ 核心修复 2：使用 2026 核心 API，World 继承自 SimulationContext 并提供 scene 管理
+    from isaacsim.core.api import World
+    from isaacsim.core.prims import Articulation
     from isaacsim.sensors.camera import Camera
     from isaacsim.core.utils.stage import open_stage
-    print("✅ [物理代理] NVIDIA Isaac Sim Standalone 引擎启动成功！")
+    print("✅ [物理代理] NVIDIA Isaac Sim 2026 核心引擎启动成功！(Headless 模式)")
 except ImportError as e:
-    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！请确保运行在 python.sh 环境下。报错: {e}")
+    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！报错: {e}")
     sys.exit(1)
-
 
 # ===========================================================================
 # 🐸 仿生青蛙眼不对称时空感受野（ERF/IRF）算法引擎
@@ -3432,17 +2823,12 @@ class BionicFrogEye:
         self.w = width
         self.h = height
         self.prev_gray = None
-        
-        # 预分配感受野显存金库，杜绝运行期动态申请
         self.erf = np.zeros((height, width), dtype=np.float32)
         self.irf = np.zeros((height, width), dtype=np.float32)
-        
-        self.alpha_erf = 0.4        # 兴奋感受野衰减率（极快，捕捉瞬态）
-        self.alpha_irf = 0.85       # 抑制感受野衰减率（较慢，存储记忆）
-        self.beta = 0.5             # 抑制强度权重
-        self.event_threshold = 15.0 # 时间帧差事件门限
-        
-        # 预计算二次方物理距离权重矩阵，靠近图像底部（越近）权重越高
+        self.alpha_erf = 0.4
+        self.alpha_irf = 0.85
+        self.beta = 0.5
+        self.event_threshold = 15.0
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
         self.closeness_weight = (y_indices / float(self.h)) ** 2
@@ -3450,43 +2836,33 @@ class BionicFrogEye:
     def process_frame(self, frame_rgb):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        
         if self.prev_gray is None:
             self.prev_gray = gray
             return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-            
         diff = cv2.absdiff(self.prev_gray, gray)
         _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
-        
         events_rf = cv2.GaussianBlur(events, (21, 21), 0)
-        
         self.erf = self.erf * self.alpha_erf + events_rf
         self.irf = self.irf * self.alpha_irf + events_rf
-        
         net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
         self.prev_gray = gray
-        
         weighted_energy = net_energy * self.closeness_weight
         total_energy = np.sum(weighted_energy)
-        
-        if total_energy > 15.0:  # 避障激活门限
+        if total_energy > 15.0:
             x_c = np.sum(self.x_coords * weighted_energy) / total_energy
-            dx = (x_c - self.w / 2.0) / (self.w / 2.0)  # 归一化至 [-1.0, 1.0]
-            F_y = -dx * 1.5  # 逃逸方向与障碍物重心相反
+            dx = (x_c - self.w / 2.0) / (self.w / 2.0)
+            F_y = -dx * 1.5
             F_x = - (total_energy / (self.w * self.h)) * 5.0
         else:
             F_x, F_y = 0.0, 0.0
-            
         heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
         return F_x, F_y, heatmap
 
-
 # ====================================================
-#  📸 XFeat 局部高精度特征提取引擎 (本地 GPU/CPU 自适应版)
+#  📸 XFeat 局部高精度特征提取引擎
 # ====================================================
 class XFeatEngine:
     def __init__(self, model_path):
-        # 原生 Linux 下直接启用 GPU 推理加速
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
@@ -3496,95 +2872,75 @@ class XFeatEngine:
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         pad_y = (640 - 480) // 2
         padded = cv2.copyMakeBorder(gray, pad_y, 640 - 480 - pad_y, 0, 0, cv2.BORDER_CONSTANT, value=0)
-        
-        tensor = torch.from_numpy(padded).float().unsqueeze(0).unsqueeze(0) # [1, 1, 640, 640]
+        tensor = torch.from_numpy(padded).float().unsqueeze(0).unsqueeze(0)
         mean, std = tensor.mean(), tensor.std()
         tensor = (tensor - mean) / (std + 1e-6)
-
         outs = self.session.run(None, {self.input_name: tensor.numpy()})
         desc, scores, rel = [torch.from_numpy(x) for x in outs]
-
-        # 极致高精度极性校正
         if desc.shape[1] == 80 and desc.shape[2] == 80:
             desc = desc.permute(0, 3, 1, 2)
         if scores.shape[1] == 80 and scores.shape[2] == 80:
             scores = scores.permute(0, 3, 1, 2)
         if len(rel.shape) == 4 and rel.shape[3] == 1 and rel.shape[1] == 80 and rel.shape[2] == 80:
             rel = rel.permute(0, 3, 1, 2)
-
         scores = F.softmax(scores, dim=1)[:, :-1, :, :]
         scores = F.pixel_shuffle(scores, 8)
         rel = F.interpolate(rel, size=(640, 640), mode='bilinear', align_corners=False)
         conf = scores * rel
-
         conf_nms = F.max_pool2d(conf, kernel_size=5, stride=1, padding=2)
         mask = (conf == conf_nms) & (conf > 0.05)
-
         conf_flat = conf[mask]
         if len(conf_flat) == 0:
             return b''
-        
         topk = min(top_k, len(conf_flat))
         scores_k, indices = torch.topk(conf_flat, topk)
-        
         y, x = torch.where(mask[0, 0])
         y, x = y[indices], x[indices]
-
         grid_x = (x.float() / 639.0) * 2.0 - 1.0
         grid_y = (y.float() / 639.0) * 2.0 - 1.0
-        grid = torch.stack([grid_x, grid_y], dim=1).unsqueeze(0).unsqueeze(2) # [1, N, 1, 2]
-        
-        # 🛡️ 架构师 2026 修复：使用标准的 grid_sample 提取特征描述子
+        grid = torch.stack([grid_x, grid_y], dim=1).unsqueeze(0).unsqueeze(2)
         desc_sampled = F.grid_sample(desc, grid, mode='bilinear', align_corners=False)
-        desc_sampled = desc_sampled.squeeze(0).squeeze(2).t() # [N, 64]
+        desc_sampled = desc_sampled.squeeze(0).squeeze(2).t()
         desc_sampled = F.normalize(desc_sampled, p=2, dim=1)
-
         y = y.float() - pad_y
         x = x.float()
-
         valid = (y >= 0) & (y < 480)
         x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
-
         N = len(x)
         buffer = bytearray(struct.pack("<I", N))
-        
         x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
         for i in range(N):
             buffer.extend(struct.pack("<fff", x_np[i], y_np[i], s_np[i]))
             buffer.extend(d_np[i].tobytes())
-            
         return bytes(buffer)
 
-
 # ===========================================================================
-#  🚀 DORA 原生节点主循环与仿真执行器
+#  🚀 DORA 原生节点主循环与 2026 确定性仿真执行器
 # ===========================================================================
 def main():
     print("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
-    
-    # 1. 初始化本地 DORA 节点契约
     dora_node = Node()
 
-    # 2. 读取环境变量路径，加载物理场景
-    fsd_assets_dir = os.environ.get("FSD_ASSETS_DIR", "/home/zhz/fsd_assets")
-    usd_path = os.path.join(fsd_assets_dir, "Collected_fsd_car_racetrack", "fsd_car_racetrack.usd")
-    
+    fsd_assets_dir = "/home/zhz/fsd-car/assets"
+    usd_path = os.path.join(fsd_assets_dir, "fsd_car_racetrack.usd")
     if not os.path.exists(usd_path):
-        print(f"❌ 致命错误：无法在指定路径找到物理场景文件 -> {usd_path}")
+        print(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
         sys.exit(1)
-        
     open_stage(usd_path=usd_path)
     
-    # 3. 初始化仿真世界
-    world = World(stage_units_in_meters=1.0, physics_prim_path="/PhysicsScene")
+    # 🛡️ 核心修复 3：使用 World (继承自 SimulationContext) 锁定 100Hz 绝对时钟并管理 Scene
+    world = World(
+        physics_dt=0.01, 
+        rendering_dt=0.01, 
+        backend="numpy"
+    )
+    
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
-    
     if not stage.GetPrimAtPath(car_path):
         print(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
         sys.exit(1)
 
-    # 🛡️ 物理关节属性重置：清除冗余阻尼，驯化为纯速度伺服关节
     for prim in stage.Traverse():
         if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
             drive = UsdPhysics.DriveAPI.Get(prim, "angular")
@@ -3593,13 +2949,14 @@ def main():
             drive.CreateStiffnessAttr(0.0)
             drive.CreateDampingAttr(1e5)
 
-    # 4. 绑定物理实体
-    car = Articulation(car_path)
-    camera_path = f"{car_path}/rgb_camera"
-    camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
+    car = Articulation(prim_paths_expr=car_path, name="jetbot")
+    world.scene.add(car)
 
-    # 5. 加载算法引擎
-    xfeat_model_path = os.path.join(fsd_assets_dir, "model", "xfeat_640x640.onnx")
+    camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
+    camera = Camera(prim_path=camera_path, name="bionic_retina", resolution=(640, 480))
+    world.scene.add(camera)
+
+    xfeat_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
     if not os.path.exists(xfeat_model_path):
         print(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
         sys.exit(1)
@@ -3607,28 +2964,31 @@ def main():
     xfeat_engine = XFeatEngine(xfeat_model_path)
     frog_eye = BionicFrogEye(640, 480)
 
-    # 6. 物理世界预热起跑
     world.reset()
     world.play()
-    world.step(render=True)
-    camera.initialize()
     
+    # 🛡️ 2026 工业级预热：在 Headless 模式下，强制先步进 60 帧，让 Vulkan 材质与着色器完全加载入显存，消除全黑无效帧
+    print("⏳ [物理代理] 正在进行 Vulkan RTX 离屏渲染器硬件预热...")
+    for _ in range(60):
+        world.step(render=True)
+        
+    camera.initialize()
+    print("✅ [物理代理] 离屏渲染器预热完成，开始捕捉高保真彩色视口！")
+
     print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
-
-    L = 0.1125  # 轮距
-    R = 0.03    # 轮半径
+    
+    L = 0.1125
+    R = 0.03
     tick = 0
-
     v_cmd = 0.0
     w_cmd = 0.0
 
     try:
         while simulation_app.is_running():
-            # A. 步进物理和渲染帧
+            # 🛡️ 绝对时钟步进：每次严格推进 0.01s
             world.step(render=True)
             tick += 1
 
-            # B. 极速显存抓取与前置过滤
             rgb_raw = camera.get_rgb()
             if rgb_raw is not None:
                 if hasattr(rgb_raw, "cpu"):
@@ -3636,55 +2996,61 @@ def main():
                 else:
                     rgb_frame = rgb_raw
                     
-                # 剥离 Alpha 通道并重整像素值
                 if len(rgb_frame.shape) == 3 and rgb_frame.shape[2] == 4:
                     rgb_frame = rgb_frame[:, :, :3]
                 if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
                     rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
 
                 if rgb_frame.size > 0:
-                    # 1. 🐸 100Hz 仿生感受野势场解算并实时并网 (直接转换为 Arrow Uint8 数组写入共享内存)
                     F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
                     fe_payload = struct.pack("<ff", F_x, F_y)
-                    
                     arrow_obstacle_force = pa.array(np.frombuffer(fe_payload, dtype=np.uint8))
                     dora_node.send_output("obstacle_force", arrow_obstacle_force)
 
-                    # 2. 📸 1Hz 慢系统 XFeat 骨干特征提取并并网
                     if tick % 100 == 0:
                         xfeat_payload = xfeat_engine.extract(rgb_frame, top_k=200)
                         if xfeat_payload:
                             arrow_xfeat_features = pa.array(np.frombuffer(xfeat_payload, dtype=np.uint8))
                             dora_node.send_output("xfeat_features", arrow_xfeat_features)
 
-            # C. 🏎️ 非阻塞监听快系统大脑下发的运动规控反馈 (0 延迟)
             event = dora_node.next(timeout=0.001)
             if event is not None:
-                if event["type"] == "INPUT" and event["id"] == "control_cmd":
-                    cmd_bytes = bytes(event["value"])
-                    if len(cmd_bytes) == 8:
-                        v_cmd, w_cmd = struct.unpack("<ff", cmd_bytes)
-                elif event["type"] == "STOP":
+                ev_type = event["type"]
+                if ev_type == "INPUT":
+                    if event["id"] == "control_cmd":
+                        cmd_bytes = bytes(event["value"])
+                        if len(cmd_bytes) == 8:
+                            v_cmd, w_cmd = struct.unpack("<ff", cmd_bytes)
+                elif ev_type == "STOP":
                     print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
                     break
 
-            # D. 执行物理控制
+            # 🛡️ 极性自愈：移除右轮公式前的负号。
+            # 使 DORA 的 v_cmd=0.3 完美映射为左右轮同向正转（同号 10.0 rad/s），驱动小车直线向前！
             v_left = (v_cmd - w_cmd * L / 2.0) / R
-            v_right = -(v_cmd + w_cmd * L / 2.0) / R  # 右轮极性反向自愈
-            car.set_dof_velocity_targets(np.array([v_left, v_right]))
+            v_right = (v_cmd + w_cmd * L / 2.0) / R
+            car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
+
+            # 📊 2026 工业级数值探针：每 100 步输出一次全量高保真遥测数据，消除主观观测盲区
+            if tick % 100 == 0:
+                print(
+                    f"[物理代理 100Hz 遥测] 步数: {tick:<6} | "
+                    f"仿生眼避障力: F_x={F_x:>6.3f}, F_y={F_y:>6.3f} | "
+                    f"DORA 规控指令: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s | "
+                    f"电调靶向速度: Left={v_left:>6.2f} rad/s, Right={v_right:>6.2f} rad/s"
+                )
 
     except KeyboardInterrupt:
         print("\n🛑 用户手动中断，优雅下线。")
     finally:
-        # 安全制动
         try:
-            car.set_dof_velocity_targets(np.array([0.0, 0.0]))
+            car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
             world.step(render=True)
+            world.stop()
         except Exception:
             pass
         simulation_app.close()
         print("🔌 物理仿真界代理已安全卸载。")
-
 
 if __name__ == "__main__":
     main()
@@ -3692,57 +3058,6 @@ if __name__ == "__main__":
 
 <file path="4.py">
 
-</file>
-
-<file path="dora_dataflow.yaml">
-# =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
-# 架构哲学: 去网关化 | 仿生避障下沉至原生 Python 节点 | 共享内存 0 微秒延迟直通
-# =================================================================
-nodes:
-  # ---------------------------------------------------------------
-  # 🌌 1. 物理仿真界 (The Matrix) - Isaac Sim 仿真引擎原生 DORA 节点
-  # ---------------------------------------------------------------
-  - id: isaac_sim_env
-    path: /home/zhz/.local/share/ov/pkg/isaac-sim-4.2.0/python.sh
-    args: simulation-env/isaac_dora_node.py
-    inputs:
-      # 接收来自快系统 NMPC 的最新物理规控指令，驱动物理底盘
-      control_cmd: fast_brain_nmpc/control_cmd
-    outputs:
-      # 直接向慢大脑广播提取好的 XFeat 稀疏特征二进制契约 (零图像传输开销!)
-      - xfeat_features
-      # 直接向快大脑广播 8 字节仿生势场避障力
-      - obstacle_force
-
-  # ---------------------------------------------------------------
-  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
-  # ---------------------------------------------------------------
-  - id: fast_brain_nmpc
-    path: target/release/fast_brain_node
-    build: cargo build -p core-control --release --bin fast_brain_node
-    env:
-      RUST_LOG: info
-      DORA_RUNTIME_TYPE_CHECK: warn
-      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
-    inputs:
-      # 从本地共享内存极速订阅避障势场力
-      obstacle_force: isaac_sim_env/obstacle_force
-    outputs:
-      # 输出运动指令契约 (v, w)
-      - control_cmd
-
-  # ---------------------------------------------------------------
-  # 🧠 3. 慢系统：拓扑建图与语义大脑 (The Slow System - 1Hz)
-  # ---------------------------------------------------------------
-  - id: slow_brain_mapper
-    path: target/release/slow_brain_node
-    build: cargo build -p core-decision --release --bin slow_brain_node
-    env:
-      RUST_LOG: info
-    inputs:
-      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
-      xfeat_features: isaac_sim_env/xfeat_features
 </file>
 
 <file path="core-control/src/bin/fast_brain_node.rs">
@@ -3793,11 +3108,13 @@ async fn main() -> eyre::Result<()> {
     let 规控句柄 = tokio::spawn(async move {
         let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
         let mut 求解器已就绪 = false;
+        let mut 循环计数: u64 = 0;
         
         let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
         
         loop {
             节拍器.tick().await;
+            循环计数 += 1;
             
             // 极速读取状态金库
             let (已初始化, 期望_x, 期望_y, 当前线速度) = {
@@ -3842,6 +3159,14 @@ async fn main() -> eyre::Result<()> {
                     {
                         let mut lock = 金库_规控.write().unwrap();
                         lock.当前线速度 = 线速度_v;
+                    }
+
+                    // 📊 2026 工业级数值探针：每 100 轮对 NMPC 控制环输出高精度遥测
+                    if 循环计数 % 100 == 0 {
+                        println!(
+                            "[快大脑 100Hz 遥测] 步数: {:<6} | 目标线速: {:.3} m/s | 避障偏置: {:.3} m | NMPC输出 -> v: {:.3} m/s, w: {:.3} rad/s",
+                            循环计数, 目标线速度, 期望_y, 线速度_v, 角速度_w
+                        );
                     }
 
                     // 🎯 极速裸二进制直发：向并网网关传输 8 字节控制指令
@@ -3917,6 +3242,59 @@ async fn main() -> eyre::Result<()> {
     规控句柄.abort();
     Ok(())
 }
+</file>
+
+<file path="dora_dataflow.yaml">
+# =================================================================
+# 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
+# 架构哲学: 去网关化 | 仿生避障下沉至原生 Python 节点 | 共享内存 0 微秒延迟直通
+# =================================================================
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 物理仿真界 (The Matrix) - Isaac Sim 仿真引擎原生 DORA 节点
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    path: /home/zhz/isaacsim/python.sh
+    args: simulation-env/isaac_dora_node.py
+    env:
+      # 🛡️ 强行透传宿主机的显示环境变量，防止 DORA 隔离导致 Vulkan 找不到设备
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
+    inputs:
+      control_cmd: fast_brain_nmpc/control_cmd
+    outputs:
+      - xfeat_features
+      - obstacle_force
+
+  # ---------------------------------------------------------------
+  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
+  # ---------------------------------------------------------------
+  - id: fast_brain_nmpc
+    path: target/release/fast_brain_node
+    build: cargo build -p core-control --release --bin fast_brain_node
+    env:
+      RUST_LOG: info
+      DORA_RUNTIME_TYPE_CHECK: warn
+      LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
+    inputs:
+      # 从本地共享内存极速订阅避障势场力
+      obstacle_force: isaac_sim_env/obstacle_force
+    outputs:
+      # 输出运动指令契约 (v, w)
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🧠 3. 慢系统：拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
+      xfeat_features: isaac_sim_env/xfeat_features
 </file>
 
 <file path=".gitignore">
