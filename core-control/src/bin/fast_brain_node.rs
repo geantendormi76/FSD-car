@@ -59,9 +59,23 @@ async fn main() -> eyre::Result<()> {
         let mut 求解器已就绪 = false;
         let mut 循环计数: u64 = 0;
         
+        // 🎯 建立高频落盘时序审计日志 (CSV 格式)
+        use std::io::Write as _;
+        let mut 日志文件 = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("nmpc_telemetry.csv")
+            .expect("❌ 无法创建高频时序审计日志");
+        
+        // 写入 CSV 表头，对齐所有控制维度
+        let _ = writeln!(
+            日志文件,
+            "tick,cur_x,cur_y,cur_yaw,target_x,target_y,target_yaw,force_x,force_y,v_cmd,w_cmd,cur_v"
+        );
+
         let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
         节拍器.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        
         loop {
             节拍器.tick().await;
             循环计数 += 1;
@@ -141,6 +155,14 @@ async fn main() -> eyre::Result<()> {
                         let mut lock = 金库_规控.write().unwrap();
                         lock.当前线速度 = 线速度_v;
                     }
+
+                    // 📊 2026 工业级数值探针
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        日志文件,
+                        "{}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}",
+                        循环计数, 当前_x, 当前_y, 当前_yaw, 引力_x, 引力_y, 引力_yaw, 期望_x, 期望_y, 线速度_v, 角速度_w, 当前线速度
+                    );
 
                     // 📊 2026 工业级数值探针
                     if 循环计数 % 100 == 0 {

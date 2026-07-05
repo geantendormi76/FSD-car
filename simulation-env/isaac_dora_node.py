@@ -114,7 +114,12 @@ class BionicFrogEye:
         if total_energy > 15.0:
             x_c = np.sum(self.x_coords * weighted_energy) / total_energy
             dx = (x_c - self.w / 2.0) / (self.w / 2.0)
-            F_y = -dx * 1.5
+            # 🎯 2026 极性纠偏：修正避障逃逸力极性反转错误！
+            # 在机器人局部坐标系中，+Y 为左，-Y 为右。
+            # 当障碍物偏右（dx > 0）时，期望避障力 F_y 必须为正（F_y > 0，向左逃逸）；
+            # 当障碍物偏左（dx < 0）时，期望避障力 F_y 必须为负（F_y < 0，向右逃逸）。
+            # 彻底粉碎“吸引力陷阱”，将其重塑为“绝对排斥力”！
+            F_y = dx * 1.5
             F_x = - (total_energy / (self.w * self.h)) * 5.0
         else:
             F_x, F_y = 0.0, 0.0

@@ -1,6 +1,6 @@
 # =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
-# 架构哲学: 去网关化 | 仿生避障下沉至原生 Python 节点 | 共享内存 0 微秒延迟直通
+# 🛡️ FSD-car V4.0: 纯视觉自主重放寻迹自驾蓝图 (Ubuntu 26.04 LTS 极致版)
+# 架构哲学: 无人类遥控介入 | 物理里程计 + 慢大脑人类先验引力 + 快大脑避障势场融合
 # =================================================================
 nodes:
   # ---------------------------------------------------------------
@@ -10,22 +10,19 @@ nodes:
     path: /home/zhz/isaacsim/python.sh
     args: simulation-env/isaac_dora_node.py
     env:
-      # 🛡️ 强行透传宿主机的显示环境变量，防止 DORA 隔离导致 Vulkan 找不到设备
       DISPLAY: ${DISPLAY}
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
       XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
-      # 🛡️ 架构师 2026 级并网防御：在 YAML 中固化 cuDNN 9 与系统 CUDA 路径
-      # 100% 杜绝 DORA 守护进程清洗用户环境变量导致运行时 libcudnn.so.9 链接断裂报错 [cite: 1.2.8]！
       LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
     inputs:
+      # 订阅高频 NMPC 运动输出，驱动底盘
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
       - xfeat_features
       - obstacle_force
-      - odometry
-
+      - odometry  # 🎯 里程碑 1.1：100Hz 物理里程计高频输出
   # ---------------------------------------------------------------
-  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
+  # ⚡ 2. 快系统：极速 Spiced NMPC 规控大脑 (The Fast System - 100Hz)
   # ---------------------------------------------------------------
   - id: fast_brain_nmpc
     path: target/release/fast_brain_node
@@ -35,18 +32,16 @@ nodes:
       DORA_RUNTIME_TYPE_CHECK: warn
       LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
-      # 从本地共享内存极速订阅避障势场力 (Spice 调料)
+      # 订阅 100Hz 青蛙眼避障斥力 (Spice 调料)
       obstacle_force: isaac_sim_env/obstacle_force
-      # 订阅 100Hz 物理小脑里程计 (当前绝对坐标)
+      # 订阅 100Hz 物理里程计 (车辆当前绝对位姿)
       odometry: isaac_sim_env/odometry
-      # 订阅慢大脑发来的人类示教引力锚点 (Human Prior)
+      # 订阅 慢大脑发布的人类示教引力线 (Human Prior)
       human_prior: slow_brain_mapper/human_prior
     outputs:
-      # 输出运动指令契约 (v, w)
       - control_cmd
-
   # ---------------------------------------------------------------
-  # 🧠 3. 慢系统：拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # 🧠 3. 慢系统：CLIDD 视觉定位与语义领航大脑 (The Slow System - 1Hz)
   # ---------------------------------------------------------------
   - id: slow_brain_mapper
     path: target/release/slow_brain_node
@@ -54,7 +49,9 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
+      # 订阅 1Hz CLIDD 视觉高抗畸变特征点
       xfeat_features: isaac_sim_env/xfeat_features
-      # 订阅 100Hz 物理小脑高频里程计，治愈空间失忆症
+      # 订阅 100Hz 物理里程计，提供定位初始估计 (Initial Guess)
       odometry: isaac_sim_env/odometry
+    outputs:
+      - human_prior # 🎯 里程碑 2.3：滚动发布下一个人类引力站牌
