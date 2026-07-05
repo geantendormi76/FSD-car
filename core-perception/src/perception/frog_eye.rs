@@ -1,5 +1,3 @@
-#![allow(dead_code)] // 🛡️ 架构师指令：在 V3.0 开发合并期，允许暂时未被调用的算法 API 存在
-
 use opencv::{
     prelude::*,
     core::{self, Mat, Point, Size, Scalar},
