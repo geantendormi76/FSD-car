@@ -17,9 +17,16 @@ use std::time::Duration;
 /// 状态金库：快大脑 100Hz 线程与 避障力接收线程 间绝对安全的无锁共享上下文
 struct 执行上下文 {
     pub 物理主权已初始化: bool,
-    pub 期望_x: f64,              // 纵向势场排斥力 (避障减速)
-    pub 期望_y: f64,              // 横向势场逃逸力 (变道机动)
+    pub 期望_x: f64,              // 纵向势场排斥力 (避障减速 - Spice)
+    pub 期望_y: f64,              // 横向势场逃逸力 (变道机动 - Spice)
     pub 当前线速度: f64,           // 上一帧 NMPC 输出并在物理世界执行后的真实线速度
+    // 🎯 里程碑 2.1：物理小脑绝对坐标与人类引力锚点
+    pub 当前_x: f64,
+    pub 当前_y: f64,
+    pub 当前_yaw: f64,
+    pub 引力_x: f64,
+    pub 引力_y: f64,
+    pub 引力_yaw: f64,
 }
 
 #[tokio::main]
@@ -35,8 +42,13 @@ async fn main() -> eyre::Result<()> {
         期望_x: 0.0,              // 默认无纵向排斥
         期望_y: 0.0,              // 默认无横向逃逸
         当前线速度: 0.0,
+        当前_x: 0.0,              // 🎯 物理小脑高频绝对坐标 X 初始值
+        当前_y: 0.0,              // 🎯 物理小脑高频绝对坐标 Y 初始值
+        当前_yaw: 0.0,            // 🎯 物理小脑高频绝对角度 Yaw 初始值
+        引力_x: 0.0,              // 🎯 慢系统人类引力锚点 X 初始值
+        引力_y: 0.0,              // 🎯 慢系统人类引力锚点 Y 初始值
+        引力_yaw: 0.0,            // 🎯 慢系统人类引力锚点 Yaw 初始值
     }));
-
     let 金库_规控 = 状态金库.clone();
 
     // ---------------------------------------------------------
@@ -80,17 +92,40 @@ async fn main() -> eyre::Result<()> {
             }
 
             // 将避障力带来的期望偏差，高频注入 NMPC 数学命题
+            let (当前_x, 当前_y, 当前_yaw) = {
+                let lock = 金库_规控.read().unwrap();
+                (lock.当前_x, lock.当前_y, lock.当前_yaw)
+            };
+            let (引力_x, 引力_y, 引力_yaw) = {
+                let lock = 金库_规控.read().unwrap();
+                (lock.引力_x, lock.引力_y, lock.引力_yaw)
+            };
+
+            // 1. 坐标系转换：将全局的“人类引力锚点”转换到小车当前的“局部坐标系”
+            let dx = 引力_x - 当前_x;
+            let dy = 引力_y - 当前_y;
+            let 局部目标_x = dx * 当前_yaw.cos() + dy * 当前_yaw.sin();
+            let 局部目标_y = -dx * 当前_yaw.sin() + dy * 当前_yaw.cos();
+            let 局部目标_yaw = 引力_yaw - 当前_yaw;
+
             let 目标线速度 = (0.3 + 期望_x).clamp(0.0, 0.3); // 限制在安全范围内
-            
             let mut 注入成功 = true;
+            
             for k in 0..=20 {
-                // 🎯 核心修复 2 (时域步长对齐)
-                // NMPC 的预测总时间为 1.0s，共 20 步，单步时间间隔为 0.05s！
-                // 必须使用 0.05 替换原版的 0.01，使参考轨迹的时域与求解器时域完全对齐！
-                // 这样小车线速度便能顺利释放到真实的 0.3 m/s，绝不发生动力爬行或滞后。
-                let ref_x = 目标线速度 * (k as f64 * 0.05);
+                let 比例 = (k as f64) / 20.0; // 0.0 到 1.0 的插值比例
                 
-                if let Err(e) = 规控大脑.设置参考轨迹点(k, ref_x, 期望_y, 0.0, 目标线速度) {
+                // 2. 基础引力线：完全复刻人类示教的走线
+                let 基础_ref_x = 局部目标_x * 比例;
+                let 基础_ref_y = 局部目标_y * 比例;
+                let 基础_ref_yaw = 局部目标_yaw * 比例;
+
+                // 3. 撒入调料 (Spice)：叠加青蛙眼的避障斥力
+                // 当没有障碍物时，期望_x 和 期望_y 为 0，小车完美走线；
+                // 当有障碍物时，斥力强行将参考轨迹推离危险区，实现“弹性橡皮筋”避障！
+                let spiced_ref_x = 基础_ref_x + (期望_x * 比例);
+                let spiced_ref_y = 基础_ref_y + (期望_y * 比例);
+
+                if let Err(e) = 规控大脑.设置参考轨迹点(k, spiced_ref_x, spiced_ref_y, 基础_ref_yaw, 目标线速度) {
                     eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
                     注入成功 = false;
                     break;
@@ -170,6 +205,24 @@ async fn main() -> eyre::Result<()> {
                         let mut lock = 状态金库.write().unwrap();
                         lock.期望_x = f_x; // 作用于 NMPC 的纵向参考速度
                         lock.期望_y = f_y; // 作用于 NMPC 的横向路径偏移
+                    }
+                }
+                else if id.as_str() == "odometry" {
+                    let arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    if arr.len() >= 3 {
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.当前_x = arr.value(0) as f64;
+                        lock.当前_y = arr.value(1) as f64;
+                        lock.当前_yaw = arr.value(2) as f64;
+                    }
+                }
+                else if id.as_str() == "human_prior" {
+                    let arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    if arr.len() >= 3 {
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.引力_x = arr.value(0) as f64;
+                        lock.引力_y = arr.value(1) as f64;
+                        lock.引力_yaw = arr.value(2) as f64;
                     }
                 }
             }

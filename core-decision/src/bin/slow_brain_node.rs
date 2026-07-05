@@ -8,19 +8,32 @@ use core_decision::topo_graph::node::{Pose, TopologicalNode};
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     println!("🧠 [慢系统] 语义大脑与拓扑建图节点已启动，等待 DORA 共享内存注入...");
-
     // 1. 接入 DORA 数据流网络
     let (mut _node, mut events) = DoraNode::init_from_env()?;
-
     // 2. 初始化全简体中文业务逻辑主权对象：拓扑地图
     let mut 拓扑地图 = TopologicalGraph::new();
     let mut 节点计数器 = 0;
+    
+    // 🎯 里程碑 1.1：建立物理小脑状态缓存
+    let mut 最新位姿 = Pose { x: 0.0, y: 0.0, yaw: 0.0 };
+    let mut 上一个节点_id: Option<u32> = None;
+    let mut 上一个位姿: Option<Pose> = None;
 
     // 3. 异步事件驱动循环
     while let Some(event) = events.recv_async().await {
         match event {
             Event::Input { id, data, .. } => {
-                if id.as_str() == "xfeat_features" {
+                // 🎯 接收 100Hz 物理小脑高频里程计
+                if id.as_str() == "odometry" {
+                    let odom_arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 Float32Array"))?;
+                    if odom_arr.len() >= 3 {
+                        最新位姿.x = odom_arr.value(0);
+                        最新位姿.y = odom_arr.value(1);
+                        最新位姿.yaw = odom_arr.value(2);
+                    }
+                }
+                else if id.as_str() == "xfeat_features" {
                     // 🎯 架构师对齐：利用 downcast_ref 将 DORA 共享内存中的二进制泛型指针直接还原为 StructArray [cite: 1.1.4]
                     let 结构体数组 = data.as_any()
                         .downcast_ref::<dora_node_api::arrow::array::StructArray>()
@@ -87,20 +100,56 @@ async fn main() -> eyre::Result<()> {
                     let 新地标 = TopologicalNode {
                         id: 节点计数器,
                         name: format!("自动探索地标_{}", 节点计数器),
-                        pose: Pose {
-                            x: 0.0,
-                            y: 0.0,
-                            yaw: 0.0,
-                        }, // 实际应由里程计/SLAM提供
+                        pose: 最新位姿.clone(), // 🎯 里程碑 1.1：注入真实物理坐标
                         descriptors,
                         keypoints,
                     };
 
-                    拓扑地图.add_node(新地标);
-                    println!(
-                        "🗺️ [慢系统] 拓扑地图已更新，当前脑海记忆节点数: {}",
-                        拓扑地图.nodes.len()
-                    );
+                    // 🎯 里程碑 1.2：计算相对距离，编织有向拓扑路网
+                    if let Some(prev_pose) = &上一个位姿 {
+                        let dx = 最新位姿.x - prev_pose.x;
+                        let dy = 最新位姿.y - prev_pose.y;
+                        let distance = (dx * dx + dy * dy).sqrt();
+                        
+                        // 空间稀疏化：只有当移动超过 1.0 米时，才记录新站牌，防止原地堆积导致内存爆炸
+                        if distance >= 1.0 {
+                            拓扑地图.add_node(新地标.clone());
+                            // 计算相对偏航角 (驶向目标节点的期望角度)
+                            let relative_yaw = dy.atan2(dx) - prev_pose.yaw;
+                            拓扑地图.add_edge(上一个节点_id.unwrap(), 节点计数器, distance, relative_yaw);
+                            
+                            println!(
+                                "🗺️ [慢系统] 新增拓扑节点 {}，建立有向边 {} -> {} (距离: {:.2}m, 相对偏航: {:.2}rad)", 
+                                节点计数器, 上一个节点_id.unwrap(), 节点计数器, distance, relative_yaw
+                            );
+                            
+                            上一个节点_id = Some(节点计数器);
+                            上一个位姿 = Some(最新位姿.clone());
+                            
+                            // 🎯 里程碑 2.2：向快大脑发射“人类引力锚点 (Human Prior)”
+                            // 将当前站牌的绝对坐标发送给 NMPC，引导其沿着人类示教路线行驶
+                            let prior_arr = dora_node_api::arrow::array::Float32Array::from(vec![
+                                最新位姿.x, 最新位姿.y, 最新位姿.yaw
+                            ]);
+                            if let Err(e) = _node.send_output(
+                                "human_prior".to_string().into(),
+                                dora_node_api::MetadataParameters::default(),
+                                prior_arr,
+                            ) {
+                                eprintln!("❌ 人类引力锚点发送失败: {}", e);
+                            }
+                            
+                        } else {
+                            // 距离太近，回滚计数器，丢弃该帧
+                            节点计数器 -= 1;
+                        }
+                    } else {
+                        // 录制第一个原点站牌
+                        拓扑地图.add_node(新地标.clone());
+                        上一个节点_id = Some(节点计数器);
+                        上一个位姿 = Some(最新位姿.clone());
+                        println!("🗺️ [慢系统] 建立拓扑原点节点 {}，坐标: ({:.2}, {:.2})", 节点计数器, 最新位姿.x, 最新位姿.y);
+                    }
                 }
             }
             Event::Stop(_) => {

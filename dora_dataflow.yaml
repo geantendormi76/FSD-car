@@ -22,6 +22,7 @@ nodes:
     outputs:
       - xfeat_features
       - obstacle_force
+      - odometry
 
   # ---------------------------------------------------------------
   # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
@@ -34,8 +35,12 @@ nodes:
       DORA_RUNTIME_TYPE_CHECK: warn
       LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
-      # 从本地共享内存极速订阅避障势场力
+      # 从本地共享内存极速订阅避障势场力 (Spice 调料)
       obstacle_force: isaac_sim_env/obstacle_force
+      # 订阅 100Hz 物理小脑里程计 (当前绝对坐标)
+      odometry: isaac_sim_env/odometry
+      # 订阅慢大脑发来的人类示教引力锚点 (Human Prior)
+      human_prior: slow_brain_mapper/human_prior
     outputs:
       # 输出运动指令契约 (v, w)
       - control_cmd
@@ -51,3 +56,5 @@ nodes:
     inputs:
       # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
       xfeat_features: isaac_sim_env/xfeat_features
+      # 订阅 100Hz 物理小脑高频里程计，治愈空间失忆症
+      odometry: isaac_sim_env/odometry

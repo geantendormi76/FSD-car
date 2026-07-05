@@ -20,6 +20,7 @@ nodes:
     outputs:
       - xfeat_features
       - obstacle_force
+      - odometry 
 
   # ---------------------------------------------------------------
   # ⌨️ 2. 键盘遥控源 (The Teleoperation Source)
@@ -42,5 +43,7 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      # 后台静静订阅无障碍图像流中的 XFeat 特征，自动构建拓扑链条
+      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
       xfeat_features: isaac_sim_env/xfeat_features
+      # 订阅 100Hz 物理小脑高频里程计，治愈空间失忆症
+      odometry: isaac_sim_env/odometry
