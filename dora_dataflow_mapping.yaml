@@ -1,0 +1,46 @@
+# =================================================================
+# 🛡️ FSD-car V3.0: 纯视觉建图阶段零拷贝数据流拓扑 (Mapping Mode)
+# 架构哲学: 键盘接管控制权，慢系统在后台高频记录 XFeat 静态站牌
+# =================================================================
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 物理仿真界 - 加载纯净版赛道
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    path: /home/zhz/isaacsim/python.sh
+    args: simulation-env/isaac_dora_node.py
+    env:
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
+      LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
+    inputs:
+      # 🎯 核心并网切换：控制源直接绑定为键盘遥控器，绕过规控大脑！
+      control_cmd: keyboard_teleop/control_cmd
+    outputs:
+      - xfeat_features
+      - obstacle_force
+
+  # ---------------------------------------------------------------
+  # ⌨️ 2. 键盘遥控源 (The Teleoperation Source)
+  # ---------------------------------------------------------------
+  - id: keyboard_teleop
+    path: /home/zhz/isaacsim/python.sh
+    args: simulation-env/keyboard_teleop.py
+    inputs:
+      # 🛡️ 工业级守卫：注入时钟滴答心跳，防止 DORA 因零输入流而误判，提前发送 STOP 信号拆除并网！
+      tick: dora/timer/millis/100
+    outputs:
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🧠 3. 慢系统建图大脑 - 执行 XFeat 特征零拷贝归档并写盘
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      # 后台静静订阅无障碍图像流中的 XFeat 特征，自动构建拓扑链条
+      xfeat_features: isaac_sim_env/xfeat_features

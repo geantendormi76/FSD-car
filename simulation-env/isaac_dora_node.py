@@ -194,7 +194,20 @@ def main():
     dora_node = Node()
 
     fsd_assets_dir = "/home/zhz/fsd-car/assets"
-    usd_path = os.path.join(fsd_assets_dir, "fsd_car_racetrack.usd")
+    # 🛡️ 路径翻译官：实现 clean 净化变体的自适应检测与零硬编码自愈装载
+    clean_usd_name = "fsd_car_racetrack_clean.usd"
+    default_usd_name = "fsd_car_racetrack.usd"
+    
+    clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)
+    default_usd_path = os.path.join(fsd_assets_dir, default_usd_name)
+    
+    if os.path.exists(clean_usd_path):
+        usd_path = clean_usd_path
+        print(f"🟢 [路径翻译官] 成功检测到无障碍净化变体 Stage: {clean_usd_name}")
+    else:
+        usd_path = default_usd_path
+        print(f"⚠️ [路径翻译官] 未检测到净化变体，自适应装载默认 Stage: {default_usd_name}")
+        
     if not os.path.exists(usd_path):
         print(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
         sys.exit(1)
