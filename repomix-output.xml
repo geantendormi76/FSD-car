@@ -92,9 +92,12 @@ showcase/
 simulation-env/
   generate_solver.py
   isaac_dora_node.py
+  keyboard_teleop.py
   nmpc_model.py
+  teleop_sender.py
 .gitignore
 Cargo.toml
+diagnose_fsd.py
 dora_dataflow.yaml
 README.md
 test_port_lock.py
@@ -662,6 +665,195 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("========================================================");
     Ok(())
 }
+</file>
+
+<file path="simulation-env/keyboard_teleop.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import socket
+import struct
+import time
+import pyarrow as pa
+from dora import Node
+def main():
+    # 1. 接入 DORA 拓扑网关
+    print("💎 [DORA 接收端] DORA 零拷贝键盘遥控并网通道激活...")
+    dora_node = Node()
+    # 2. 物理绑定非阻塞式 UDP 监听套接字
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 5005))
+    sock.setblocking(False)  # 🛡️ 架构师自愈：设为完全非阻塞，避免 socket 锁死 DORA 主线程
+    print("========================================================")
+    print("🛰️  NEXUS - 键盘遥控桥接接收节点 (DORA Node) 已启动")
+    print("正在监听网络套接字: 127.0.0.1:5005 (非阻塞高速通道)")
+    print("========================================================")
+    try:
+        while True:
+            # A. 尝试从 UDP 缓冲区非阻塞式读取遥控数据
+            try:
+                data, addr = sock.recvfrom(1024)
+                if len(data) == 8:
+                    # 极速解析 IEEE 754 32位连续浮点数 [v, w]
+                    v, w = struct.unpack('ff', data)
+                    # 严格按照 FSD 运动指令契约打包为 Arrow Float32 数组广播
+                    arrow_cmd = pa.array([v, w], type=pa.float32())
+                    dora_node.send_output("control_cmd", arrow_cmd)
+            except BlockingIOError:
+                pass  # 缓冲区无数据，平滑过渡
+            # B. 🛡️ 架构师自愈：使用 DORA 官方标准的非阻塞 try_recv 轮询系统生命周期事件
+            event = dora_node.next(0.002)
+            if event is not None:
+                if event["type"] == "STOP":
+                    print("\n🛑 [DORA 接收端] 接收到 DORA 停止信号，安全下线。")
+                    break
+            # 维持 500Hz 的超高频轮询，保护 CPU 不发生空转
+            time.sleep(0.002)
+    except Exception as e:
+        print(f"\n❌ [DORA 接收端] 发生异常崩溃: {e}")
+    finally:
+        sock.close()
+        print("🔌 [DORA 接收端] UDP 套接字已关闭，节点安全卸载。")
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="simulation-env/teleop_sender.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import sys
+import select
+import termios
+import tty
+import time
+import socket
+import struct
+import os
+def get_key(settings):
+    # 此处运行于前台物理交互终端，具备合法的物理 TTY 设备权限
+    tty.setraw(sys.stdin.fileno())
+    rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
+    if rlist:
+        key = sys.stdin.read(1)
+    else:
+        key = ''
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    return key
+def main():
+    settings = termios.tcgetattr(sys.stdin)
+    # 建立 UDP 网络客户端
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    dest_addr = ("127.0.0.1", 5005)
+    v = 0.0  # 线速度 (m/s)
+    w = 0.0  # 角速度 (rad/s)
+    v_step = 0.05
+    w_step = 0.1
+    max_v = 0.3
+    max_w = 0.6
+    print("========================================================")
+    print("🛰️  NEXUS - 本地 TTY 键盘遥控发送端已启动")
+    print("控制手势 (请保持当前键盘控制台前台置顶 Focus 状态):")
+    print("  W : 推进加速          S : 减速/后退")
+    print("  A : 左转弯            D : 右转弯")
+    print("  Space (空格键) : 紧急停障")
+    print("  Q : 退出键盘控制端")
+    print("========================================================")
+    try:
+        while True:
+            key = get_key(settings)
+            if key == 'w' or key == 'W':
+                v = 0.45  # 按住 W：直接靶向推进航巡速度 (0.25 m/s)
+            elif key == 's' or key == 'S':
+                v = -0.15 # 按住 S：倒车速度 (-0.15 m/s)
+            elif key == 'a' or key == 'A':
+                w = 0.45  # 按住 A：靶向左转角速度 (0.45 rad/s)
+            elif key == 'd' or key == 'D':
+                w = -0.45 # 按住 D：靶向右转角速度 (-0.45 rad/s)
+            elif key == ' ':
+                v = 0.0
+                w = 0.0
+            elif key == 'q' or key == 'Q':
+                print("\n🛑 退出发送端。")
+                break
+            else:
+                # 🛡️ 物理主动衰减：无任何按键按下，代表手部已松开
+                # 摩擦力线性衰减线速度，模拟惯性滑行停止
+                if v > 0:
+                    v = max(0.0, v - 0.04)
+                elif v < 0:
+                    v = min(0.0, v + 0.04)
+                # 偏航角速度极速衰减，实现“车头自回中”
+                if w > 0:
+                    w = max(0.0, w - 0.12)
+                elif w < 0:
+                    w = min(0.0, w + 0.12)
+            # 持续向 DORA 广播当前的运动状态（维持 DORA 50Hz 物理控制节拍，消除物理滑移）
+            print(f"\r[遥控指令] 线速度 cmd_v: {v:.2f} m/s | 角速度 cmd_w: {w:.2f} rad/s    ", end="", flush=True)
+            packed_data = struct.pack('ff', v, w)
+            sock.sendto(packed_data, dest_addr)
+            time.sleep(0.02) # 50Hz 物理闭环节拍
+    except Exception as e:
+        print(f"\n❌ [发送端] 发生错误: {e}")
+    finally:
+        # 退出前向 DORA 发送清零刹车数据
+        packed_data = struct.pack('ff', 0.0, 0.0)
+        sock.sendto(packed_data, dest_addr)
+        sock.close()
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        print("\n🔌 [发送端] 控制套接字关闭，退出交互。")
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="diagnose_fsd.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import os
+import socket
+import sys
+def check_usd_assets():
+    assets_dir = "/home/zhz/fsd-car/assets"
+    print(f"📁 [探针] 扫描资产目录: {assets_dir}")
+    if os.path.exists(assets_dir):
+        files = os.listdir(assets_dir)
+        usd_files = [f for f in files if f.endswith(".usd")]
+        for f in usd_files:
+            print(f"  -> Found USD Stage: {f}")
+        return usd_files
+    else:
+        print("  -> ❌ 资产目录不存在")
+        return []
+def check_udp_port(port):
+    print(f"🔌 [探针] 测试本地端口 {port} 绑定状态...")
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        print(f"  -> 🟢 UDP 端口 {port} 未被占用，可正常进行网络通信。")
+    except Exception as e:
+        print(f"  -> ❌ UDP 端口 {port} 绑定失败 (可能被占用或残留): {e}")
+    finally:
+        s.close()
+def audit_isaac_dora_node_code():
+    node_path = "/home/zhz/fsd-car/simulation-env/isaac_dora_node.py"
+    print(f"🧠 [探针] 审计物理代理路径: {node_path}")
+    if os.path.exists(node_path):
+        with open(node_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            # 检查硬编码的 USD 路径
+            if "fsd_car_racetrack.usd" in content:
+                print("  -> ⚠️ 发现病灶：`isaac_dora_node.py` 内部锁死了硬编码路径 'fsd_car_racetrack.usd'，未进行 clean 变体的自适应检测！")
+            else:
+                print("  -> 🟢 未发现硬编码赛道。")
+    else:
+        print("  -> ❌ 找不到物理代理节点代码")
+print("========================================================")
+print("🛰️  NEXUS - FSD-car 自动化诊断探针已启动...")
+print("========================================================")
+check_usd_assets()
+check_udp_port(5005)
+audit_isaac_dora_node_code()
+print("========================================================")
 </file>
 
 <file path="test_port_lock.py">
@@ -2750,300 +2942,6 @@ fn main() {
 }
 </file>
 
-<file path="simulation-env/isaac_dora_node.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-=================================================================
-🛡️ FSD-car V4.1: 仿真环境物理代理节点 (Ubuntu 26.04 绝对确定性版)
-设计哲学: Headless 离屏 | 100Hz 绝对物理时钟锁定 | 共享内存直通
-核心规范: Isaac Sim 2026 Core API (SimulationContext)
-=================================================================
-"""
-import os
-import sys
-import struct
-import numpy as np
-import cv2
-import torch
-import torch.nn.functional as F
-import onnxruntime as ort
-import pyarrow as pa
-from dora import Node
-# ---------------------------------------------------------------------------
-# 🛡️ 物理资产与环境变量自愈
-# ---------------------------------------------------------------------------
-# 🛡️ SOTA 核心：必须在 SimulationApp 实例化前，强行将底层 RTX 离屏相机渲染管道唤醒！
-os.environ["ENABLE_CAMERAS"] = "1"
-os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
-def load_env_manually():
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    parts = line.split("=", 1)
-                    if len(parts) == 2:
-                        os.environ[parts[0].strip()] = parts[1].strip()
-load_env_manually()
-# ---------------------------------------------------------------------------
-# 🛡️ NVIDIA Isaac Sim 2026 启动哨兵 (防管道死锁版)
-# ---------------------------------------------------------------------------
-try:
-    # 🛡️ 核心修复 1：通过 sys.argv 底层注入静默参数，防止海量日志塞满 DORA 管道！
-    sys.argv.extend(["--/log/level=error", "--/log/fileLogLevel=error"])
-    from isaacsim import SimulationApp
-    simulation_app = SimulationApp({
-        "headless": False,  
-    })
-    import omni
-    from pxr import UsdPhysics
-    # 🛡️ 核心修复 2：使用 2026 核心 API，World 继承自 SimulationContext 并提供 scene 管理
-    from isaacsim.core.api import World
-    from isaacsim.core.prims import Articulation
-    from isaacsim.core.utils.stage import open_stage
-    # 🛡️ SOTA 核心：引入 Replicator 离屏标注组件
-    import omni.replicator.core as rep
-    print("✅ [物理代理] NVIDIA Isaac Sim 2026 核心引擎启动成功！(Headless 模式)")
-except ImportError as e:
-    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！报错: {e}")
-    sys.exit(1)
-# ===========================================================================
-# 🐸 仿生青蛙眼不对称时空感受野（ERF/IRF）算法引擎
-# ===========================================================================
-class BionicFrogEye:
-    def __init__(self, width=640, height=480):
-        self.w = width
-        self.h = height
-        # 🛡️ 2026 SOTA 优化：引入历史帧滑动队列 (时间跨度为 5 帧，即 50ms 差分窗口)
-        # 完美解决 100Hz 高频采样下相邻帧位移过小、差分被门限熔断的问题！
-        self.frame_buffer = []
-        self.buffer_size = 5
-        self.erf = np.zeros((height, width), dtype=np.float32)
-        self.irf = np.zeros((height, width), dtype=np.float32)
-        self.alpha_erf = 0.4
-        self.alpha_irf = 0.85
-        self.beta = 0.5
-        # 适当调低门限至 10.0，增强对微观边缘运动的敏感度
-        self.event_threshold = 10.0
-        y_indices, x_indices = np.indices((self.h, self.w))
-        self.x_coords = x_indices.astype(np.float32)
-        self.closeness_weight = (y_indices / float(self.h)) ** 2
-    def process_frame(self, frame_rgb):
-        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        # 维持滑动窗口
-        self.frame_buffer.append(gray)
-        if len(self.frame_buffer) < self.buffer_size:
-            return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-        # 提取 50ms 前的历史帧进行差分计算，积累物理运动标量
-        history_frame = self.frame_buffer.pop(0)
-        diff = cv2.absdiff(history_frame, gray)
-        _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
-        events_rf = cv2.GaussianBlur(events, (21, 21), 0)
-        self.erf = self.erf * self.alpha_erf + events_rf
-        self.irf = self.irf * self.alpha_irf + events_rf
-        net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
-        self.prev_gray = gray
-        weighted_energy = net_energy * self.closeness_weight
-        total_energy = np.sum(weighted_energy)
-        if total_energy > 15.0:
-            x_c = np.sum(self.x_coords * weighted_energy) / total_energy
-            dx = (x_c - self.w / 2.0) / (self.w / 2.0)
-            F_y = -dx * 1.5
-            F_x = - (total_energy / (self.w * self.h)) * 5.0
-        else:
-            F_x, F_y = 0.0, 0.0
-        heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
-        return F_x, F_y, heatmap
-# ====================================================
-#  📸 XFeat 局部高精度特征提取引擎
-# ====================================================
-class XFeatEngine:
-    def __init__(self, model_path):
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        self.session = ort.InferenceSession(model_path, providers=providers)
-        self.input_name = self.session.get_inputs()[0].name
-        print(f"✓ [XFeat] 神经网络推理引擎装载完毕，物理计算提供商: {self.session.get_providers()}")
-    def extract(self, frame_rgb, top_k=200):
-        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        pad_y = (640 - 480) // 2
-        padded = cv2.copyMakeBorder(gray, pad_y, 640 - 480 - pad_y, 0, 0, cv2.BORDER_CONSTANT, value=0)
-        tensor = torch.from_numpy(padded).float().unsqueeze(0).unsqueeze(0)
-        mean, std = tensor.mean(), tensor.std()
-        tensor = (tensor - mean) / (std + 1e-6)
-        outs = self.session.run(None, {self.input_name: tensor.numpy()})
-        desc, scores, rel = [torch.from_numpy(x) for x in outs]
-        if desc.shape[1] == 80 and desc.shape[2] == 80:
-            desc = desc.permute(0, 3, 1, 2)
-        if scores.shape[1] == 80 and scores.shape[2] == 80:
-            scores = scores.permute(0, 3, 1, 2)
-        if len(rel.shape) == 4 and rel.shape[3] == 1 and rel.shape[1] == 80 and rel.shape[2] == 80:
-            rel = rel.permute(0, 3, 1, 2)
-        scores = F.softmax(scores, dim=1)[:, :-1, :, :]
-        scores = F.pixel_shuffle(scores, 8)
-        rel = F.interpolate(rel, size=(640, 640), mode='bilinear', align_corners=False)
-        conf = scores * rel
-        conf_nms = F.max_pool2d(conf, kernel_size=5, stride=1, padding=2)
-        mask = (conf == conf_nms) & (conf > 0.05)
-        conf_flat = conf[mask]
-        if len(conf_flat) == 0:
-            return None
-        topk = min(top_k, len(conf_flat))
-        scores_k, indices = torch.topk(conf_flat, topk)
-        y, x = torch.where(mask[0, 0])
-        y, x = y[indices], x[indices]
-        grid_x = (x.float() / 639.0) * 2.0 - 1.0
-        grid_y = (y.float() / 639.0) * 2.0 - 1.0
-        grid = torch.stack([grid_x, grid_y], dim=1).unsqueeze(0).unsqueeze(2)
-        desc_sampled = F.grid_sample(desc, grid, mode='bilinear', align_corners=False)
-        desc_sampled = desc_sampled.squeeze(0).squeeze(2).t()
-        desc_sampled = F.normalize(desc_sampled, p=2, dim=1)
-        y = y.float() - pad_y
-        x = x.float()
-        valid = (y >= 0) & (y < 480)
-        x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
-        x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
-        # 🎯 架构师升维：构建 Arrow StructArray，实现 100% 零拷贝内存布局
-        x_arr = pa.array(x_np, type=pa.float32())
-        y_arr = pa.array(y_np, type=pa.float32())
-        s_arr = pa.array(s_np, type=pa.float32())
-        # 将 (N, 64) 的描述子展平后构建为 FixedSizeListArray
-        d_flat = pa.array(d_np.flatten(), type=pa.float32())
-        d_arr = pa.FixedSizeListArray.from_arrays(d_flat, 64)
-        struct_arr = pa.StructArray.from_arrays(
-            [x_arr, y_arr, s_arr, d_arr],
-            names=['x', 'y', 'score', 'descriptor']
-        )
-        return struct_arr
-# ===========================================================================
-#  🚀 DORA 原生节点主循环与 2026 确定性仿真执行器
-# ===========================================================================
-def main():
-    print("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
-    dora_node = Node()
-    fsd_assets_dir = "/home/zhz/fsd-car/assets"
-    usd_path = os.path.join(fsd_assets_dir, "fsd_car_racetrack.usd")
-    if not os.path.exists(usd_path):
-        print(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
-        sys.exit(1)
-    open_stage(usd_path=usd_path)
-    # 🛡️ 核心修复 3：使用 World (继承自 SimulationContext) 锁定 100Hz 绝对时钟并管理 Scene
-    world = World(
-        physics_dt=0.01, 
-        rendering_dt=0.01, 
-        backend="numpy"
-    )
-    # 🎯 架构师级并网：启用 2026 级确定性时间环路运行器，强制将 Omniverse Kit 的时钟线、渲染主循环、物理步长锁死在 100Hz 确定性步长下 [cite: 2.3.1]
-    from isaacsim.core.rendering_manager import RenderingManager
-    RenderingManager.set_dt(0.01)
-    car_path = "/Root/jetbot"
-    stage = omni.usd.get_context().get_stage()
-    if not stage.GetPrimAtPath(car_path):
-        print(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
-        sys.exit(1)
-    for prim in stage.Traverse():
-        if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
-            drive = UsdPhysics.DriveAPI.Get(prim, "angular")
-            if not drive:
-                drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
-            drive.CreateStiffnessAttr(0.0)
-            drive.CreateDampingAttr(1e5)
-    car = Articulation(prim_paths_expr=car_path, name="jetbot")
-    world.scene.add(car)
-    camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
-    # 🛡️ SOTA 重构：直接将小车原生的 Camera 节点绑定为独立的离屏渲染产品 (Render Product)
-    print(f"🎯 [物理主权] 正在将 {camera_path} 绑定为离屏 Render Product...")
-    render_product = rep.create.render_product(camera_path, (640, 480))
-    # 获取并注册 GPU 直接内存标注器 [cite: 1.1.4]
-    rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
-    rgb_annotator.attach([render_product])
-    print("✅ [物理主权] Replicator 离屏标注器并网完成！")
-    xfeat_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
-    if not os.path.exists(xfeat_model_path):
-        print(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
-        sys.exit(1)
-    xfeat_engine = XFeatEngine(xfeat_model_path)
-    frog_eye = BionicFrogEye(640, 480)
-    world.reset()
-    world.play()
-    # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
-    print("⏳ [物理代理] 正在进行离屏 RTX 渲染管道硬件预热...")
-    for _ in range(60):
-        world.step(render=True)
-    print("✅ [物理代理] RTX 渲染管道预热完毕，高保真图像流并网！")
-    print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
-    L = 0.1125
-    R = 0.03
-    tick = 0
-    v_cmd = 0.0
-    w_cmd = 0.0
-    try:
-        while simulation_app.is_running():
-            # 🛡️ 绝对时钟步进：每次严格推进 0.01s
-            world.step(render=True)
-            tick += 1
-            # B. 🛡️ SOTA 核心：直接从 Replicator 标注器中获取纯净的内存像素 [cite: 1.1.4]
-            # 剥离不兼容 headless 且存在多余包装的 camera.get_rgb()
-            rgb_raw = rgb_annotator.get_data()
-            if rgb_raw is not None:
-                rgb_frame = rgb_raw
-                # Replicator 吐出的是带 Alpha 通道的 (480, 640, 4) 矩阵
-                # 极速剥离 Alpha 通道，转为算法标准的 3 通道 RGB [cite: 1.1.4]
-                if len(rgb_frame.shape) == 3 and rgb_frame.shape[2] == 4:
-                    rgb_frame = rgb_frame[:, :, :3]
-                if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
-                    rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
-                if rgb_frame.size > 0:
-                    F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                    # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
-                    arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
-                    dora_node.send_output("obstacle_force", arrow_obstacle_force)
-                    if tick % 100 == 0:
-                        arrow_xfeat_features = xfeat_engine.extract(rgb_frame, top_k=200)
-                        if arrow_xfeat_features is not None and len(arrow_xfeat_features) > 0:
-                            dora_node.send_output("xfeat_features", arrow_xfeat_features)
-            event = dora_node.next(timeout=0.001)
-            if event is not None:
-                ev_type = event["type"]
-                if ev_type == "INPUT":
-                    if event["id"] == "control_cmd":
-                        # 🎯 架构师升维：直接将 Arrow 数组映射为 numpy 视图，零拷贝读取
-                        cmd_arr = event["value"].to_numpy()
-                        if len(cmd_arr) == 2:
-                            v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
-                elif ev_type == "STOP":
-                    print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
-                    break
-            # 🛡️ 极性自愈：移除右轮公式前的负号。
-            # 使 DORA 的 v_cmd=0.3 完美映射为左右轮同向正转（同号 10.0 rad/s），驱动小车直线向前！
-            v_left = (v_cmd - w_cmd * L / 2.0) / R
-            v_right = (v_cmd + w_cmd * L / 2.0) / R
-            car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
-            # 📊 2026 工业级数值探针：每 100 步输出一次全量高保真遥测数据，消除主观观测盲区
-            if tick % 100 == 0:
-                print(
-                    f"[物理代理 100Hz 遥测] 步数: {tick:<6} | "
-                    f"仿生眼避障力: F_x={F_x:>6.3f}, F_y={F_y:>6.3f} | "
-                    f"DORA 规控指令: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s | "
-                    f"电调靶向速度: Left={v_left:>6.2f} rad/s, Right={v_right:>6.2f} rad/s"
-                )
-    except KeyboardInterrupt:
-        print("\n🛑 用户手动中断，优雅下线。")
-    finally:
-        try:
-            car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
-            world.step(render=True)
-            world.stop()
-        except Exception:
-            pass
-        simulation_app.close()
-        print("🔌 物理仿真界代理已安全卸载。")
-if __name__ == "__main__":
-    main()
-</file>
-
 <file path="dora_dataflow.yaml">
 # =================================================================
 # 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
@@ -3326,6 +3224,310 @@ mod tests {
         println!("  3. 性能预估：解析 1000 个特征点的耗时将从之前的数毫秒暴降至纳秒级 (O(1) 复杂度)。");
     }
 }
+</file>
+
+<file path="simulation-env/isaac_dora_node.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+=================================================================
+🛡️ FSD-car V4.1: 仿真环境物理代理节点 (Ubuntu 26.04 绝对确定性版)
+设计哲学: Headless 离屏 | 100Hz 绝对物理时钟锁定 | 共享内存直通
+核心规范: Isaac Sim 2026 Core API (SimulationContext)
+=================================================================
+"""
+import os
+import sys
+import struct
+import numpy as np
+import cv2
+import torch
+import torch.nn.functional as F
+import onnxruntime as ort
+import pyarrow as pa
+from dora import Node
+# ---------------------------------------------------------------------------
+# 🛡️ 物理资产与环境变量自愈
+# ---------------------------------------------------------------------------
+# 🛡️ SOTA 核心：必须在 SimulationApp 实例化前，强行将底层 RTX 离屏相机渲染管道唤醒！
+os.environ["ENABLE_CAMERAS"] = "1"
+os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+def load_env_manually():
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    parts = line.split("=", 1)
+                    if len(parts) == 2:
+                        os.environ[parts[0].strip()] = parts[1].strip()
+load_env_manually()
+# ---------------------------------------------------------------------------
+# 🛡️ NVIDIA Isaac Sim 2026 启动哨兵 (防管道死锁版)
+# ---------------------------------------------------------------------------
+try:
+    # 🛡️ 核心修复 1：通过 sys.argv 底层注入静默参数，防止海量日志塞满 DORA 管道！
+    sys.argv.extend(["--/log/level=error", "--/log/fileLogLevel=error"])
+    from isaacsim import SimulationApp
+    simulation_app = SimulationApp({
+        "headless": False,  
+    })
+    import omni
+    from pxr import UsdPhysics
+    # 🛡️ 核心修复 2：使用 2026 核心 API，World 继承自 SimulationContext 并提供 scene 管理
+    from isaacsim.core.api import World
+    from isaacsim.core.prims import Articulation
+    from isaacsim.core.utils.stage import open_stage
+    # 🛡️ SOTA 核心：引入 Replicator 离屏标注组件
+    import omni.replicator.core as rep
+    print("✅ [物理代理] NVIDIA Isaac Sim 2026 核心引擎启动成功！(Headless 模式)")
+except ImportError as e:
+    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！报错: {e}")
+    sys.exit(1)
+# ===========================================================================
+# 🐸 仿生青蛙眼不对称时空感受野（ERF/IRF）算法引擎
+# ===========================================================================
+class BionicFrogEye:
+    def __init__(self, width=640, height=480):
+        self.w = width
+        self.h = height
+        # 🛡️ 2026 SOTA 优化：引入历史帧滑动队列 (时间跨度为 5 帧，即 50ms 差分窗口)
+        # 完美解决 100Hz 高频采样下相邻帧位移过小、差分被门限熔断的问题！
+        self.frame_buffer = []
+        self.buffer_size = 5
+        self.erf = np.zeros((height, width), dtype=np.float32)
+        self.irf = np.zeros((height, width), dtype=np.float32)
+        self.alpha_erf = 0.4
+        self.alpha_irf = 0.85
+        self.beta = 0.5
+        # 适当调低门限至 10.0，增强对微观边缘运动的敏感度
+        self.event_threshold = 10.0
+        y_indices, x_indices = np.indices((self.h, self.w))
+        self.x_coords = x_indices.astype(np.float32)
+        self.closeness_weight = (y_indices / float(self.h)) ** 2
+    def process_frame(self, frame_rgb):
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        # 维持滑动窗口
+        self.frame_buffer.append(gray)
+        if len(self.frame_buffer) < self.buffer_size:
+            return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
+        # 提取 50ms 前的历史帧进行差分计算，积累物理运动标量
+        history_frame = self.frame_buffer.pop(0)
+        diff = cv2.absdiff(history_frame, gray)
+        _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
+        events_rf = cv2.GaussianBlur(events, (21, 21), 0)
+        self.erf = self.erf * self.alpha_erf + events_rf
+        self.irf = self.irf * self.alpha_irf + events_rf
+        net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
+        self.prev_gray = gray
+        weighted_energy = net_energy * self.closeness_weight
+        total_energy = np.sum(weighted_energy)
+        if total_energy > 15.0:
+            x_c = np.sum(self.x_coords * weighted_energy) / total_energy
+            dx = (x_c - self.w / 2.0) / (self.w / 2.0)
+            F_y = -dx * 1.5
+            F_x = - (total_energy / (self.w * self.h)) * 5.0
+        else:
+            F_x, F_y = 0.0, 0.0
+        heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
+        return F_x, F_y, heatmap
+# ====================================================
+#  📸 XFeat 局部高精度特征提取引擎
+# ====================================================
+class XFeatEngine:
+    def __init__(self, model_path):
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.session = ort.InferenceSession(model_path, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        print(f"✓ [XFeat] 神经网络推理引擎装载完毕，物理计算提供商: {self.session.get_providers()}")
+    def extract(self, frame_rgb, top_k=200):
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        pad_y = (640 - 480) // 2
+        padded = cv2.copyMakeBorder(gray, pad_y, 640 - 480 - pad_y, 0, 0, cv2.BORDER_CONSTANT, value=0)
+        tensor = torch.from_numpy(padded).float().unsqueeze(0).unsqueeze(0)
+        mean, std = tensor.mean(), tensor.std()
+        tensor = (tensor - mean) / (std + 1e-6)
+        outs = self.session.run(None, {self.input_name: tensor.numpy()})
+        desc, scores, rel = [torch.from_numpy(x) for x in outs]
+        if desc.shape[1] == 80 and desc.shape[2] == 80:
+            desc = desc.permute(0, 3, 1, 2)
+        if scores.shape[1] == 80 and scores.shape[2] == 80:
+            scores = scores.permute(0, 3, 1, 2)
+        if len(rel.shape) == 4 and rel.shape[3] == 1 and rel.shape[1] == 80 and rel.shape[2] == 80:
+            rel = rel.permute(0, 3, 1, 2)
+        scores = F.softmax(scores, dim=1)[:, :-1, :, :]
+        scores = F.pixel_shuffle(scores, 8)
+        rel = F.interpolate(rel, size=(640, 640), mode='bilinear', align_corners=False)
+        conf = scores * rel
+        conf_nms = F.max_pool2d(conf, kernel_size=5, stride=1, padding=2)
+        mask = (conf == conf_nms) & (conf > 0.05)
+        conf_flat = conf[mask]
+        if len(conf_flat) == 0:
+            return None
+        topk = min(top_k, len(conf_flat))
+        scores_k, indices = torch.topk(conf_flat, topk)
+        y, x = torch.where(mask[0, 0])
+        y, x = y[indices], x[indices]
+        grid_x = (x.float() / 639.0) * 2.0 - 1.0
+        grid_y = (y.float() / 639.0) * 2.0 - 1.0
+        grid = torch.stack([grid_x, grid_y], dim=1).unsqueeze(0).unsqueeze(2)
+        desc_sampled = F.grid_sample(desc, grid, mode='bilinear', align_corners=False)
+        desc_sampled = desc_sampled.squeeze(0).squeeze(2).t()
+        desc_sampled = F.normalize(desc_sampled, p=2, dim=1)
+        y = y.float() - pad_y
+        x = x.float()
+        valid = (y >= 0) & (y < 480)
+        x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
+        x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
+        # 🎯 架构师升维：构建 Arrow StructArray，实现 100% 零拷贝内存布局
+        x_arr = pa.array(x_np, type=pa.float32())
+        y_arr = pa.array(y_np, type=pa.float32())
+        s_arr = pa.array(s_np, type=pa.float32())
+        # 将 (N, 64) 的描述子展平后构建为 FixedSizeListArray
+        d_flat = pa.array(d_np.flatten(), type=pa.float32())
+        d_arr = pa.FixedSizeListArray.from_arrays(d_flat, 64)
+        struct_arr = pa.StructArray.from_arrays(
+            [x_arr, y_arr, s_arr, d_arr],
+            names=['x', 'y', 'score', 'descriptor']
+        )
+        return struct_arr
+# ===========================================================================
+#  🚀 DORA 原生节点主循环与 2026 确定性仿真执行器
+# ===========================================================================
+def main():
+    print("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
+    dora_node = Node()
+    fsd_assets_dir = "/home/zhz/fsd-car/assets"
+    # 🛡️ 路径翻译官：实现 clean 净化变体的自适应检测与零硬编码自愈装载
+    clean_usd_name = "fsd_car_clean1.usd"
+    default_usd_name = "fsd_car_racetrack.usd"
+    clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)
+    default_usd_path = os.path.join(fsd_assets_dir, default_usd_name)
+    if os.path.exists(clean_usd_path):
+        usd_path = clean_usd_path
+        print(f"🟢 [路径翻译官] 成功检测到无障碍净化变体 Stage: {clean_usd_name}")
+    else:
+        usd_path = default_usd_path
+        print(f"⚠️ [路径翻译官] 未检测到净化变体，自适应装载默认 Stage: {default_usd_name}")
+    if not os.path.exists(usd_path):
+        print(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
+        sys.exit(1)
+    open_stage(usd_path=usd_path)
+    # 🛡️ 核心修复 3：使用 World (继承自 SimulationContext) 锁定 100Hz 绝对时钟并管理 Scene
+    world = World(
+        physics_dt=0.01, 
+        rendering_dt=0.01, 
+        backend="numpy"
+    )
+    # 🎯 架构师级并网：启用 2026 级确定性时间环路运行器，强制将 Omniverse Kit 的时钟线、渲染主循环、物理步长锁死在 100Hz 确定性步长下 [cite: 2.3.1]
+    from isaacsim.core.rendering_manager import RenderingManager
+    RenderingManager.set_dt(0.01)
+    car_path = "/Root/jetbot"
+    stage = omni.usd.get_context().get_stage()
+    if not stage.GetPrimAtPath(car_path):
+        print(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
+        sys.exit(1)
+    for prim in stage.Traverse():
+        if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
+            drive = UsdPhysics.DriveAPI.Get(prim, "angular")
+            if not drive:
+                drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
+            drive.CreateStiffnessAttr(0.0)
+            drive.CreateDampingAttr(1e5)
+    car = Articulation(prim_paths_expr=car_path, name="jetbot")
+    world.scene.add(car)
+    camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
+    # 🛡️ SOTA 重构：直接将小车原生的 Camera 节点绑定为独立的离屏渲染产品 (Render Product)
+    print(f"🎯 [物理主权] 正在将 {camera_path} 绑定为离屏 Render Product...")
+    render_product = rep.create.render_product(camera_path, (640, 480))
+    # 获取并注册 GPU 直接内存标注器 [cite: 1.1.4]
+    rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
+    rgb_annotator.attach([render_product])
+    print("✅ [物理主权] Replicator 离屏标注器并网完成！")
+    xfeat_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
+    if not os.path.exists(xfeat_model_path):
+        print(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
+        sys.exit(1)
+    xfeat_engine = XFeatEngine(xfeat_model_path)
+    frog_eye = BionicFrogEye(640, 480)
+    world.reset()
+    world.play()
+    # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
+    print("⏳ [物理代理] 正在进行离屏 RTX 渲染管道硬件预热...")
+    for _ in range(60):
+        world.step(render=True)
+    print("✅ [物理代理] RTX 渲染管道预热完毕，高保真图像流并网！")
+    print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
+    L = 0.1125
+    R = 0.03
+    tick = 0
+    v_cmd = 0.0
+    w_cmd = 0.0
+    try:
+        while simulation_app.is_running():
+            # 🛡️ 绝对时钟步进：每次严格推进 0.01s
+            world.step(render=True)
+            tick += 1
+            # B. 🛡️ SOTA 核心：直接从 Replicator 标注器中获取纯净的内存像素 [cite: 1.1.4]
+            # 剥离不兼容 headless 且存在多余包装的 camera.get_rgb()
+            rgb_raw = rgb_annotator.get_data()
+            if rgb_raw is not None:
+                rgb_frame = rgb_raw
+                # Replicator 吐出的是带 Alpha 通道的 (480, 640, 4) 矩阵
+                # 极速剥离 Alpha 通道，转为算法标准的 3 通道 RGB [cite: 1.1.4]
+                if len(rgb_frame.shape) == 3 and rgb_frame.shape[2] == 4:
+                    rgb_frame = rgb_frame[:, :, :3]
+                if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
+                    rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
+                if rgb_frame.size > 0:
+                    F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
+                    # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
+                    arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
+                    dora_node.send_output("obstacle_force", arrow_obstacle_force)
+                    if tick % 100 == 0:
+                        arrow_xfeat_features = xfeat_engine.extract(rgb_frame, top_k=200)
+                        if arrow_xfeat_features is not None and len(arrow_xfeat_features) > 0:
+                            dora_node.send_output("xfeat_features", arrow_xfeat_features)
+            event = dora_node.next(timeout=0.001)
+            if event is not None:
+                ev_type = event["type"]
+                if ev_type == "INPUT":
+                    if event["id"] == "control_cmd":
+                        # 🎯 架构师升维：直接将 Arrow 数组映射为 numpy 视图，零拷贝读取
+                        cmd_arr = event["value"].to_numpy()
+                        if len(cmd_arr) == 2:
+                            v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
+                elif ev_type == "STOP":
+                    print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
+                    break
+            # 🛡️ 极性自愈：移除右轮公式前的负号。
+            # 使 DORA 的 v_cmd=0.3 完美映射为左右轮同向正转（同号 10.0 rad/s），驱动小车直线向前！
+            v_left = (v_cmd - w_cmd * L / 2.0) / R
+            v_right = (v_cmd + w_cmd * L / 2.0) / R
+            car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
+            # 📊 2026 工业级数值探针：每 100 步输出一次全量高保真遥测数据，消除主观观测盲区
+            if tick % 100 == 0:
+                print(
+                    f"[物理代理 100Hz 遥测] 步数: {tick:<6} | "
+                    f"仿生眼避障力: F_x={F_x:>6.3f}, F_y={F_y:>6.3f} | "
+                    f"DORA 规控指令: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s | "
+                    f"电调靶向速度: Left={v_left:>6.2f} rad/s, Right={v_right:>6.2f} rad/s"
+                )
+    except KeyboardInterrupt:
+        print("\n🛑 用户手动中断，优雅下线。")
+    finally:
+        try:
+            car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
+            world.step(render=True)
+            world.stop()
+        except Exception:
+            pass
+        simulation_app.close()
+        print("🔌 物理仿真界代理已安全卸载。")
+if __name__ == "__main__":
+    main()
 </file>
 
 <file path=".gitignore">

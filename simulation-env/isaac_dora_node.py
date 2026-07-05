@@ -195,7 +195,7 @@ def main():
 
     fsd_assets_dir = "/home/zhz/fsd-car/assets"
     # 🛡️ 路径翻译官：实现 clean 净化变体的自适应检测与零硬编码自愈装载
-    clean_usd_name = "fsd_car_racetrack_clean.usd"
+    clean_usd_name = "fsd_car_clean1.usd"
     default_usd_name = "fsd_car_racetrack.usd"
     
     clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)

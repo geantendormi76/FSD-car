@@ -50,7 +50,7 @@ def main():
             key = get_key(settings)
             
             if key == 'w' or key == 'W':
-                v = 0.25  # 按住 W：直接靶向推进航巡速度 (0.25 m/s)
+                v = 0.45  # 按住 W：直接靶向推进航巡速度 (0.25 m/s)
             elif key == 's' or key == 'S':
                 v = -0.15 # 按住 S：倒车速度 (-0.15 m/s)
             elif key == 'a' or key == 'A':
