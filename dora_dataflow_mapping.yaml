@@ -42,6 +42,8 @@ nodes:
     build: cargo build -p core-decision --release --bin slow_brain_node
     env:
       RUST_LOG: info
+      # 🎯 强行声明建图极性，100% 免疫历史地图写保护锁干扰
+      FSD_MODE: mapping
     inputs:
       # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
       xfeat_features: isaac_sim_env/xfeat_features

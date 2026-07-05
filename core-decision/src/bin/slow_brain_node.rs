@@ -28,7 +28,14 @@ async fn main() -> eyre::Result<()> {
     // 2. 初始化全简体中文业务逻辑主权对象：拓扑地图
     // 🎯 里程碑 2.3：自适应自愈检测。如果硬盘存在历史地图，一键载入脑海，直接激活“自主寻迹自驾模式”
     let map_path = "topo_memory.json";
-    let (mut 拓扑地图, 自主自驾模式) = if std::path::Path::new(map_path).exists() {
+    
+    // 检查环境变量 FSD_MODE 是否被 YAML 强行声明为 mapping
+    let 强制建图模式 = std::env::var("FSD_MODE").unwrap_or_default() == "mapping";
+    
+    let (mut 拓扑地图, 自主自驾模式) = if 强制建图模式 {
+        println!("🔵 [慢系统] 检测到环境变量 FSD_MODE=mapping，强制锁定 -> 【人类遥控示教建图模式】(写保护已解除)");
+        (TopologicalGraph::new(), false)
+    } else if std::path::Path::new(map_path).exists() {
         match TopologicalGraph::load_from_file(map_path) {
             Ok(loaded_graph) => {
                 println!("🟢 [慢系统] 成功从硬盘唤醒历史图谱记忆！全图共 {} 个站牌。进入 -> 【自主寻迹自驾模式】", loaded_speed_nodes_count(&loaded_graph));
