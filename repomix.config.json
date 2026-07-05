@@ -13,11 +13,21 @@
     "directoryStructure": true,
     "files": true,
     "removeComments": false,
-    "removeEmptyLines": false,
+    "removeEmptyLines": true,
     "showLineNumbers": false,
     "copyToClipboard": false,
     "includeEmptyDirectories": false,
-    "includeFullDirectoryStructure": false
+    "includeFullDirectoryStructure": false,
+    "truncateBase64": true,
+    "topFilesLength": 5,
+    "tokenBudget": 100000,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false,
+      "includeLogs": false,
+      "includeLogsCount": 50
+    }
   },
   "include": [
     "**/*.rs",
@@ -29,6 +39,7 @@
   ],
   "ignore": {
     "useGitignore": true,
+    "useDotIgnore": true,
     "useDefaultPatterns": true,
     "customPatterns": [
       "**/target/**",
@@ -37,7 +48,10 @@
       "**/acados/**",
       "**/c_generated_code/**",
       "**/Cargo.lock",
-      "**/repomix-output.xml"
+      "**/repomix-output.xml",
+      "4.py",
+      "showcase/src/main.rs",
+      "simulation-env/isaac_purity_node.py"
     ]
   },
   "security": {

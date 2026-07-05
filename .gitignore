@@ -1,5 +1,5 @@
 # =================================================================
-# 🛡️ FSD-car V3.0 统一主干仓库 Git 忽略契约 (2026 数字孪生生产版)
+# 🛡️ FSD-car V4.2 统一主干仓库 Git 忽略契约 (2026 Ubuntu 极致净化版)
 # =================================================================
 
 # --- 1. 系统、IDE 与临时垃圾文件 ---
@@ -21,7 +21,7 @@ __pycache__/
 *$py.class
 
 # --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
-# 强制忽略 DORA 产生的 uuid 运行日志和协调器日志
+# 强制忽略 DORA 产生的运行日志和协调器日志
 /out/
 out/
 dora-coordinator.txt
@@ -55,3 +55,11 @@ simulation-env/nmpc_telemetry.log
 
 # 🛡️ 架构师建议：车端运行产生的动态拓扑记忆，属于高频变动的非代码资产
 topo_memory.json
+
+# --- 7. 🛡️ NEXUS 特别新增：AI 打包大文件与测试残留隔离 ---
+repomix-output.xml
+repomix-output.json
+repomix-output.txt
+repomix-output.md
+.claude/
+4.py
