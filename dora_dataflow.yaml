@@ -55,3 +55,20 @@ nodes:
       odometry: isaac_sim_env/odometry
     outputs:
       - human_prior # 🎯 里程碑 2.3：滚动发布下一个人类引力站牌
+
+  # ---------------------------------------------------------------
+  # 📊 4. 旁路探针：NEXUS 可视化遥测大屏 (The Telemetry Dashboard)
+  # ---------------------------------------------------------------
+  - id: telemetry_dashboard
+    path: uv
+    # 🛡️ SOTA 级自愈：在 CLI 参数层显式指定隔离的缓存区，彻底免疫任何环境变量剥离！ [cite: 1.2.1]
+    args: run --cache-dir /home/zhz/.cache/uv_clean showcase/src/bin/telemetry_dashboard.py
+    env:
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+    inputs:
+      odometry: isaac_sim_env/odometry
+      obstacle_force: isaac_sim_env/obstacle_force
+      xfeat_features: isaac_sim_env/xfeat_features
+      human_prior: slow_brain_mapper/human_prior
+      control_cmd: fast_brain_nmpc/control_cmd

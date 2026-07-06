@@ -104,8 +104,10 @@ impl 预测控制求解器 {
 
             // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
             let mut v_cmd = 当前线速度 + a_opt * 0.01;
-            if v_cmd < 0.0 { v_cmd = 0.0; } // 限制不能倒车
-            if v_cmd > 0.3 { v_cmd = 0.3; } // 最大速度限制
+            
+            // 🎯 动力学限制对齐：硬限幅限制在 0.20 m/s
+            if v_cmd > 0.20 { v_cmd = 0.20; }
+            if v_cmd < 0.0 { v_cmd = 0.0; }
 
             // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
             let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);

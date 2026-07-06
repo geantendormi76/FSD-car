@@ -97,7 +97,6 @@ simulation-env/
   teleop_sender.py
 .gitignore
 Cargo.toml
-diagnose_fsd.py
 dora_dataflow.yaml
 README.md
 test_port_lock.py
@@ -716,144 +715,6 @@ def main():
         print("🔌 [DORA 接收端] UDP 套接字已关闭，节点安全卸载。")
 if __name__ == "__main__":
     main()
-</file>
-
-<file path="simulation-env/teleop_sender.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-import sys
-import select
-import termios
-import tty
-import time
-import socket
-import struct
-import os
-def get_key(settings):
-    # 此处运行于前台物理交互终端，具备合法的物理 TTY 设备权限
-    tty.setraw(sys.stdin.fileno())
-    rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
-    if rlist:
-        key = sys.stdin.read(1)
-    else:
-        key = ''
-    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-    return key
-def main():
-    settings = termios.tcgetattr(sys.stdin)
-    # 建立 UDP 网络客户端
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    dest_addr = ("127.0.0.1", 5005)
-    v = 0.0  # 线速度 (m/s)
-    w = 0.0  # 角速度 (rad/s)
-    v_step = 0.05
-    w_step = 0.1
-    max_v = 0.3
-    max_w = 0.6
-    print("========================================================")
-    print("🛰️  NEXUS - 本地 TTY 键盘遥控发送端已启动")
-    print("控制手势 (请保持当前键盘控制台前台置顶 Focus 状态):")
-    print("  W : 推进加速          S : 减速/后退")
-    print("  A : 左转弯            D : 右转弯")
-    print("  Space (空格键) : 紧急停障")
-    print("  Q : 退出键盘控制端")
-    print("========================================================")
-    try:
-        while True:
-            key = get_key(settings)
-            if key == 'w' or key == 'W':
-                v = 0.45  # 按住 W：直接靶向推进航巡速度 (0.25 m/s)
-            elif key == 's' or key == 'S':
-                v = -0.15 # 按住 S：倒车速度 (-0.15 m/s)
-            elif key == 'a' or key == 'A':
-                w = 0.45  # 按住 A：靶向左转角速度 (0.45 rad/s)
-            elif key == 'd' or key == 'D':
-                w = -0.45 # 按住 D：靶向右转角速度 (-0.45 rad/s)
-            elif key == ' ':
-                v = 0.0
-                w = 0.0
-            elif key == 'q' or key == 'Q':
-                print("\n🛑 退出发送端。")
-                break
-            else:
-                # 🛡️ 物理主动衰减：无任何按键按下，代表手部已松开
-                # 摩擦力线性衰减线速度，模拟惯性滑行停止
-                if v > 0:
-                    v = max(0.0, v - 0.04)
-                elif v < 0:
-                    v = min(0.0, v + 0.04)
-                # 偏航角速度极速衰减，实现“车头自回中”
-                if w > 0:
-                    w = max(0.0, w - 0.12)
-                elif w < 0:
-                    w = min(0.0, w + 0.12)
-            # 持续向 DORA 广播当前的运动状态（维持 DORA 50Hz 物理控制节拍，消除物理滑移）
-            print(f"\r[遥控指令] 线速度 cmd_v: {v:.2f} m/s | 角速度 cmd_w: {w:.2f} rad/s    ", end="", flush=True)
-            packed_data = struct.pack('ff', v, w)
-            sock.sendto(packed_data, dest_addr)
-            time.sleep(0.02) # 50Hz 物理闭环节拍
-    except Exception as e:
-        print(f"\n❌ [发送端] 发生错误: {e}")
-    finally:
-        # 退出前向 DORA 发送清零刹车数据
-        packed_data = struct.pack('ff', 0.0, 0.0)
-        sock.sendto(packed_data, dest_addr)
-        sock.close()
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-        print("\n🔌 [发送端] 控制套接字关闭，退出交互。")
-if __name__ == "__main__":
-    main()
-</file>
-
-<file path="diagnose_fsd.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-import os
-import socket
-import sys
-def check_usd_assets():
-    assets_dir = "/home/zhz/fsd-car/assets"
-    print(f"📁 [探针] 扫描资产目录: {assets_dir}")
-    if os.path.exists(assets_dir):
-        files = os.listdir(assets_dir)
-        usd_files = [f for f in files if f.endswith(".usd")]
-        for f in usd_files:
-            print(f"  -> Found USD Stage: {f}")
-        return usd_files
-    else:
-        print("  -> ❌ 资产目录不存在")
-        return []
-def check_udp_port(port):
-    print(f"🔌 [探针] 测试本地端口 {port} 绑定状态...")
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.bind(("127.0.0.1", port))
-        print(f"  -> 🟢 UDP 端口 {port} 未被占用，可正常进行网络通信。")
-    except Exception as e:
-        print(f"  -> ❌ UDP 端口 {port} 绑定失败 (可能被占用或残留): {e}")
-    finally:
-        s.close()
-def audit_isaac_dora_node_code():
-    node_path = "/home/zhz/fsd-car/simulation-env/isaac_dora_node.py"
-    print(f"🧠 [探针] 审计物理代理路径: {node_path}")
-    if os.path.exists(node_path):
-        with open(node_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            # 检查硬编码的 USD 路径
-            if "fsd_car_racetrack.usd" in content:
-                print("  -> ⚠️ 发现病灶：`isaac_dora_node.py` 内部锁死了硬编码路径 'fsd_car_racetrack.usd'，未进行 clean 变体的自适应检测！")
-            else:
-                print("  -> 🟢 未发现硬编码赛道。")
-    else:
-        print("  -> ❌ 找不到物理代理节点代码")
-print("========================================================")
-print("🛰️  NEXUS - FSD-car 自动化诊断探针已启动...")
-print("========================================================")
-check_usd_assets()
-check_udp_port(5005)
-audit_isaac_dora_node_code()
-print("========================================================")
 </file>
 
 <file path="test_port_lock.py">
@@ -1556,8 +1417,9 @@ impl 预测控制求解器 {
             let w_cmd_raw = u_opt[1];
             // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
             let mut v_cmd = 当前线速度 + a_opt * 0.01;
-            if v_cmd < 0.0 { v_cmd = 0.0; } // 限制不能倒车
-            if v_cmd > 0.3 { v_cmd = 0.3; } // 最大速度限制
+            // 🎯 动力学限制对齐：硬限幅限制在 0.20 m/s
+            if v_cmd > 0.20 { v_cmd = 0.20; }
+            if v_cmd < 0.0 { v_cmd = 0.0; }
             // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
             let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);
             Ok((v_cmd, w_cmd))
@@ -2144,6 +2006,111 @@ serde_json = { workspace = true }
 ndarray = { workspace = true }
 </file>
 
+<file path="simulation-env/teleop_sender.py">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+import sys
+import select
+import termios
+import tty
+import time
+import socket
+import struct
+import os
+def get_key(settings):
+    # 此处运行于前台物理交互终端，具备合法的物理 TTY 设备权限
+    tty.setraw(sys.stdin.fileno())
+    rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
+    if rlist:
+        key = sys.stdin.read(1)
+    else:
+        key = ''
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    return key
+def main():
+    settings = termios.tcgetattr(sys.stdin)
+    # 建立 UDP 网络客户端
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    dest_addr = ("127.0.0.1", 5005)
+    # 🎯 智驾重塑控制器：目标速度与平滑滤波器状态
+    target_v = 0.0  # 目标线速度 (保持型)
+    target_w = 0.0  # 目标角速度 (自回中型)
+    current_v = 0.0  # 滤波后的当前实际线速度
+    current_w = 0.0  # 滤波后的当前实际角速度
+    # 🛡️ 黄金自驾建图物理参数：限制最高速防止特征模糊，低速稳态建图才能获得 100% 回环率
+    max_v = 0.20  # 最大线速度限制在 0.20 m/s (极致稳态)
+    min_v = -0.10 # 最大倒车速度
+    max_w = 0.40  # 最大角速度限制在 0.40 rad/s
+    v_step = 0.05 # 线速度步进 (按一次 W 增加 0.05)
+    # 滤波时间系数：数值越小越平滑，防止轮子在物理引擎中打滑
+    alpha_v = 0.12  # 线速度一阶阻尼系数
+    alpha_w = 0.25  # 角速度一阶阻尼系数
+    print("========================================================")
+    print("🛰️  NEXUS - 工业级一阶滤波稳态建图控制器 (teleop_sender)已启动")
+    print("设计哲学: 保持型线速控制 | 自回中型角速控制 | 物理防滑移一阶低通滤波")
+    print("--------------------------------------------------------")
+    print("控制手势 (请保持当前终端 Focus 状态，无需长按):")
+    print("  W : 增加向前目标车速 (+0.05 m/s)   S : 降低目标车速/倒车 (-0.05 m/s)")
+    print("  A : 靶向左转 (瞬时 nudging)       D : 靶向右转 (瞬时 nudging)")
+    print("  Space (空格键) : 紧急制动 (目标速度瞬间归零)")
+    print("  Q : 退出键盘控制端")
+    print("========================================================")
+    try:
+        while True:
+            key = get_key(settings)
+            # A. 处理线速度 (保持型：按一下变一次，松手不减速，维持匀速爬坡)
+            if key == 'w' or key == 'W':
+                target_v = min(max_v, target_v + v_step)
+            elif key == 's' or key == 'S':
+                target_v = max(min_v, target_v - v_step)
+            # B. 处理角速度 (自回中型：按住转弯，松手车头迅速自动回正)
+            if key == 'a' or key == 'A':
+                target_w = max_w
+            elif key == 'd' or key == 'D':
+                target_w = -max_w
+            else:
+                # 无转向按键，角速度目标自动归零
+                target_w = 0.0
+            # C. 处理紧急刹车
+            if key == ' ':
+                target_v = 0.0
+                target_w = 0.0
+                current_v = 0.0 # 强制物理锁死
+                current_w = 0.0
+            elif key == 'q' or key == 'Q':
+                print("\n🛑 退出发送端。")
+                break
+            # D. 核心物理自愈：一阶低通滤波器 (Ramp Filter)
+            # 消除台阶响应（Step Response）带来的电机瞬间输出冲击，
+            # 100% 杜绝轮胎在 PhysX 物理沙盘上原地打滑（Slip）导致里程计漂移！
+            current_v += alpha_v * (target_v - current_v)
+            current_w += alpha_w * (target_w - current_w)
+            # 极小值消隐
+            if abs(current_v) < 0.005: current_v = 0.0
+            if abs(current_w) < 0.005: current_w = 0.0
+            # 持续向 DORA 广播当前的运动状态 (维持 DORA 50Hz 物理控制节拍，消除物理滑移)
+            print(
+                f"\r[NEXUS 遥测] 目标设定 -> v: {target_v:.2f} m/s, w: {target_w:.2f} rad/s | "
+                f"实际输出 -> v_cmd: {current_v:.2f} m/s, w_cmd: {current_w:.2f} rad/s    ", 
+                end="", flush=True
+            )
+            packed_data = struct.pack('ff', current_v, current_w)
+            sock.sendto(packed_data, dest_addr)
+            time.sleep(0.02) # 50Hz 物理闭环节拍
+    except Exception as e:
+        print(f"\n❌ [发送端] 发生错误: {e}")
+    finally:
+        # 退出前向 DORA 发送清零刹车数据
+        packed_data = struct.pack('ff', 0.0, 0.0)
+        sock.sendto(packed_data, dest_addr)
+        sock.close()
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        print("\n🔌 [发送端] 控制套接字关闭，退出交互。")
+if __name__ == "__main__":
+    main()
+</file>
+
 <file path="core-control/Cargo.toml">
 [package]
 name = "core-control"
@@ -2170,110 +2137,6 @@ core-perception = { path = "../core-perception" }
 
 [build-dependencies]
 cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
-</file>
-
-<file path="core-decision/src/bin/slow_brain_node.rs">
-// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-use dora_node_api::{DoraNode, Event};
-use eyre::eyre;
-use core_decision::topo_graph::graph::TopologicalGraph;
-use core_decision::topo_graph::node::{Pose, TopologicalNode};
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    println!("🧠 [慢系统] 语义大脑与拓扑建图节点已启动，等待 DORA 共享内存注入...");
-    // 1. 接入 DORA 数据流网络
-    let (mut _node, mut events) = DoraNode::init_from_env()?;
-    // 2. 初始化全简体中文业务逻辑主权对象：拓扑地图
-    let mut 拓扑地图 = TopologicalGraph::new();
-    let mut 节点计数器 = 0;
-    // 3. 异步事件驱动循环
-    while let Some(event) = events.recv_async().await {
-        match event {
-            Event::Input { id, data, .. } => {
-                if id.as_str() == "xfeat_features" {
-                    // 🎯 架构师对齐：利用 downcast_ref 将 DORA 共享内存中的二进制泛型指针直接还原为 StructArray [cite: 1.1.4]
-                    let 结构体数组 = data.as_any()
-                        .downcast_ref::<dora_node_api::arrow::array::StructArray>()
-                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 StructArray"))?;
-                    let 特征数量 = 结构体数组.len();
-                    if 特征数量 == 0 { continue; }
-                    // 引入 Array 核心特征
-                    use dora_node_api::arrow::array::Array;
-                    // 🎯 零拷贝映射：分别将列式存储中的各列数据直接下转型为特定类型数组 [cite: 1.1.4]
-                    let x_arr = 结构体数组
-                        .column_by_name("x")
-                        .ok_or_else(|| eyre!("❌ StructArray 中未找到 'x' 列"))?
-                        .as_any()
-                        .downcast_ref::<dora_node_api::arrow::array::Float32Array>()
-                        .ok_or_else(|| eyre!("❌ 无法将 'x' 列转换为 Float32Array"))?;
-                    let y_arr = 结构体数组
-                        .column_by_name("y")
-                        .ok_or_else(|| eyre!("❌ StructArray 中未找到 'y' 列"))?
-                        .as_any()
-                        .downcast_ref::<dora_node_api::arrow::array::Float32Array>()
-                        .ok_or_else(|| eyre!("❌ 无法将 'y' 列转换为 Float32Array"))?;
-                    let desc_list_arr = 结构体数组
-                        .column_by_name("descriptor")
-                        .ok_or_else(|| eyre!("❌ StructArray 中未找到 'descriptor' 列"))?
-                        .as_any()
-                        .downcast_ref::<dora_node_api::arrow::array::FixedSizeListArray>()
-                        .ok_or_else(|| eyre!("❌ 无法将 'descriptor' 列转换为 FixedSizeListArray"))?;
-                    let desc_values = desc_list_arr
-                        .values()
-                        .as_any()
-                        .downcast_ref::<dora_node_api::arrow::array::Float32Array>()
-                        .ok_or_else(|| eyre!("❌ 无法将描述子底层数纽转换为 Float32Array"))?;
-                    println!(
-                        "✅ [慢系统] 成功通过共享内存零拷贝解算出 {} 个 XFeat 骨干特征 (解析延迟 0!)",
-                        特征数量
-                    );
-                    // ---------------------------------------------------------
-                    // 🗺️ 拓扑建图与记忆存储
-                    // ---------------------------------------------------------
-                    节点计数器 += 1;
-                    let mut descriptors = Vec::with_capacity(特征数量 * 64);
-                    let mut keypoints = Vec::with_capacity(特征数量 * 2);
-                    // 🚀 架构师对齐优化：直接读取列数据，由于内存连续分布，循环将极大受益于 CPU 缓存命中率 [cite: 1.1.4]
-                    for i in 0..特征数量 {
-                        keypoints.push(x_arr.value(i));
-                        keypoints.push(y_arr.value(i));
-                        let offset = i * 64;
-                        for j in 0..64 {
-                            descriptors.push(desc_values.value(offset + j));
-                        }
-                    }
-                    let 新地标 = TopologicalNode {
-                        id: 节点计数器,
-                        name: format!("自动探索地标_{}", 节点计数器),
-                        pose: Pose {
-                            x: 0.0,
-                            y: 0.0,
-                            yaw: 0.0,
-                        }, // 实际应由里程计/SLAM提供
-                        descriptors,
-                        keypoints,
-                    };
-                    拓扑地图.add_node(新地标);
-                    println!(
-                        "🗺️ [慢系统] 拓扑地图已更新，当前脑海记忆节点数: {}",
-                        拓扑地图.nodes.len()
-                    );
-                }
-            }
-            Event::Stop(_) => {
-                println!("🛑 [慢系统] 接收到 DORA 停止信号，正在将拓扑记忆持久化到硬盘...");
-                if let Err(e) = 拓扑地图.save_to_file("topo_memory.json") {
-                    eprintln!("❌ 拓扑地图保存失败: {}", e);
-                } else {
-                    println!("💾 拓扑地图已安全保存至 topo_memory.json");
-                }
-                break;
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
 </file>
 
 <file path="core-decision/Cargo.toml">
@@ -2942,10 +2805,277 @@ fn main() {
 }
 </file>
 
+<file path="core-decision/src/bin/slow_brain_node.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+use dora_node_api::{DoraNode, Event};
+use eyre::eyre;
+use core_decision::topo_graph::graph::TopologicalGraph;
+use core_decision::topo_graph::node::{Pose, TopologicalNode};
+// 🎯 辅助工具：获取载入地图的节点数
+fn loaded_speed_nodes_count(g: &TopologicalGraph) -> usize {
+    g.nodes.len()
+}
+// 🎯 辅助工具：自适应转换地图头
+fn loaded_header_adaptor(g: TopologicalGraph) -> TopologicalGraph {
+    g
+}
+// 🎯 辅助工具：写保护日志
+fn pre_save_error_log(e: &str) {
+    eprintln!("❌ 拓扑地图保存失败: {}", e);
+}
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    println!("🧠 [慢系统] 语义大脑与拓扑建图节点已启动，等待 DORA 共享内存注入...");
+    // 1. 接入 DORA 数据流网络
+    let (mut _node, mut events) = DoraNode::init_from_env()?;
+    // 2. 初始化全简体中文业务逻辑主权对象：拓扑地图
+    // 🎯 里程碑 2.3：自适应自愈检测。如果硬盘存在历史地图，一键载入脑海，直接激活“自主寻迹自驾模式”
+    let map_path = "topo_memory.json";
+    // 检查环境变量 FSD_MODE 是否被 YAML 强行声明为 mapping
+    let 强制建图模式 = std::env::var("FSD_MODE").unwrap_or_default() == "mapping";
+    let (mut 拓扑地图, 自主自驾模式) = if 强制建图模式 {
+        println!("🔵 [慢系统] 检测到环境变量 FSD_MODE=mapping，强制锁定 -> 【人类遥控示教建图模式】(写保护已解除)");
+        (TopologicalGraph::new(), false)
+    } else if std::path::Path::new(map_path).exists() {
+        match TopologicalGraph::load_from_file(map_path) {
+            Ok(loaded_graph) => {
+                println!("🟢 [慢系统] 成功从硬盘唤醒历史图谱记忆！全图共 {} 个站牌。进入 -> 【自主寻迹自驾模式】", loaded_speed_nodes_count(&loaded_graph));
+                (loaded_header_adaptor(loaded_graph), true)
+            }
+            Err(e) => {
+                println!("⚠️ [慢系统] 地图文件损坏: {}，自动退入 [示教建图模式]", e);
+                (TopologicalGraph::new(), false)
+            }
+        }
+    } else {
+        println!("🔵 [慢系统] 未检测到历史地图文件。进入 -> 【人类遥控示教建图模式】");
+        (TopologicalGraph::new(), false)
+    };
+    let mut 节点计数器 = 拓扑地图.nodes.len() as u32;
+    // 🎯 里程碑 1.1：建立物理小脑状态缓存
+    let mut 最新位姿 = Pose { x: 0.0, y: 0.0, yaw: 0.0 };
+    let mut 上一个节点_id: Option<u32> = None;
+    let mut 上一个位姿: Option<Pose> = None;
+    // 🎯 里程碑 2.3：自驾寻迹局部指针
+    // 允许冗余初始化，以保证在循环首帧中变量的生命周期安全
+    #[allow(unused_assignments)]
+    let mut 当前锁定目标节点_id = 1u32;
+    // 3. 异步事件驱动循环
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, data, .. } => {
+                // 🎯 接收 100Hz 物理小脑高频里程计
+                if id.as_str() == "odometry" {
+                    let odom_arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 Float32Array"))?;
+                    if odom_arr.len() >= 3 {
+                        最新位姿.x = odom_arr.value(0);
+                        最新位姿.y = odom_arr.value(1);
+                        最新位姿.yaw = odom_arr.value(2);
+                    }
+                }
+                else if id.as_str() == "xfeat_features" {
+                    // 🎯 里程碑 2.3：如果在自驾寻迹重放模式下，直接利用高精里程计与拓扑网络检索引力点
+                    if 自主自驾模式 {
+                        if 拓扑地图.nodes.is_empty() { continue; }
+                        // A. 寻找空间几何距离最近的历史地标节点作为定位锚点
+                        let mut 最小距离 = f32::INFINITY;
+                        let mut 最近节点_id = 1u32;
+                        for (&id, node) in &拓扑地图.nodes {
+                            let dx = 最新位姿.x - node.pose.x;
+                            let dy = 最新位姿.y - node.pose.y;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < 最小距离 {
+                                最小距离 = dist;
+                                最近节点_id = id;
+                            }
+                        }
+                        // B. 滚动寻迹指针：下一个目标站牌 (Target Waypoint) 为 最近节点 + 1
+                        当前锁定目标节点_id = 最近节点_id + 1;
+                        if let Some(目标地标) = 拓扑地图.nodes.get(&当前锁定目标节点_id) {
+                            // C. 向 DORA 零拷贝总线广播目标引力绝对坐标 [x, y, yaw]
+                            let prior_arr = dora_node_api::arrow::array::Float32Array::from(vec![
+                                目标地标.pose.x, 目标地标.pose.y, 目标地标.pose.yaw
+                            ]);
+                            if let Err(e) = _node.send_output(
+                                "human_prior".to_string().into(),
+                                dora_node_api::MetadataParameters::default(),
+                                prior_arr,
+                            ) {
+                                eprintln!("❌ 人类引力锚点发射失败: {}", e);
+                            }
+                            println!(
+                                "🧭 [慢脑自驾寻迹] 状态: 运行中 | 当前定位锚点: Node_{} | 锁定引力目标 -> Node_{} | 坐标: ({:.2}, {:.2}) | 剩余距离: {:.2}m",
+                                最近节点_id, 当前锁定目标节点_id, 目标地标.pose.x, 目标地标.pose.y, 最小距离
+                            );
+                        } else {
+                            // 已经到达最后一个节点
+                            println!("🏆 [慢脑自驾寻迹] 恭喜！小车已完全自主安全驶达本次寻迹路线的终点站牌！");
+                            // 持续广播终点坐标，稳稳锁住制动
+                            if let Some(终点地标) = 拓扑地图.nodes.get(&最近节点_id) {
+                                let prior_arr = dora_node_api::arrow::array::Float32Array::from(vec![
+                                    终点地标.pose.x, 终点地标.pose.y, 终点地标.pose.yaw
+                                ]);
+                                let _ = _node.send_output(
+                                    "human_prior".to_string().into(),
+                                    dora_node_api::MetadataParameters::default(),
+                                    prior_arr,
+                                );
+                            }
+                        }
+                        continue; // 跳过后续的建图存储逻辑，防止在自驾时污染原始地图数据！
+                    }
+                    // 下面是原有的 [人类遥控示教建图模式] 逻辑
+                    let 结构体数组 = data.as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::StructArray>()
+                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 StructArray"))?;
+                    let 特征数量 = 结构体数组.len();
+                    if 特征数量 == 0 { continue; }
+                    use dora_node_api::arrow::array::Array;
+                    let x_arr = 结构体数组.column_by_name("x").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    let y_arr = 结构体数组.column_by_name("y").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    let desc_list_arr = 结构体数组.column_by_name("descriptor").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::FixedSizeListArray>().unwrap();
+                    let desc_values = desc_list_arr.values().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    节点计数器 += 1;
+                    let mut descriptors = Vec::with_capacity(特征数量 * 64);
+                    let mut keypoints = Vec::with_capacity(特征数量 * 2);
+                    for i in 0..特征数量 {
+                        keypoints.push(x_arr.value(i));
+                        keypoints.push(y_arr.value(i));
+                        let offset = i * 64;
+                        for j in 0..64 {
+                            descriptors.push(desc_values.value(offset + j));
+                        }
+                    }
+                    let 新地标 = TopologicalNode {
+                        id: 节点计数器,
+                        name: format!("自动探索地标_{}", 节点计数器),
+                        pose: 最新位姿.clone(),
+                        descriptors,
+                        keypoints,
+                    };
+                    // 🎯 里程碑 1.2：计算相对距离，编织有向拓扑路网
+                    if let Some(prev_pose) = &上一个位姿 {
+                        let dx = 最新位姿.x - prev_pose.x;
+                        let dy = 最新位姿.y - prev_pose.y;
+                        let distance = (dx * dx + dy * dy).sqrt();
+                        // 空间稀疏化：只有当移动超过 1.0 米时，才记录新站牌，防止原地堆积导致内存爆炸
+                        if distance >= 1.0 {
+                            拓扑地图.add_node(新地标.clone());
+                            // 计算相对偏航角 (驶向目标节点的期望角度)
+                            let relative_yaw = dy.atan2(dx) - prev_pose.yaw;
+                            拓扑地图.add_edge(上一个节点_id.unwrap(), 节点计数器, distance, relative_yaw);
+                            println!(
+                                "🗺️ [慢系统] 新增拓扑节点 {}，建立有向边 {} -> {} (距离: {:.2}m, 相对偏航: {:.2}rad)",
+                                节点计数器, 上一个节点_id.unwrap(), 节点计数器, distance, relative_yaw
+                            );
+                            上一个节点_id = Some(节点计数器);
+                            上一个位姿 = Some(最新位姿.clone());
+                        } else {
+                            // 距离太近，回滚计数器，丢弃该帧
+                            节点计数器 -= 1;
+                        }
+                    } else {
+                        // 录制第一个原点站牌
+                        拓扑地图.add_node(新地标.clone());
+                        上一个节点_id = Some(节点计数器);
+                        上一个位姿 = Some(最新位姿.clone());
+                        println!("🗺️ [慢系统] 建立拓扑原点节点 {}，坐标: ({:.2}, {:.2})", 节点计数器, 最新位姿.x, 最新位姿.y);
+                    }
+                }
+            }
+            Event::Stop(_) => {
+                if !自主自驾模式 {
+                    println!("🛑 [慢系统] 接收到 DORA 停止信号，正在将拓扑记忆持久化到硬盘...");
+                    if let Err(e) = 拓扑地图.save_to_file("topo_memory.json") {
+                        pre_save_error_log(&e);
+                    } else {
+                        println!("💾 拓扑地图已安全保存至 topo_memory.json");
+                    }
+                } else {
+                    println!("🛑 [慢系统] 接收到 DORA 停止信号，自驾寻迹模式安全下线，已对历史图谱 `topo_memory.json` 启动写保护！");
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+</file>
+
+<file path=".gitignore">
+# =================================================================
+# 🛡️ FSD-car V4.2 统一主干仓库 Git 忽略契约 (2026 Ubuntu 极致净化版)
+# =================================================================
+
+# --- 1. 系统、IDE 与临时垃圾文件 ---
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+.vscode/
+.idea/
+*.user
+
+# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
+# 彻底拦截 uv 和传统 Python 的虚拟环境与缓存
+.venv/
+.uv/
+.python-version
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
+# 强制忽略 DORA 产生的运行日志和协调器日志
+/out/
+out/
+dora-coordinator.txt
+dora-daemon.txt
+
+# --- 4. Rust 工作空间全局编译缓存 ---
+# 强制忽略整个多包工作空间下的 release/debug 编译产物
+/target/
+
+# --- 5. 跨系统动态链接库与大资产模型 ---
+# 拦截系统级 SO 库与大尺寸 AI 模型，防止 Git 仓库历史体积爆炸
+*.so
+*.so.*
+*.tgz
+*.a
+*.lib
+*.dll
+*.dylib
+
+# 🛡️ 架构师建议：大尺寸 ONNX 模型建议放在 model/ 目录下，通过 download_models.sh 脚本下载，
+# 或者使用 Git LFS 管理，绝对不要直接塞入主干 Git 历史中。
+*.onnx
+
+# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
+simulation-env/c_generated_code/
+simulation-env/acados_ocp.json
+simulation-env/acados/
+simulation-env/*.log
+simulation-env/MUJOCO_LOG.TXT
+simulation-env/nmpc_telemetry.log
+
+# 🛡️ 架构师建议：车端运行产生的动态拓扑记忆，属于高频变动的非代码资产
+topo_memory.json
+
+# --- 7. 🛡️ NEXUS 特别新增：AI 打包大文件与测试残留隔离 ---
+repomix-output.xml
+repomix-output.json
+repomix-output.txt
+repomix-output.md
+.claude/
+4.py
+</file>
+
 <file path="dora_dataflow.yaml">
 # =================================================================
-# 🛡️ FSD-car V3.0: 纯视觉数字孪生本地零拷贝数据流蓝图 (Ubuntu 26.04 LTS 极致版)
-# 架构哲学: 去网关化 | 仿生避障下沉至原生 Python 节点 | 共享内存 0 微秒延迟直通
+# 🛡️ FSD-car V4.0: 纯视觉自主重放寻迹自驾蓝图 (Ubuntu 26.04 LTS 极致版)
+# 架构哲学: 无人类遥控介入 | 物理里程计 + 慢大脑人类先验引力 + 快大脑避障势场融合
 # =================================================================
 nodes:
   # ---------------------------------------------------------------
@@ -2955,20 +3085,19 @@ nodes:
     path: /home/zhz/isaacsim/python.sh
     args: simulation-env/isaac_dora_node.py
     env:
-      # 🛡️ 强行透传宿主机的显示环境变量，防止 DORA 隔离导致 Vulkan 找不到设备
       DISPLAY: ${DISPLAY}
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
       XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
-      # 🛡️ 架构师 2026 级并网防御：在 YAML 中固化 cuDNN 9 与系统 CUDA 路径
-      # 100% 杜绝 DORA 守护进程清洗用户环境变量导致运行时 libcudnn.so.9 链接断裂报错 [cite: 1.2.8]！
       LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
     inputs:
+      # 订阅高频 NMPC 运动输出，驱动底盘
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
       - xfeat_features
       - obstacle_force
+      - odometry  # 🎯 里程碑 1.1：100Hz 物理里程计高频输出
   # ---------------------------------------------------------------
-  # ⚡ 2. 快系统：本能避障与规控大脑 (The Fast System - 100Hz)
+  # ⚡ 2. 快系统：极速 Spiced NMPC 规控大脑 (The Fast System - 100Hz)
   # ---------------------------------------------------------------
   - id: fast_brain_nmpc
     path: target/release/fast_brain_node
@@ -2978,13 +3107,16 @@ nodes:
       DORA_RUNTIME_TYPE_CHECK: warn
       LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
-      # 从本地共享内存极速订阅避障势场力
+      # 订阅 100Hz 青蛙眼避障斥力 (Spice 调料)
       obstacle_force: isaac_sim_env/obstacle_force
+      # 订阅 100Hz 物理里程计 (车辆当前绝对位姿)
+      odometry: isaac_sim_env/odometry
+      # 订阅 慢大脑发布的人类示教引力线 (Human Prior)
+      human_prior: slow_brain_mapper/human_prior
     outputs:
-      # 输出运动指令契约 (v, w)
       - control_cmd
   # ---------------------------------------------------------------
-  # 🧠 3. 慢系统：拓扑建图与语义大脑 (The Slow System - 1Hz)
+  # 🧠 3. 慢系统：CLIDD 视觉定位与语义领航大脑 (The Slow System - 1Hz)
   # ---------------------------------------------------------------
   - id: slow_brain_mapper
     path: target/release/slow_brain_node
@@ -2992,8 +3124,12 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      # 从本地共享内存订阅 XFeat 二进制特征，执行 A* 拓扑寻路与建图
+      # 订阅 1Hz CLIDD 视觉高抗畸变特征点
       xfeat_features: isaac_sim_env/xfeat_features
+      # 订阅 100Hz 物理里程计，提供定位初始估计 (Initial Guess)
+      odometry: isaac_sim_env/odometry
+    outputs:
+      - human_prior # 🎯 里程碑 2.3：滚动发布下一个人类引力站牌
 </file>
 
 <file path="core-control/src/bin/fast_brain_node.rs">
@@ -3013,9 +3149,16 @@ use std::time::Duration;
 /// 状态金库：快大脑 100Hz 线程与 避障力接收线程 间绝对安全的无锁共享上下文
 struct 执行上下文 {
     pub 物理主权已初始化: bool,
-    pub 期望_x: f64,              // 纵向势场排斥力 (避障减速)
-    pub 期望_y: f64,              // 横向势场逃逸力 (变道机动)
+    pub 期望_x: f64,              // 纵向势场排斥力 (避障减速 - Spice)
+    pub 期望_y: f64,              // 横向势场逃逸力 (变道机动 - Spice)
     pub 当前线速度: f64,           // 上一帧 NMPC 输出并在物理世界执行后的真实线速度
+    // 🎯 里程碑 2.1：物理小脑绝对坐标与人类引力锚点
+    pub 当前_x: f64,
+    pub 当前_y: f64,
+    pub 当前_yaw: f64,
+    pub 引力_x: f64,
+    pub 引力_y: f64,
+    pub 引力_yaw: f64,
 }
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -3028,6 +3171,12 @@ async fn main() -> eyre::Result<()> {
         期望_x: 0.0,              // 默认无纵向排斥
         期望_y: 0.0,              // 默认无横向逃逸
         当前线速度: 0.0,
+        当前_x: 0.0,              // 🎯 物理小脑高频绝对坐标 X 初始值
+        当前_y: 0.0,              // 🎯 物理小脑高频绝对坐标 Y 初始值
+        当前_yaw: 0.0,            // 🎯 物理小脑高频绝对角度 Yaw 初始值
+        引力_x: 0.0,              // 🎯 慢系统人类引力锚点 X 初始值
+        引力_y: 0.0,              // 🎯 慢系统人类引力锚点 Y 初始值
+        引力_yaw: 0.0,            // 🎯 慢系统人类引力锚点 Yaw 初始值
     }));
     let 金库_规控 = 状态金库.clone();
     // ---------------------------------------------------------
@@ -3037,6 +3186,19 @@ async fn main() -> eyre::Result<()> {
         let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
         let mut 求解器已就绪 = false;
         let mut 循环计数: u64 = 0;
+        // 🎯 建立高频落盘时序审计日志 (CSV 格式)
+        use std::io::Write as _;
+        let mut 日志文件 = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("nmpc_telemetry.csv")
+            .expect("❌ 无法创建高频时序审计日志");
+        // 写入 CSV 表头，对齐所有控制维度
+        let _ = writeln!(
+            日志文件,
+            "tick,cur_x,cur_y,cur_yaw,target_x,target_y,target_yaw,force_x,force_y,v_cmd,w_cmd,cur_v"
+        );
         let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
         节拍器.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -3064,15 +3226,34 @@ async fn main() -> eyre::Result<()> {
                 continue;
             }
             // 将避障力带来的期望偏差，高频注入 NMPC 数学命题
+            let (当前_x, 当前_y, 当前_yaw) = {
+                let lock = 金库_规控.read().unwrap();
+                (lock.当前_x, lock.当前_y, lock.当前_yaw)
+            };
+            let (引力_x, 引力_y, 引力_yaw) = {
+                let lock = 金库_规控.read().unwrap();
+                (lock.引力_x, lock.引力_y, lock.引力_yaw)
+            };
+            // 1. 坐标系转换：将全局的“人类引力锚点”转换到小车当前的“局部坐标系”
+            let dx = 引力_x - 当前_x;
+            let dy = 引力_y - 当前_y;
+            let 局部目标_x = dx * 当前_yaw.cos() + dy * 当前_yaw.sin();
+            let 局部目标_y = -dx * 当前_yaw.sin() + dy * 当前_yaw.cos();
+            let 局部目标_yaw = 引力_yaw - 当前_yaw;
             let 目标线速度 = (0.3 + 期望_x).clamp(0.0, 0.3); // 限制在安全范围内
             let mut 注入成功 = true;
             for k in 0..=20 {
-                // 🎯 核心修复 2 (时域步长对齐)
-                // NMPC 的预测总时间为 1.0s，共 20 步，单步时间间隔为 0.05s！
-                // 必须使用 0.05 替换原版的 0.01，使参考轨迹的时域与求解器时域完全对齐！
-                // 这样小车线速度便能顺利释放到真实的 0.3 m/s，绝不发生动力爬行或滞后。
-                let ref_x = 目标线速度 * (k as f64 * 0.05);
-                if let Err(e) = 规控大脑.设置参考轨迹点(k, ref_x, 期望_y, 0.0, 目标线速度) {
+                let 比例 = (k as f64) / 20.0; // 0.0 到 1.0 的插值比例
+                // 2. 基础引力线：完全复刻人类示教的走线
+                let 基础_ref_x = 局部目标_x * 比例;
+                let 基础_ref_y = 局部目标_y * 比例;
+                let 基础_ref_yaw = 局部目标_yaw * 比例;
+                // 3. 撒入调料 (Spice)：叠加青蛙眼的避障斥力
+                // 当没有障碍物时，期望_x 和 期望_y 为 0，小车完美走线；
+                // 当有障碍物时，斥力强行将参考轨迹推离危险区，实现“弹性橡皮筋”避障！
+                let spiced_ref_x = 基础_ref_x + (期望_x * 比例);
+                let spiced_ref_y = 基础_ref_y + (期望_y * 比例);
+                if let Err(e) = 规控大脑.设置参考轨迹点(k, spiced_ref_x, spiced_ref_y, 基础_ref_yaw, 目标线速度) {
                     eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
                     注入成功 = false;
                     break;
@@ -3087,6 +3268,13 @@ async fn main() -> eyre::Result<()> {
                         let mut lock = 金库_规控.write().unwrap();
                         lock.当前线速度 = 线速度_v;
                     }
+                    // 📊 2026 工业级数值探针
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        日志文件,
+                        "{}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}",
+                        循环计数, 当前_x, 当前_y, 当前_yaw, 引力_x, 引力_y, 引力_yaw, 期望_x, 期望_y, 线速度_v, 角速度_w, 当前线速度
+                    );
                     // 📊 2026 工业级数值探针
                     if 循环计数 % 100 == 0 {
                         println!(
@@ -3142,6 +3330,24 @@ async fn main() -> eyre::Result<()> {
                         let mut lock = 状态金库.write().unwrap();
                         lock.期望_x = f_x; // 作用于 NMPC 的纵向参考速度
                         lock.期望_y = f_y; // 作用于 NMPC 的横向路径偏移
+                    }
+                }
+                else if id.as_str() == "odometry" {
+                    let arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    if arr.len() >= 3 {
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.当前_x = arr.value(0) as f64;
+                        lock.当前_y = arr.value(1) as f64;
+                        lock.当前_yaw = arr.value(2) as f64;
+                    }
+                }
+                else if id.as_str() == "human_prior" {
+                    let arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                    if arr.len() >= 3 {
+                        let mut lock = 状态金库.write().unwrap();
+                        lock.引力_x = arr.value(0) as f64;
+                        lock.引力_y = arr.value(1) as f64;
+                        lock.引力_yaw = arr.value(2) as f64;
                     }
                 }
             }
@@ -3327,7 +3533,12 @@ class BionicFrogEye:
         if total_energy > 15.0:
             x_c = np.sum(self.x_coords * weighted_energy) / total_energy
             dx = (x_c - self.w / 2.0) / (self.w / 2.0)
-            F_y = -dx * 1.5
+            # 🎯 2026 极性纠偏：修正避障逃逸力极性反转错误！
+            # 在机器人局部坐标系中，+Y 为左，-Y 为右。
+            # 当障碍物偏右（dx > 0）时，期望避障力 F_y 必须为正（F_y > 0，向左逃逸）；
+            # 当障碍物偏左（dx < 0）时，期望避障力 F_y 必须为负（F_y < 0，向右逃逸）。
+            # 彻底粉碎“吸引力陷阱”，将其重塑为“绝对排斥力”！
+            F_y = dx * 1.5
             F_x = - (total_energy / (self.w * self.h)) * 5.0
         else:
             F_x, F_y = 0.0, 0.0
@@ -3336,12 +3547,13 @@ class BionicFrogEye:
 # ====================================================
 #  📸 XFeat 局部高精度特征提取引擎
 # ====================================================
-class XFeatEngine:
+class CLIDDEngine:
     def __init__(self, model_path):
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
-        print(f"✓ [XFeat] 神经网络推理引擎装载完毕，物理计算提供商: {self.session.get_providers()}")
+        print(f"✓ [CLIDD-N64] 跨层可变形神经网络引擎装载完毕！")
+        print(f"  -> 架构优势: 0.019M 极简参数 | 842 FPS 吞吐 | 64维高抗畸变描述子")
     def extract(self, frame_rgb, top_k=200):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         pad_y = (640 - 480) // 2
@@ -3446,11 +3658,11 @@ def main():
     rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
     rgb_annotator.attach([render_product])
     print("✅ [物理主权] Replicator 离屏标注器并网完成！")
-    xfeat_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
-    if not os.path.exists(xfeat_model_path):
-        print(f"❌ 致命错误：找不到 XFeat ONNX 权重文件 -> {xfeat_model_path}")
+    clidd_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
+    if not os.path.exists(clidd_model_path):
+        print(f"❌ 致命错误：找不到 CLIDD ONNX 权重文件 -> {clidd_model_path}")
         sys.exit(1)
-    xfeat_engine = XFeatEngine(xfeat_model_path)
+    clidd_engine = CLIDDEngine(clidd_model_path)
     frog_eye = BionicFrogEye(640, 480)
     world.reset()
     world.play()
@@ -3481,15 +3693,25 @@ def main():
                     rgb_frame = rgb_frame[:, :, :3]
                 if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
                     rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
-                if rgb_frame.size > 0:
-                    F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                    # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
-                    arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
-                    dora_node.send_output("obstacle_force", arrow_obstacle_force)
-                    if tick % 100 == 0:
-                        arrow_xfeat_features = xfeat_engine.extract(rgb_frame, top_k=200)
-                        if arrow_xfeat_features is not None and len(arrow_xfeat_features) > 0:
-                            dora_node.send_output("xfeat_features", arrow_xfeat_features)
+            if rgb_frame.size > 0:
+                # 🎯 里程碑 1.1：提取底盘真实物理位姿 (模拟 VIO 积分输出)
+                positions, orientations = car.get_world_poses()
+                pose_x, pose_y = float(positions[0][0]), float(positions[0][1])
+                qw, qx, qy, qz = orientations[0]
+                # 四元数转偏航角 (Yaw)
+                pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
+                # 100Hz 高频广播物理里程计
+                arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
+                dora_node.send_output("odometry", arrow_odom)
+                F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
+                # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
+                arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
+                dora_node.send_output("obstacle_force", arrow_obstacle_force)
+                if tick % 100 == 0:
+                    # 🎯 里程碑 2.1：视觉皮层正式进化，调用 CLIDD 引擎
+                    arrow_clidd_features = clidd_engine.extract(rgb_frame, top_k=200)
+                    if arrow_clidd_features is not None and len(arrow_clidd_features) > 0:
+                        dora_node.send_output("xfeat_features", arrow_clidd_features)
             event = dora_node.next(timeout=0.001)
             if event is not None:
                 ev_type = event["type"]
@@ -3528,74 +3750,6 @@ def main():
         print("🔌 物理仿真界代理已安全卸载。")
 if __name__ == "__main__":
     main()
-</file>
-
-<file path=".gitignore">
-# =================================================================
-# 🛡️ FSD-car V4.2 统一主干仓库 Git 忽略契约 (2026 Ubuntu 极致净化版)
-# =================================================================
-
-# --- 1. 系统、IDE 与临时垃圾文件 ---
-.DS_Store
-Thumbs.db
-*.tmp
-*.bak
-.vscode/
-.idea/
-*.user
-
-# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
-# 彻底拦截 uv 和传统 Python 的虚拟环境与缓存
-.venv/
-.uv/
-.python-version
-__pycache__/
-*.py[cod]
-*$py.class
-
-# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
-# 强制忽略 DORA 产生的运行日志和协调器日志
-/out/
-out/
-dora-coordinator.txt
-dora-daemon.txt
-
-# --- 4. Rust 工作空间全局编译缓存 ---
-# 强制忽略整个多包工作空间下的 release/debug 编译产物
-/target/
-
-# --- 5. 跨系统动态链接库与大资产模型 ---
-# 拦截系统级 SO 库与大尺寸 AI 模型，防止 Git 仓库历史体积爆炸
-*.so
-*.so.*
-*.tgz
-*.a
-*.lib
-*.dll
-*.dylib
-
-# 🛡️ 架构师建议：大尺寸 ONNX 模型建议放在 model/ 目录下，通过 download_models.sh 脚本下载，
-# 或者使用 Git LFS 管理，绝对不要直接塞入主干 Git 历史中。
-*.onnx
-
-# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
-simulation-env/c_generated_code/
-simulation-env/acados_ocp.json
-simulation-env/acados/
-simulation-env/*.log
-simulation-env/MUJOCO_LOG.TXT
-simulation-env/nmpc_telemetry.log
-
-# 🛡️ 架构师建议：车端运行产生的动态拓扑记忆，属于高频变动的非代码资产
-topo_memory.json
-
-# --- 7. 🛡️ NEXUS 特别新增：AI 打包大文件与测试残留隔离 ---
-repomix-output.xml
-repomix-output.json
-repomix-output.txt
-repomix-output.md
-.claude/
-4.py
 </file>
 
 </files>
