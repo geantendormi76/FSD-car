@@ -266,20 +266,24 @@ def main():
     world.reset()
     world.play()
     
+    # 🎯 🌟 SOTA 级定位：开机瞬间锁定初始黄金位姿 [cite: 1.2.7]
+    # 用于重置事件触发时，以 0 误差精度瞬间瞬移回到起点！
+    positions, orientations = car.get_world_poses()
+    start_pos = positions.copy()
+    start_rot = orientations.copy()
+    print(f"📸 [物理代理] 成功锁定初始黄金起跑线位姿 -> pos: {start_pos}, rot: {start_rot}")
+
     # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
     print("⏳ [物理代理] 正在进行离屏 RTX 渲染管道硬件预热...")
     for _ in range(60):
         world.step(render=True)
     print("✅ [物理代理] RTX 渲染管道预热完毕，高保真图像流并网！")
-
     print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
-
     L = 0.1125
     R = 0.03
     tick = 0
     v_cmd = 0.0
     w_cmd = 0.0
-
     try:
         while simulation_app.is_running():
             # 🛡️ 绝对时钟步进：每次严格推进 0.01s
@@ -312,6 +316,13 @@ def main():
                 dora_node.send_output("odometry", arrow_odom)
 
                 F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
+                
+                # 📸 SOTA 级并网：将 Isaac Sim 离屏渲染的 RGB 图像压缩为 JPEG 字节流广播
+                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                _, jpeg_encoded = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
+                dora_node.send_output("jpeg_image", arrow_jpeg)
+
                 # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
                 arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                 dora_node.send_output("obstacle_force", arrow_obstacle_force)
@@ -326,10 +337,17 @@ def main():
                 ev_type = event["type"]
                 if ev_type == "INPUT":
                     if event["id"] == "control_cmd":
-                        # 🎯 架构师升维：直接将 Arrow 数组映射为 numpy 视图，零拷贝读取
                         cmd_arr = event["value"].to_numpy()
                         if len(cmd_arr) == 2:
                             v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
+                    elif event["id"] == "simulation_reset":
+                        # 🎯 🌟 SOTA 级物理瞬移重置：瞬间清空物理惯性并瞬移回起跑线 [cite: 1.2.7]
+                        print("🔄 [物理代理] 收到慢脑自愈重置信号！正在将小车瞬移回起点，清空物理状态...")
+                        car.set_world_pose(position=start_pos, orientation=start_rot)
+                        car.set_joint_velocities(np.zeros((1, car.num_dof)))
+                        v_cmd = 0.0
+                        w_cmd = 0.0
+                        tick = 0
                 elif ev_type == "STOP":
                     print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
                     break

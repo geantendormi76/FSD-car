@@ -27,15 +27,14 @@ struct 执行上下文 {
     pub 引力_x: f64,
     pub 引力_y: f64,
     pub 引力_yaw: f64,
+    // 🛡️ 状态缓存：记录上一次引力点成功接收的时间戳，用于看门狗倒计时 [cite: 1.2.5]
+    pub 上次引力更新时间: std::time::Instant,
 }
-
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
-
     // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
     let (mut node, mut events) = DoraNode::init_from_env()?;
-
     // 2. 初始化全简体中文状态金库
     let 状态金库 = Arc::new(RwLock::new(执行上下文 {
         物理主权已初始化: false,
@@ -48,6 +47,7 @@ async fn main() -> eyre::Result<()> {
         引力_x: 0.0,              // 🎯 慢系统人类引力锚点 X 初始值
         引力_y: 0.0,              // 🎯 慢系统人类引力锚点 Y 初始值
         引力_yaw: 0.0,            // 🎯 慢系统人类引力锚点 Yaw 初始值
+        上次引力更新时间: std::time::Instant::now(),
     }));
     let 金库_规控 = 状态金库.clone();
 
@@ -58,7 +58,19 @@ async fn main() -> eyre::Result<()> {
         let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
         let mut 求解器已就绪 = false;
         let mut 循环计数: u64 = 0;
-        
+
+        // 🎯 SOTA 药方 2：自激振荡一阶低通防抖阻尼器状态 (PT1 Filter) [cite: 1.1.2]
+        let mut 滤波后的期望_x = 0.0f64;
+        let mut 滤波后的期望_y = 0.0f64;
+
+        // 🎯 SOTA 药方 3：基于一阶滞后空间归一化的平滑前视滤波器状态 (First-Order Lag Spatial Filter) [cite: 21]
+        let mut 滤波后的引力_x = 0.0f64;
+        let mut 滤波后的引力_y = 0.0f64;
+        let mut 滤波后的引力_yaw = 0.0f64;
+
+        // 🛡️ SCAN-Planner 状态缓存：记录上一次控制周期的角速度输出，用于自车光流虚警抑制
+        let mut 上一次角速度_w = 0.0f64;
+
         // 🎯 建立高频落盘时序审计日志 (CSV 格式)
         use std::io::Write as _;
         let mut 日志文件 = std::fs::OpenOptions::new()
@@ -67,45 +79,48 @@ async fn main() -> eyre::Result<()> {
             .truncate(true)
             .open("nmpc_telemetry.csv")
             .expect("❌ 无法创建高频时序审计日志");
-        
         // 写入 CSV 表头，对齐所有控制维度
         let _ = writeln!(
             日志文件,
             "tick,cur_x,cur_y,cur_yaw,target_x,target_y,target_yaw,force_x,force_y,v_cmd,w_cmd,cur_v"
         );
-
         let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
         节拍器.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             节拍器.tick().await;
             循环计数 += 1;
-            
-            // 极速读取状态金库
-            let (已初始化, 期望_x, 期望_y, 当前线速度) = {
+            // 极速读取状态金库 (新增生命时间戳获取)
+            let (已初始化, 期望_x, 期望_y, 当前线速度, 上次更新时间) = {
                 let lock = 金库_规控.read().unwrap();
-                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度)
+                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度, lock.上次引力更新时间)
             };
-
             if !已初始化 {
                 continue;
             }
 
+            // 🛡️ 第四道防线：生命看门狗安全自愈守护 (Failsafe Watchdog) [cite: 1.2.5]
+            // 飞控级底线防线：由于视觉重定位与重放存在天然的 1Hz 帧率抖动，我们将超时宽限放宽至 5.0 秒 [cite: 1.2.5]
+            // 允许小车在特征偏稀疏的盲区（如 Node 6/7）暂时丢失视觉锁时，完全依赖 100Hz 高频惯性航位推算平滑“滑行（Glide）”通过！ [cite: 1.2.5]
+            let 失联时长 = 上次更新时间.elapsed();
+            if 失联时长 > std::time::Duration::from_millis(5000) {
+                eprintln!("⚠️ [Failsafe Watchdog] 致命警告: 慢脑失联时长过长 ({:.2?}s)！触发安全防线紧急抱闸！", 失联时长.as_secs_f64());
+                let 零速度指令_arrow = dora_node_api::arrow::array::Float32Array::from(vec![0.0f32, 0.0f32]);
+                let _ = node.send_output(
+                    "control_cmd".to_string().into(),
+                    MetadataParameters::default(),
+                    零速度指令_arrow,
+                );
+                continue; // 阻断 NMPC 主线程，保证底盘绝对安全
+            }
             // NMPC 求解器温启动
             if !求解器已就绪 {
                 println!("✅ [快系统] NMPC 求解器温启动完成，物理主权接管就绪！");
                 求解器已就绪 = true;
             }
-
-            // 🎯 核心修复 1 (自愈锚定)
-            // 纯视觉无图导航采用“局部相对坐标系”。
-            // 必须在【每一帧】将当前状态强制锚定在原点 (0,0,0)，仅更新当前真实线速度！
-            // 否则 Acados 会使用上一帧的预测末端作为初始状态，导致控制坐标系漂移与疯狂旋转！
             if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 当前线速度) {
                 eprintln!("⚠️ 局部状态锚定失败: {}，跳过本帧", e);
                 continue;
             }
-
-            // 将避障力带来的期望偏差，高频注入 NMPC 数学命题
             let (当前_x, 当前_y, 当前_yaw) = {
                 let lock = 金库_规控.read().unwrap();
                 (lock.当前_x, lock.当前_y, lock.当前_yaw)
@@ -115,30 +130,78 @@ async fn main() -> eyre::Result<()> {
                 (lock.引力_x, lock.引力_y, lock.引力_yaw)
             };
 
-            // 1. 坐标系转换：将全局的“人类引力锚点”转换到小车当前的“局部坐标系”
-            let dx = 引力_x - 当前_x;
-            let dy = 引力_y - 当前_y;
-            let 局部目标_x = dx * 当前_yaw.cos() + dy * 当前_yaw.sin();
-            let 局部目标_y = -dx * 当前_yaw.sin() + dy * 当前_yaw.cos();
-            let 局部目标_yaw = 引力_yaw - 当前_yaw;
+            // 🛡️ 第三道防线：基于一阶滞后空间归一化的平滑前视滤波器 (First-Order Lag Spatial Filter) [cite: 21]
+            // 物理作用：将示教地图中高频突变的 20-30cm 阶跃（锯齿折线）平滑拟合为 C2 连续的过渡渐进线 [cite: 21]
+            // 避免 NMPC 在切换节点时高频左右摆舵，从根本上消灭轮速差和车身抖动的物理共振！ [cite: 21]
+            if 循环计数 == 1 || (引力_x == 0.0 && 引力_y == 0.0) {
+                滤波后的引力_x = 引力_x;
+                滤波后的引力_y = 引力_y;
+                滤波后的引力_yaw = 引力_yaw;
+            } else {
+                let 空间滤波系数 = 0.15f64; // 前视目标点在 100-150ms 内平滑过渡，消灭突变阶跃
+                滤波后的引力_x += 空间滤波系数 * (引力_x - 滤波后的引力_x);
+                滤波后的引力_y += 空间滤波系数 * (引力_y - 滤波后的引力_y);
+                滤波后的引力_yaw += 空间滤波系数 * (引力_yaw - 滤波后的引力_yaw);
+            }
 
-            let 目标线速度 = (0.3 + 期望_x).clamp(0.0, 0.3); // 限制在安全范围内
+            // 1. 坐标系转换：将平滑归一化后的“虚拟引力锚点”转换到小车当前的“局部坐标系”
+            let dx = 滤波后的引力_x - 当前_x;
+            let dy = 滤波后的引力_y - 当前_y;
+            let mut 局部目标_x = dx * 当前_yaw.cos() + dy * 当前_yaw.sin();
+            let mut 局部目标_y = -dx * 当前_yaw.sin() + dy * 当前_yaw.cos();
+
+            // 🎯 🛡️ SCAN-Planner 药方 1：双圆盘体态切向对齐 (Tangent-Following Induced Yaw) [cite: 2]
+            // 物理作用：使车身长轴始终追踪示教轨迹的切向方向，缩小车身侧向投影，让小车像泥鳅一样“顺着一侧溜过去” [cite: 3]
+            let mut 局部目标_yaw = 滤波后的引力_yaw - 当前_yaw;
+            局部目标_yaw = 局部目标_yaw.clamp(-0.25, 0.25); // 限制方向大打角，避免原地横摆刮擦 [cite: 24]
+
+            // 🎯 SOTA 药方 1：前视引力弹性限制器 (Waypoint Gating) [cite: 1.2.1]
+            let 物理跨度 = (局部目标_x * 局部目标_x + 局部目标_y * 局部目标_y).sqrt();
+            let 物理前视极限 = 1.2f64;
+            if 物理跨度 > 物理前视极限 {
+                let 缩放比 = 物理前视极限 / 物理跨度;
+                局部目标_x *= 缩放比;
+                局部目标_y *= 缩放比;
+            }
+
+            // 🎯 SOTA 药方 2：自激振荡低通滤波阻尼 (PT1 Filter) [cite: 1.1.2]
+            let 滤波系数 = 0.086f64;
+            滤波后的期望_x += 滤波系数 * (期望_x - 滤波后的期望_x);
+            滤波后的期望_y += 滤波系数 * (期望_y - 滤波后的期望_y);
+
+            // 🎯 🛡️ SCAN-Planner 药方 2：自车运动光流虚警抑制 (Egomotion Flow Suppression)
+            // 物理作用：如果车辆正在大角度主动转弯，视野中的高频扫动完全是自车相机摆动引起的 [cite: 1.1.2]
+            // 我们根据上一步输出的角速度对青蛙眼的侧向力进行指数衰减抑制，完美保留对真实“动态突然切入物体”的避障本能反射！
+            let mut 抑制后的期望_y = 滤波后的期望_y;
+            let 角速度绝对值 = 上一次角速度_w.abs();
+            if 角速度绝对值 > 0.12 {
+                // 指数衰减：w=0.6 时强力衰减 85%，在非转弯状态（w < 0.12）则 100% 保持动态反射活性
+                let 抑制因子 = (-4.5 * (角速度绝对值 - 0.12)).exp();
+                抑制后的期望_y *= 抑制因子.clamp(0.15, 1.0);
+            }
+
+            // 🎯 🛡️ SCAN-Planner 药方 3：反弹梯度引导向量注入 (Rebound Gradient Guidance) [cite: 4]
+            // 物理作用：侧向力触发时，我们将其转化为单向指向安全一侧的“引导渐进线”，引导 NMPC 顺着一侧滑行通过 [cite: 4]
+            let mut rebound_y = 0.0f64;
+            if 抑制后的期望_y.abs() > 0.02 {
+                let rebound_dir = 抑制后的期望_y.signum(); // 锁死极性方向，消除左右交变摆动
+                rebound_y = rebound_dir * (抑制后的期望_y.abs() * 0.75).min(0.35);
+            }
+
+            // 动力学限幅对齐：限制在安全最大速度 0.20 m/s 内
+            let 目标线速度 = (0.20 + 滤波后的期望_x).clamp(0.0, 0.20); 
+
             let mut 注入成功 = true;
-            
             for k in 0..=20 {
                 let 比例 = (k as f64) / 20.0; // 0.0 到 1.0 的插值比例
-                
-                // 2. 基础引力线：完全复刻人类示教的走线
                 let 基础_ref_x = 局部目标_x * 比例;
                 let 基础_ref_y = 局部目标_y * 比例;
                 let 基础_ref_yaw = 局部目标_yaw * 比例;
-
-                // 3. 撒入调料 (Spice)：叠加青蛙眼的避障斥力
-                // 当没有障碍物时，期望_x 和 期望_y 为 0，小车完美走线；
-                // 当有障碍物时，斥力强行将参考轨迹推离危险区，实现“弹性橡皮筋”避障！
-                let spiced_ref_x = 基础_ref_x + (期望_x * 比例);
-                let spiced_ref_y = 基础_ref_y + (期望_y * 比例);
-
+                
+                // 3. 注入 SCAN-Planner 反弹梯度，重塑 NMPC 的 20 步参考弹道
+                let spiced_ref_x = 基础_ref_x + (滤波后的期望_x * 比例);
+                let spiced_ref_y = 基础_ref_y + (rebound_y * 比例); 
+                
                 if let Err(e) = 规控大脑.设置参考轨迹点(k, spiced_ref_x, spiced_ref_y, 基础_ref_yaw, 目标线速度) {
                     eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
                     注入成功 = false;
@@ -150,11 +213,12 @@ async fn main() -> eyre::Result<()> {
             // 求解最优控制量
             match 规控大脑.求解最优控制量(当前线速度) {
                 Ok((线速度_v, 角速度_w)) => {
-                    // 更新线速度状态用于下一次积分
+                    // 更新线速度状态与上一步角速度，用于下一次积分与自建光流虚警抑制
                     {
                         let mut lock = 金库_规控.write().unwrap();
                         lock.当前线速度 = 线速度_v;
                     }
+                    上一次角速度_w = 角速度_w;
 
                     // 📊 2026 工业级数值探针
                     use std::io::Write as _;
@@ -245,6 +309,8 @@ async fn main() -> eyre::Result<()> {
                         lock.引力_x = arr.value(0) as f64;
                         lock.引力_y = arr.value(1) as f64;
                         lock.引力_yaw = arr.value(2) as f64;
+                        // 🎯 喂狗：刷新引力点接收时间戳，喂养生命看门狗！ [cite: 1.2.5]
+                        lock.上次引力更新时间 = std::time::Instant::now();
                     }
                 }
             }

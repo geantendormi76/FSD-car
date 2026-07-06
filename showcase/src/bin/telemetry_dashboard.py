@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     # 🛡️ 协议对准：强制锁死 0.3.13 版本，与宿主 dora-cli 0.3.13 通信消息格式 v0.6.0 完美重合！
 #     "dora-rs==0.3.13",
 #     "numpy>=1.26.0",
 #     "opencv-python>=4.8.0",
@@ -15,39 +14,56 @@ from dora import Node
 
 def main():
     print("========================================================")
-    print("💎 [NEXUS 探针] DORA 旁路可视化遥测大屏已启动...")
-    print("设计哲学: 零拷贝旁路监听 | 双屏异构渲染 | 绝对不阻塞主控环路")
+    print("💎 [NEXUS AR HUD] SOTA 级增强现实遥测大屏并网成功...")
+    print("设计哲学: 仿真视讯零延迟解码 | AR特征增强叠加 | 多模态并构")
     print("========================================================")
     
-    # 接入 DORA 拓扑网关
     dora_node = Node()
 
-    # 状态金库缓存
+    # 状态金库
     robot_x, robot_y, robot_yaw = 0.0, 0.0, 0.0
     prior_x, prior_y, prior_yaw = 0.0, 0.0, 0.0
     force_x, force_y = 0.0, 0.0
     v_cmd, w_cmd = 0.0, 0.0
     features = []
+    current_frame = None
 
-    # 画布物理参数
+    # 画布与地图参数
     map_size = 600
-    map_scale = 40.0  # 1 meter = 40 pixels (适应 10m 级别的室内/室外场景)
+    map_scale = 35.0  # 适应更宽广的建图轨迹
     map_center = (map_size // 2, map_size // 2)
+    trajectory_history = []
 
-    window_name = "NEXUS Telemetry Dashboard (Ubuntu 26.04 LTS)"
+    window_name = "NEXUS AR HUD Telemetry (SOTA 2026)"
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
     while True:
-        # 🛡️ 架构师自愈：使用 0.02s (50Hz) 的非阻塞超时，确保渲染帧率平滑
-        event = dora_node.next(timeout=0.02)
+        event = dora_node.next(timeout=0.01) # 100Hz 级高速轮询
         if event is not None:
             ev_type = event["type"]
             if ev_type == "INPUT":
                 ev_id = event["id"]
-                if ev_id == "odometry":
+                if ev_id == "jpeg_image":
+                    # 🎯 零拷贝解码 JPEG 图像流
+                    jpeg_bytes = event["value"].to_numpy()
+                    current_frame = cv2.imdecode(jpeg_bytes, cv2.IMREAD_COLOR)
+                elif ev_id == "odometry":
                     data = event["value"].to_numpy()
                     if len(data) >= 3:
                         robot_x, robot_y, robot_yaw = data[0], data[1], data[2]
+                        
+                        # 🎯 🌟 SOTA 级大屏自愈：如果检测到瞬移（坐标大幅度跳变），自动清空历史画线
+                        if len(trajectory_history) > 0:
+                            last_x, last_y = trajectory_history[-1]
+                            dist_jump = np.sqrt((robot_x - last_x)**2 + (robot_y - last_y)**2)
+                            if dist_jump > 2.0:  # 瞬移跨度大于 2 米，判定为重置
+                                trajectory_history.clear()
+                                print("🔄 [NEXUS 大屏] 检测到物理重置，历史轨迹画布已清空！")
+                                
+                        # 记录历史行驶轨迹
+                        trajectory_history.append((robot_x, robot_y))
+                        if len(trajectory_history) > 400:
+                            trajectory_history.pop(0)
                 elif ev_id == "human_prior":
                     data = event["value"].to_numpy()
                     if len(data) >= 3:
@@ -61,77 +77,82 @@ def main():
                     if len(data) >= 2:
                         v_cmd, w_cmd = data[0], data[1]
                 elif ev_id == "xfeat_features":
-                    # 🎯 零拷贝解析 Arrow StructArray
                     struct_arr = event["value"]
                     x_arr = struct_arr.field("x").to_numpy()
                     y_arr = struct_arr.field("y").to_numpy()
                     features = list(zip(x_arr, y_arr))
             elif ev_type == "STOP":
-                print("🛑 [NEXUS 探针] 收到 DORA 停止信号，安全卸载大屏。")
                 break
 
         # ==========================================
-        # 🖥️ 渲染引擎：双屏拼接 (1200 x 600)
+        # 🖥️ 渲染引擎：AR 双屏拼接 (1240 x 620)
         # ==========================================
-        dashboard = np.zeros((600, 1200, 3), dtype=np.uint8)
+        dashboard = np.zeros((620, 1240, 3), dtype=np.uint8)
 
-        # --- 左半屏：全局拓扑与轨迹 (600x600) ---
-        # 绘制物理网格 (每 1 米一格)
-        grid_step = int(map_scale)
-        for i in range(0, 600, grid_step):
-            cv2.line(dashboard, (i, 0), (i, 600), (30, 30, 30), 1)
-            cv2.line(dashboard, (0, i), (600, i), (30, 30, 30), 1)
+        # 1. 如果没有接收到视讯帧，展示温启动加载界面
+        if current_frame is None:
+            hud_view = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(hud_view, "WAITING FOR SIMULATION STREAM...", (100, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+        else:
+            # 拷贝当前帧，准备绘制 AR HUD
+            hud_view = current_frame.copy()
 
-        # 坐标系转换闭包 (物理坐标 -> 像素系，Y轴向上为正)
+            # 🎯 🌟 AR HUD 核心实现：将特征点直接渲染在相机画面上
+            for (fx, fy) in features:
+                # 在画面对应的像素位置，绘制高亮半透明准心
+                cv2.circle(hud_view, (int(fx), int(fy)), 2, (0, 255, 0), -1)
+                
+            # 🎯 🌟 AR HUD 核心实现：将排斥力向量绘制在视野中央下方 (直观反映推力)
+            f_center_x = 320
+            f_center_y = 400
+            cv2.circle(hud_view, (f_center_x, f_center_y), 6, (255, 255, 255), -1)
+            f_scale = 120.0
+            f_end_x = int(f_center_x + force_x * f_scale)
+            f_end_y = int(f_center_y - force_y * f_scale)
+            # 绘制醒目的排斥力红色箭矢
+            cv2.arrowedLine(hud_view, (f_center_x, f_center_y), (f_end_x, f_end_y), (0, 0, 255), 3, tipLength=0.25)
+            cv2.putText(hud_view, f"Bionic Repulse: ({force_x:.2f}, {force_y:.2f})", (20, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+
+        # 调整 HUD 尺寸适应大屏
+        hud_resized = cv2.resize(hud_view, (620, 620))
+        dashboard[0:620, 620:1240] = hud_resized
+
+        # --- 左半屏：全局拓扑与轨迹跟踪 (620x620) ---
+        map_view = np.zeros((620, 620, 3), dtype=np.uint8)
+        # 绘制科幻暗格背景
+        for i in range(0, 620, 40):
+            cv2.line(map_view, (i, 0), (i, 620), (25, 25, 25), 1)
+            cv2.line(map_view, (0, i), (620, i), (25, 25, 25), 1)
+
         def to_map_coords(px, py):
-            mx = int(map_center[0] + px * map_scale)
-            my = int(map_center[1] - py * map_scale) 
+            mx = int(310 + px * map_scale)
+            my = int(310 - py * map_scale)
             return (mx, my)
 
-        # 1. 绘制人类先验引力点 (Target)
+        # 绘制历史行驶轨迹线 (弹性橡皮筋面包屑)
+        if len(trajectory_history) > 1:
+            for i in range(len(trajectory_history) - 1):
+                pt1 = to_map_coords(trajectory_history[i][0], trajectory_history[i][1])
+                pt2 = to_map_coords(trajectory_history[i+1][0], trajectory_history[i+1][1])
+                cv2.line(map_view, pt1, pt2, (120, 255, 120), 1, cv2.LINE_AA)
+
+        # 绘制目标引力点 (Human Prior)
         prior_pt = to_map_coords(prior_x, prior_y)
-        cv2.drawMarker(dashboard, prior_pt, (0, 255, 255), cv2.MARKER_STAR, 20, 2)
-        cv2.putText(dashboard, "Target (Human Prior)", (prior_pt[0]+10, prior_pt[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        cv2.drawMarker(map_view, prior_pt, (0, 255, 255), cv2.MARKER_STAR, 22, 2)
+        cv2.putText(map_view, "Goal", (prior_pt[0]+12, prior_pt[1]-12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        # 2. 绘制小车当前位姿 (Odometry)
+        # 绘制小车
         robot_pt = to_map_coords(robot_x, robot_y)
-        cv2.circle(dashboard, robot_pt, 8, (0, 255, 0), -1)
-        # 绘制车头朝向向量
-        end_x = int(robot_pt[0] + 25 * np.cos(robot_yaw))
-        end_y = int(robot_pt[1] - 25 * np.sin(robot_yaw))
-        cv2.arrowedLine(dashboard, robot_pt, (end_x, end_y), (0, 0, 255), 2, tipLength=0.3)
-        cv2.putText(dashboard, "FSD-car", (robot_pt[0]+10, robot_pt[1]+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.circle(map_view, robot_pt, 9, (0, 255, 0), -1)
+        r_end_x = int(robot_pt[0] + 28 * np.cos(robot_yaw))
+        r_end_y = int(robot_pt[1] - 28 * np.sin(robot_yaw))
+        cv2.arrowedLine(map_view, robot_pt, (r_end_x, r_end_y), (0, 100, 255), 2, tipLength=0.3)
 
-        # --- 右半屏：感知与势场 (600x600 区域内嵌 560x420 的相机视野) ---
-        offset_x = 600
-        cv2.rectangle(dashboard, (offset_x, 0), (1200, 600), (15, 15, 15), -1)
-        cv2.putText(dashboard, "Perception & Force Field", (offset_x + 20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        # 叠加 UI 状态栏
+        cv2.putText(map_view, "FSD Global Trajectory", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(map_view, f"CMD -> v: {v_cmd:.2f} m/s | w: {w_cmd:.2f} rad/s", (20, 580), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 50), 2)
 
-        # 绘制相机视野边界 (假设原图 640x480，按比例缩放至 560x420)
-        cam_offset_x = offset_x + 20
-        cam_offset_y = 80
-        scale_p = 560 / 640.0
-        cv2.rectangle(dashboard, (cam_offset_x, cam_offset_y), (cam_offset_x + 560, cam_offset_y + 420), (50, 50, 50), 1)
-
-        # 3. 绘制 CLIDD 稀疏特征点
-        for (fx, fy) in features:
-            px = int(cam_offset_x + fx * scale_p)
-            py = int(cam_offset_y + fy * scale_p)
-            cv2.circle(dashboard, (px, py), 2, (0, 255, 0), -1)
-        cv2.putText(dashboard, f"CLIDD Features: {len(features)}", (cam_offset_x, cam_offset_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-        # 4. 绘制青蛙眼避障势场力 (在视野中心绘制)
-        center_px = cam_offset_x + 280
-        center_py = cam_offset_y + 210
-        cv2.circle(dashboard, (center_px, center_py), 5, (255, 255, 255), -1)
-        force_scale = 100.0  # 放大力向量以便肉眼观测
-        f_end_x = int(center_px + force_x * force_scale)
-        f_end_y = int(center_py - force_y * force_scale) 
-        cv2.arrowedLine(dashboard, (center_px, center_py), (f_end_x, f_end_y), (0, 0, 255), 3, tipLength=0.2)
-        cv2.putText(dashboard, f"Obstacle Force: ({force_x:.2f}, {force_y:.2f})", (cam_offset_x, cam_offset_y + 445), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-        # 5. 绘制 NMPC 规控指令遥测
-        cv2.putText(dashboard, f"NMPC CMD -> v: {v_cmd:.2f} m/s, w: {w_cmd:.2f} rad/s", (offset_x + 20, 560), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 150, 50), 2)
+        dashboard[0:620, 0:620] = map_view
 
         # 刷新屏幕
         cv2.imshow(window_name, dashboard)

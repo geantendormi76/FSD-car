@@ -17,10 +17,13 @@ nodes:
     inputs:
       # 订阅高频 NMPC 运动输出，驱动底盘
       control_cmd: fast_brain_nmpc/control_cmd
+      # 🔄 新增：订阅慢脑发送的仿真重置物理信号
+      simulation_reset: slow_brain_mapper/simulation_reset
     outputs:
       - xfeat_features
       - obstacle_force
       - odometry  # 🎯 里程碑 1.1：100Hz 物理里程计高频输出
+      - jpeg_image  # 📸 新增：100Hz 高频离屏 JPEG 压缩图像流
   # ---------------------------------------------------------------
   # ⚡ 2. 快系统：极速 Spiced NMPC 规控大脑 (The Fast System - 100Hz)
   # ---------------------------------------------------------------
@@ -55,13 +58,14 @@ nodes:
       odometry: isaac_sim_env/odometry
     outputs:
       - human_prior # 🎯 里程碑 2.3：滚动发布下一个人类引力站牌
+      - simulation_reset # 🔄 新增：向仿真环境发送的自愈重置指令
 
   # ---------------------------------------------------------------
   # 📊 4. 旁路探针：NEXUS 可视化遥测大屏 (The Telemetry Dashboard)
   # ---------------------------------------------------------------
   - id: telemetry_dashboard
     path: uv
-    # 🛡️ SOTA 级自愈：在 CLI 参数层显式指定隔离的缓存区，彻底免疫任何环境变量剥离！ [cite: 1.2.1]
+    # 🛡️ SOTA 级自愈：在 CLI 参数层显式指定隔离的缓存区，彻底免疫任何环境变量剥离！
     args: run --cache-dir /home/zhz/.cache/uv_clean showcase/src/bin/telemetry_dashboard.py
     env:
       DISPLAY: ${DISPLAY}
@@ -72,3 +76,4 @@ nodes:
       xfeat_features: isaac_sim_env/xfeat_features
       human_prior: slow_brain_mapper/human_prior
       control_cmd: fast_brain_nmpc/control_cmd
+      jpeg_image: isaac_sim_env/jpeg_image  # 📸 新增：订阅高频离屏图像流
