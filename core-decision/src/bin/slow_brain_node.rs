@@ -4,6 +4,10 @@ use eyre::eyre;
 use core_decision::topo_graph::graph::TopologicalGraph;
 use core_decision::topo_graph::node::{Pose, TopologicalNode};
 
+// 🛡️ 核心并网：引入视觉感知显微镜与特征契约
+use core_perception::perception::xfeat_engine::稀疏特征点;
+use core_perception::perception::matcher::仿生匹配器;
+
 fn loaded_speed_nodes_count(g: &TopologicalGraph) -> usize {
     g.nodes.len()
 }
@@ -63,37 +67,105 @@ async fn main() -> eyre::Result<()> {
                     }
                 }
                 else if id.as_str() == "xfeat_features" {
+                    let 结构体数组 = data.as_any()
+                        .downcast_ref::<dora_node_api::arrow::array::StructArray>()
+                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 StructArray"))?;
+                    let 特征数量 = 结构体数组.len();
+                    if 特征数量 == 0 { continue; }
+
                     if 自主自驾模式 {
                         if 拓扑地图.nodes.is_empty() { continue; }
                         
-                        // A. 寻找空间几何距离最近的历史地标节点作为定位锚点
+                        use dora_node_api::arrow::array::Array;
+                        let x_arr = 结构体数组.column_by_name("x").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                        let y_arr = 结构体数组.column_by_name("y").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                        let score_arr = 结构体数组.column_by_name("score").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+                        let desc_list_arr = 结构体数组.column_by_name("descriptor").unwrap().as_any().downcast_ref::<dora_node_api::arrow::array::FixedSizeListArray>().unwrap();
+                        let desc_values = desc_list_arr.values().as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
+
+                        // A. 零拷贝解构 DORA 共享内存，构建当前帧实时特征点集 [cite: 1.1.4]
+                        let mut 实时特征 = Vec::with_capacity(特征数量);
+                        for i in 0..特征数量 {
+                            let mut 描述子 = vec![0.0f32; 64];
+                            let offset = i * 64;
+                            for j in 0..64 {
+                                描述子[j] = desc_values.value(offset + j);
+                            }
+                            实时特征.push(稀疏特征点 {
+                                x: x_arr.value(i),
+                                y: y_arr.value(i),
+                                置信度: score_arr.value(i),
+                                描述子,
+                            });
+                        }
+
+                        // B. 双通道自适应空间先验重定位检索
                         let mut 最小距离 = f32::INFINITY;
-                        // 默认继承上一次定位结果，防止在特征偏稀疏的盲区内丢失锁 [cite: 1.1.1]
-                        let mut 最近节点_id = 上一次定位的最近节点_id; 
-                        
+                        let mut 最大匹配内点数 = 0;
+                        let mut 最佳匹配节点_id = 上一次定位的最近节点_id; // 默认继承历史
+
                         for (&id, node) in &拓扑地图.nodes {
+                            // 1. 空间粗筛：抛弃物理跨度大于 5.0 米的超远节点，防止无谓的特征解算，大开销避让
                             let dx = 最新位姿.x - node.pose.x;
                             let dy = 最新位姿.y - node.pose.y;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            
-                            // 🛡️ 第二道防线：眼脚空间先验校验门 (Odometry Spatial Gating) [cite: 1.2.2]
-                            // 物理过滤：强行抛弃几何空间距离大于 1.5 米的“视觉穿透致幻点” [cite: 1.2.2]
-                            if dist > 1.5 {
+                            let odom_dist = (dx * dx + dy * dy).sqrt();
+                            if odom_dist > 5.0 {
                                 continue;
                             }
+
+                            // 2. 逆向重构该地图节点的多维历史描述子
+                            let n_features = node.descriptors.len() / 64;
+                            let mut 历史特征 = Vec::with_capacity(n_features);
+                            for i in 0..n_features {
+                                let mut desc = vec![0.0f32; 64];
+                                desc.copy_from_slice(&node.descriptors[i*64..(i+1)*64]);
+                                历史特征.push(稀疏特征点 {
+                                    x: node.keypoints[i*2],
+                                    y: node.keypoints[i*2 + 1],
+                                    置信度: 1.0,
+                                    描述子: desc,
+                                });
+                            }
+
+                            // 3. 执行双向 MNN 交叉比对
+                            let 原始匹配 = 仿生匹配器::交叉匹配(&实时特征, &历史特征, 0.81);
                             
-                            if dist < 最小距离 {
-                                最小距离 = dist;
-                                最近节点_id = id;
+                            // 4. 执行 RANSAC 外点说谎者剪枝 [cite: 1.1.2]
+                            if 原始匹配.len() >= 8 {
+                                if let Ok(干净匹配) = 仿生匹配器::几何纠偏过滤(&实时特征, &历史特征, &原始匹配, 3.0) {
+                                    let 内点数 = 干净匹配.len();
+                                    
+                                    // 🛡️ 第二道防线：自适应弹性空间校验门 (Confidence-Proportional Gating) [cite: 1.2.2]
+                                    let 弹性空间门限 = if 内点数 >= 15 { 5.0f32 } else { 1.2f32 };
+                                    
+                                    if odom_dist <= 弹性空间门限 {
+                                        if 内点数 > 最大匹配内点数 {
+                                            最大匹配内点数 = 内点数;
+                                            最佳匹配节点_id = id;
+                                            最小距离 = odom_dist;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. 确保视觉重定位判定通过安全阈值
+                        let mut 最近节点_id = 上一次定位的最近节点_id;
+                        if 最大匹配内点数 >= 10 {
+                            最近节点_id = 最佳匹配节点_id;
+                        } else {
+                            // 降级使用几何距离作为当前帧的最小距离
+                            if let Some(node) = 拓扑地图.nodes.get(&最近节点_id) {
+                                let dx = 最新位姿.x - node.pose.x;
+                                let dy = 最新位姿.y - node.pose.y;
+                                最小距离 = (dx * dx + dy * dy).sqrt();
                             }
                         }
 
                         // 🛡️ 第一道防线：状态翻页锁 (Topological State Transition Gate) [cite: 1.1.1]
-                        // 连环画约束：单帧内只允许最多向前推进 1 页，彻底扼杀视觉错配造成的“跳关和抢弯” [cite: 1.1.1]
                         if 最近节点_id > 上一次定位的最近节点_id + 1 {
                             最近节点_id = 上一次定位的最近节点_id + 1;
                         }
-                        // 确保不发生物理回退
                         if 最近节点_id < 上一次定位的最近节点_id {
                             最近节点_id = 上一次定位的最近节点_id;
                         }
