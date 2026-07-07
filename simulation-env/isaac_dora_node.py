@@ -265,13 +265,6 @@ def main():
 
     world.reset()
     world.play()
-    
-    # 🎯 🌟 SOTA 级定位：开机瞬间锁定初始黄金位姿 [cite: 1.2.7]
-    # 用于重置事件触发时，以 0 误差精度瞬间瞬移回到起点！
-    positions, orientations = car.get_world_poses()
-    start_pos = positions.copy()
-    start_rot = orientations.copy()
-    print(f"📸 [物理代理] 成功锁定初始黄金起跑线位姿 -> pos: {start_pos}, rot: {start_rot}")
 
     # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
     print("⏳ [物理代理] 正在进行离屏 RTX 渲染管道硬件预热...")
@@ -340,14 +333,10 @@ def main():
                         cmd_arr = event["value"].to_numpy()
                         if len(cmd_arr) == 2:
                             v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
-                    elif event["id"] == "simulation_reset":
-                        # 🎯 🌟 SOTA 级物理瞬移重置：瞬间清空物理惯性并瞬移回起跑线 [cite: 1.2.7]
-                        print("🔄 [物理代理] 收到慢脑自愈重置信号！正在将小车瞬移回起点，清空物理状态...")
-                        car.set_world_pose(position=start_pos, orientation=start_rot)
-                        car.set_joint_velocities(np.zeros((1, car.num_dof)))
-                        v_cmd = 0.0
-                        w_cmd = 0.0
-                        tick = 0
+                    if event["id"] == "control_cmd":
+                        cmd_arr = event["value"].to_numpy()
+                        if len(cmd_arr) == 2:
+                            v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
                 elif ev_type == "STOP":
                     print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
                     break

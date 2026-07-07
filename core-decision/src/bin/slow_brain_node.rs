@@ -50,9 +50,16 @@ async fn main() -> eyre::Result<()> {
     let mut 最新位姿 = Pose { x: 0.0, y: 0.0, yaw: 0.0 };
     let mut 上一个节点_id: Option<u32> = None;
     let mut 上一个位姿: Option<Pose> = None;
-    
     // 🛡️ 状态缓存：记录上一次定位到的黄金最近节点，用于翻页卡锁
     let mut 上一次定位的最近节点_id = 1u32;
+
+    // 🎯 商业级 RPA 状态机：去程 -> 驻车 -> 返程
+    #[derive(PartialEq)]
+    enum 调度状态 { 去程, 驻车静默, 返程, 任务结束 }
+    let mut 当前调度状态 = 调度状态::去程;
+    let mut 驻车开始时间: Option<std::time::Instant> = None;
+    let 最大节点数 = 拓扑地图.nodes.len() as u32;
+    let mut 循环计数 = 0u64;
 
     while let Some(event) = events.recv_async().await {
         match event {
@@ -163,19 +170,58 @@ async fn main() -> eyre::Result<()> {
                         }
 
                         // 🛡️ 第一道防线：状态翻页锁 (Topological State Transition Gate) [cite: 1.1.1]
-                        if 最近节点_id > 上一次定位的最近节点_id + 1 {
-                            最近节点_id = 上一次定位的最近节点_id + 1;
+                        // 🛡️ 第一道防线：状态翻页锁 (Topological State Transition Gate)
+                        // 🎯 架构师重塑：根据当前调度状态，动态调整物理卡锁的方向，支持双向寻迹
+                        match 当前调度状态 {
+                            调度状态::去程 => {
+                                if 最近节点_id > 上一次定位的最近节点_id + 1 { 最近节点_id = 上一次定位的最近节点_id + 1; }
+                                if 最近节点_id < 上一次定位的最近节点_id { 最近节点_id = 上一次定位的最近节点_id; }
+                            },
+                            调度状态::返程 => {
+                                // 返程时，节点 ID 递减
+                                if 最近节点_id < 上一次定位的最近节点_id.saturating_sub(1) { 最近节点_id = 上一次定位的最近节点_id.saturating_sub(1); }
+                                if 最近节点_id > 上一次定位的最近节点_id { 最近节点_id = 上一次定位的最近节点_id; }
+                            },
+                            _ => {
+                                // 驻车或结束时，锁死当前节点
+                                最近节点_id = 上一次定位的最近节点_id;
+                            }
                         }
-                        if 最近节点_id < 上一次定位的最近节点_id {
-                            最近节点_id = 上一次定位的最近节点_id;
-                        }
-                        
                         上一次定位的最近节点_id = 最近节点_id;
 
-                        // B. 滚动寻迹指针：下一个目标站牌为 最近节点 + 1
-                        let 当前锁定目标节点_id = 最近节点_id + 1;
+                        // B. 商业级状态机流转：去程 -> 驻车静默 -> 返程
+                        if 当前调度状态 == 调度状态::去程 && 最近节点_id >= 最大节点数 {
+                            println!("📦 [业务调度] 已抵达终点 (Node_{})！进入【驻车静默】状态，等待装载货物...", 最近节点_id);
+                            当前调度状态 = 调度状态::驻车静默;
+                            驻车开始时间 = Some(std::time::Instant::now());
+                        } else if 当前调度状态 == 调度状态::驻车静默 {
+                            if let Some(start_time) = 驻车开始时间 {
+                                let 驻车时长 = start_time.elapsed().as_secs();
+                                if 驻车时长 > 10 { // 模拟 10 秒装货/静默时间，后续可改为接收外部指令
+                                    println!("🚀 [业务调度] 货物装载完毕/静默结束！启动【返程】模式，目标：原点！");
+                                    当前调度状态 = 调度状态::返程;
+                                } else {
+                                    if 循环计数 % 10 == 0 {
+                                        println!("⏳ [业务调度] 驻车静默中... 已等待 {} 秒", 驻车时长);
+                                    }
+                                }
+                            }
+                        } else if 当前调度状态 == 调度状态::返程 && 最近节点_id <= 1 {
+                            if 循环计数 % 50 == 0 {
+                                println!("🏆 [业务调度] 任务圆满完成！小车已安全返回原点。进入【任务结束】休眠状态。");
+                            }
+                            当前调度状态 = 调度状态::任务结束;
+                        }
+
+                        // C. 滚动寻迹指针：根据状态机决定下一个目标站牌
+                        let 当前锁定目标节点_id = match 当前调度状态 {
+                            调度状态::去程 => 最近节点_id + 1,
+                            调度状态::返程 => 最近节点_id.saturating_sub(1).max(1),
+                            _ => 最近节点_id, // 驻车或结束时，目标就是当前节点，保持静止
+                        };
+
                         if let Some(目标地标) = 拓扑地图.nodes.get(&当前锁定目标节点_id) {
-                            // C. 广播目标引力绝对坐标
+                            // D. 广播目标引力绝对坐标
                             let prior_arr = dora_node_api::arrow::array::Float32Array::from(vec![
                                 目标地标.pose.x, 目标地标.pose.y, 目标地标.pose.yaw
                             ]);
@@ -184,27 +230,21 @@ async fn main() -> eyre::Result<()> {
                                 dora_node_api::MetadataParameters::default(),
                                 prior_arr,
                             );
-                            println!(
-                                "🧭 [慢脑自驾寻迹] 定位锚点: Node_{} | 锁定引力目标 -> Node_{} | 坐标: ({:.2}, {:.2}) | 剩余距离: {:.2}m",
-                                最近节点_id, 当前锁定目标节点_id, 目标地标.pose.x, 目标地标.pose.y, 最小距离
-                            );
-                        } else {
-                            // 🎯 🌟 SOTA 级环境自愈重置：已经到达最后一个节点
-                            println!("🏆 [慢脑自驾寻迹] 恭喜！小车已成功驶达本次寻迹路线的终点站牌！");
-                            println!("🔄 [慢脑自驾寻迹] 正在向 DORA 广播 simulation_reset 物理重置指令...");
                             
-                            let reset_arr = dora_node_api::arrow::array::Float32Array::from(vec![1.0f32]);
-                            let _ = _node.send_output(
-                                "simulation_reset".to_string().into(),
-                                dora_node_api::MetadataParameters::default(),
-                                reset_arr,
-                            );
-
-                            // 🎯 慢脑自重置：瞬间重置历史位姿缓存与最近节点状态缓存，寻迹指针由下一帧里程计自愈拉起
-                            最新位姿 = Pose { x: 0.0, y: 0.0, yaw: 0.0 };
-                            上一个节点_id = None;
-                            上一个位姿 = None;
-                            上一次定位的最近节点_id = 1u32;
+                            let 状态文本 = match 当前调度状态 {
+                                调度状态::去程 => "去程寻迹",
+                                调度状态::返程 => "返程归家",
+                                调度状态::驻车静默 => "驻车装货",
+                                调度状态::任务结束 => "任务结束",
+                            };
+                            
+                            循环计数 += 1;
+                            if 循环计数 % 10 == 0 {
+                                println!(
+                                    "🧭 [慢脑-{}] 定位锚点: Node_{} | 锁定引力目标 -> Node_{} | 坐标: ({:.2}, {:.2}) | 剩余距离: {:.2}m",
+                                    状态文本, 最近节点_id, 当前锁定目标节点_id, 目标地标.pose.x, 目标地标.pose.y, 最小距离
+                                );
+                            }
                         }
                         continue;
                     }

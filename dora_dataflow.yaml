@@ -17,8 +17,6 @@ nodes:
     inputs:
       # 订阅高频 NMPC 运动输出，驱动底盘
       control_cmd: fast_brain_nmpc/control_cmd
-      # 🔄 新增：订阅慢脑发送的仿真重置物理信号
-      simulation_reset: slow_brain_mapper/simulation_reset
     outputs:
       - xfeat_features
       - obstacle_force
@@ -58,7 +56,6 @@ nodes:
       odometry: isaac_sim_env/odometry
     outputs:
       - human_prior # 🎯 里程碑 2.3：滚动发布下一个人类引力站牌
-      - simulation_reset # 🔄 新增：向仿真环境发送的自愈重置指令
 
   # ---------------------------------------------------------------
   # 📊 4. 旁路探针：NEXUS 可视化遥测大屏 (The Telemetry Dashboard)
