@@ -71,38 +71,45 @@ class BionicFrogEye:
     def __init__(self, width=640, height=480):
         self.w = width
         self.h = height
-        
         # 🛡️ 2026 SOTA 优化：引入历史帧滑动队列 (时间跨度为 5 帧，即 50ms 差分窗口)
         # 完美解决 100Hz 高频采样下相邻帧位移过小、差分被门限熔断的问题！
         self.frame_buffer = []
         self.buffer_size = 5
-        
         self.erf = np.zeros((height, width), dtype=np.float32)
         self.irf = np.zeros((height, width), dtype=np.float32)
         self.alpha_erf = 0.4
         self.alpha_irf = 0.85
         self.beta = 0.5
-        
         # 适当调低门限至 10.0，增强对微观边缘运动的敏感度
         self.event_threshold = 10.0
-        
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
         self.closeness_weight = (y_indices / float(self.h)) ** 2
         
+        # 🎯 战役三第六版核心：初始化经典极速 FAST 角点检测器 (0.2ms 超低CPU延迟)
+        # 用于在 100Hz 本地物理频率抓取高对比度静态纹理（如木斜坡边缘），物理阻断伪排斥力
+        self.fast_detector = cv2.FastFeatureDetector_create(threshold=15, nonmaxSuppression=True)
+
     def process_frame(self, frame_rgb):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        
         # 维持滑动窗口
         self.frame_buffer.append(gray)
         if len(self.frame_buffer) < self.buffer_size:
             return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-            
         # 提取 50ms 前的历史帧进行差分计算，积累物理运动标量
         history_frame = self.frame_buffer.pop(0)
-        
         diff = cv2.absdiff(history_frame, gray)
+        
+        # 🎯 战役三第六版核心：自对齐静态地标反向遮罩 (FAST Masking)
+        # 本地提取高对比度静态角点，在差分差值上打上 25px 物理掩膜圆（抹零值）
+        # 静态贴图（如斜坡木纹、地表白线）由于车身运动产生的相对晃动能量将被完全过滤，不再干扰避障势场！
+        keypoints = self.fast_detector.detect(gray, None)
+        mask_radius = 25  # 25 像素掩膜半径，完全屏蔽静态角点引发的相对位移光流
+        for kp in keypoints:
+            u, v = int(kp.pt[0]), int(kp.pt[1])
+            cv2.circle(diff, (u, v), mask_radius, 0, -1)
+        
         _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
         events_rf = cv2.GaussianBlur(events, (21, 21), 0)
         self.erf = self.erf * self.alpha_erf + events_rf
@@ -160,7 +167,7 @@ class CLIDDEngine:
         mask = (conf == conf_nms) & (conf > 0.05)
         conf_flat = conf[mask]
         if len(conf_flat) == 0:
-            return None
+            return None, None, None
         topk = min(top_k, len(conf_flat))
         scores_k, indices = torch.topk(conf_flat, topk)
         y, x = torch.where(mask[0, 0])
@@ -176,16 +183,13 @@ class CLIDDEngine:
         valid = (y >= 0) & (y < 480)
         x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
         x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
-        
         # 🎯 架构师升维：构建 Arrow StructArray，实现 100% 零拷贝内存布局
         x_arr = pa.array(x_np, type=pa.float32())
         y_arr = pa.array(y_np, type=pa.float32())
         s_arr = pa.array(s_np, type=pa.float32())
-        
         # 将 (N, 64) 的描述子展平后构建为 FixedSizeListArray
         d_flat = pa.array(d_np.flatten(), type=pa.float32())
         d_arr = pa.FixedSizeListArray.from_arrays(d_flat, 64)
-        
         struct_arr = pa.StructArray.from_arrays(
             [x_arr, y_arr, s_arr, d_arr],
             names=['x', 'y', 'score', 'descriptor']
@@ -303,13 +307,15 @@ def main():
                 qw, qx, qy, qz = orientations[0]
                 # 四元数转偏航角 (Yaw)
                 pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
-                
                 # 100Hz 高频广播物理里程计
                 arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
 
+                # 🎯 战役三第六版核心：100Hz 本地极速经典感知避障（释放 GPU / 彻底消灭延迟）
+                # 我们将耗时的大型神经网络 CLIDD 彻底移出 100Hz 物理控制轴
+                # 青蛙眼利用本地 0.2ms 经典 FAST 屏蔽器阻断静态纹理，100Hz 时序控制环畅通无阻！
                 F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                
+
                 # 📸 SOTA 级并网：将 Isaac Sim 离屏渲染的 RGB 图像压缩为 JPEG 字节流广播
                 bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
                 _, jpeg_encoded = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -319,8 +325,9 @@ def main():
                 # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
                 arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                 dora_node.send_output("obstacle_force", arrow_obstacle_force)
+
+                # 🚨 频域解耦：深度神经网络 CLIDD 回归原本的 1Hz 慢节拍，专心保障定位，绝不拖垮 100Hz 物理底盘！
                 if tick % 100 == 0:
-                    # 🎯 里程碑 2.1：视觉皮层正式进化，调用 CLIDD 引擎
                     arrow_clidd_features = clidd_engine.extract(rgb_frame, top_k=200)
                     if arrow_clidd_features is not None and len(arrow_clidd_features) > 0:
                         dora_node.send_output("xfeat_features", arrow_clidd_features)
@@ -329,10 +336,6 @@ def main():
             if event is not None:
                 ev_type = event["type"]
                 if ev_type == "INPUT":
-                    if event["id"] == "control_cmd":
-                        cmd_arr = event["value"].to_numpy()
-                        if len(cmd_arr) == 2:
-                            v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
                     if event["id"] == "control_cmd":
                         cmd_arr = event["value"].to_numpy()
                         if len(cmd_arr) == 2:

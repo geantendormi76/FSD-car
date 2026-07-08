@@ -339,7 +339,6 @@ impl 仿生特征提取器 {
         }
 
         候选特征点.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
-        候选特征点.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
 
         // 10. 双三次亚像素插值描述子，计算 64 维特征描述子
         let 缩放_x = (宽d8 as f32) / (self.模型宽度 as f32 - 1.0);
