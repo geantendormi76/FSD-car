@@ -82,6 +82,24 @@ impl 预测控制求解器 {
         Ok(())
     }
 
+    /// 🎯 战役三核心：注入动态障碍物非线性硬约束参数
+    /// 将青蛙眼坍缩出的虚拟障碍物坐标，以 100Hz 频率物理烧录进求解器的 20 个预测步中
+    pub fn 设置动态障碍物硬约束(&mut self, obs_x: f64, obs_y: f64, a_axis: f64, b_axis: f64) -> Result<(), String> {
+        // 严格对齐 Python 侧定义的 parameters 顺序: [obs_x, obs_y, a_axis, b_axis]
+        let p = [obs_x, obs_y, a_axis, b_axis];
+        unsafe {
+            // 必须为 NMPC 的每一个预测步 (0 到 20) 都更新这个参数
+            for stage in 0..=20 {
+                // np = 4 表示我们传入了 4 个 f64 参数
+                let status = diff_drive_car_acados_update_params(self.capsule, stage, p.as_ptr(), 4);
+                if status != 0 {
+                    return Err(format!("❌ 致命错误：第 {} 步障碍物硬约束参数注入失败！", stage));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 执行 RTI-SQP 求解，并返回平滑处理后的 (线速度, 角速度)
     pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
         unsafe {

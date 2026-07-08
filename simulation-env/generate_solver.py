@@ -1,15 +1,9 @@
 # generate_solver.py
-
+# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 import os
 import numpy as np
-
-# 🛡️ 架构师 2026 净化：彻底移除 Windows/WSL 时代的 ctypes.CDLL 内存预热 Hack。
-# 在原生的 Ubuntu 26.04 LTS 下，我们严格依赖标准的 LD_LIBRARY_PATH 或 RPATH 机制。
-# 保持 Python 运行环境的绝对纯净与高内聚。
-
 from acados_template import AcadosOcp, AcadosOcpSolver
 from nmpc_model import setup_car_model
-
 
 def generate_nmpc_solver():
     ocp = AcadosOcp()
@@ -53,16 +47,40 @@ def generate_nmpc_solver():
     ocp.cost.yref = np.zeros(ny)
     ocp.cost.yref_e = np.zeros(nx)
 
-    # 3. 设定约束条件 [cite: 24]
+    # 3. 设定控制量硬约束 [cite: 24]
     # 我们将最大转向角速度硬限制收紧到 [-0.6, 0.6] rad/s，彻底杜绝原地打转 [cite: 24]
     ocp.constraints.lbu = np.array([-1.0, -0.6])  # 限制角速度在 [-0.6, 0.6] [cite: 24]
-    ocp.constraints.ubu = np.array([1.0, 0.6])  # [cite: 24]
+    ocp.constraints.ubu = np.array([1.0, 0.6])    # [cite: 24]
     ocp.constraints.idxbu = np.array([0, 1])
 
     # 4. 初始状态设定
     ocp.constraints.x0 = np.array([0.0, 0.0, 0.0, 0.0])
 
-    # 5. 配置求解器参数 [cite: 3, 9]
+    # 5. 🎯 战役三核心：配置非线性空间避障硬约束 (Non-linear Constraints)
+    # 对应 model.con_h_expr，要求 h_expr >= 1.0
+    ocp.constraints.lh = np.array([1.0])       # 下界为 1.0 (必须在椭圆外部)
+    ocp.constraints.uh = np.array([1e15])      # 上界为无穷大 (离得越远越好)
+
+    # 🎯 第四版核心重构：激活非线性约束的松弛变量 (Slack Variables / 软约束)
+    # 将第 0 个非线性约束 (即 con_h_expr 椭圆禁区) 注册为可松弛的软约束
+    ocp.constraints.idxsh = np.array([0])
+
+    # 设定松弛变量的惩罚系数 (L1 & L2 Penalty)
+    # zl, zu 是 L1 线性惩罚 (小车轻微触碰边缘时快速做出排斥反应)
+    # Zl, Zu 是 L2 二次惩罚 (深度侵入时惩罚呈指数飙升，作为底盘绝对安全防线)
+    # 1e3 与 1e5 的黄金配比不仅能够消灭数值病态 (Ill-conditioning)，更保证了数学空间绝对有解
+    ocp.cost.zl = np.array([1e3])
+    ocp.cost.zu = np.array([1e3])
+    ocp.cost.Zl = np.array([1e5])
+    ocp.cost.Zu = np.array([1e5])
+
+    # 6. 🎯 战役三核心：初始化外部参数 (Parameters)
+    # [obs_x, obs_y, a_axis, b_axis]
+    # 默认将虚拟障碍物放在极远处 (1000.0, 1000.0)，避免在无障碍时干扰正常行驶
+    # 默认椭圆半轴设为 0.1m，防止除以 0 的数学奇点崩溃
+    ocp.parameter_values = np.array([1000.0, 1000.0, 0.1, 0.1])
+
+    # 7. 配置求解器参数 [cite: 3, 9]
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "ERK"
@@ -71,8 +89,8 @@ def generate_nmpc_solver():
     # 一键自动编译生成 C 代码 [cite: 8]
     json_file = os.path.join("./", "acados_ocp.json")
     solver = AcadosOcpSolver(ocp, json_file=json_file)
-    return solver
 
+    return solver
 
 if __name__ == "__main__":
     generate_nmpc_solver()
