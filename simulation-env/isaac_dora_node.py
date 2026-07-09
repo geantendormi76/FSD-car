@@ -84,7 +84,9 @@ class BionicFrogEye:
         self.event_threshold = 10.0
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
-        self.closeness_weight = (y_indices / float(self.h)) ** 2
+        # 🛡️ 3.3.1 极速自愈：彻底根治“近视眼开跑车”漏洞！
+        # 将二次衰减降维为线性衰减，并引入 0.15 基础前视视能底噪，让远马路边界（y=160）感知权重从 11% 暴涨至 48%！
+        self.closeness_weight = (y_indices / float(self.h)) + 0.15
         
         # 🎯 战役三第六版核心：初始化经典极速 FAST 角点检测器 (0.2ms 超低CPU延迟)
         # 用于在 100Hz 本地物理频率抓取高对比度静态纹理（如木斜坡边缘），物理阻断伪排斥力
@@ -250,7 +252,20 @@ def main():
 
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
-
+    
+    # 🛡️ 3.3.1 阶段自愈并网：注册并包裹动态避障立方体
+    from isaacsim.core.prims import XFormPrim
+    obstacle_path = "/Root/dynamic_obstacles/box_obstacle_01"
+    obstacle = None
+    # 3.3.1 核心自愈：新增初始姿态变量，用于动态捕获你在 GUI 中手动拖拽的位置
+    obs_init_pos = None
+    obs_init_rot = None
+    if stage.GetPrimAtPath(obstacle_path):
+        # 6.0 黄金标准：参数名必须对齐批处理表达式 prim_paths_expr [cite: 1.3.1]
+        obstacle = XFormPrim(prim_paths_expr=obstacle_path, name="box_obstacle")
+        world.scene.add(obstacle)
+        print("🟢 [NEXUS 3.3.1] Dynamic Obstacle successfully registered into Scene Manager!")
+    
     camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
     
     # 🛡️ SOTA 重构：直接将小车原生的 Camera 节点绑定为独立的离屏渲染产品 (Render Product)
@@ -266,8 +281,15 @@ def main():
         sys.exit(1)
     clidd_engine = CLIDDEngine(clidd_model_path)
     frog_eye = BionicFrogEye(640, 480)
-
     world.reset()
+    
+    # 🛡️ 3.3.1 核心自愈：在物理场景 Reset 完毕后，瞬间捕获你手动拖拽的初始位置与旋转角度
+    if obstacle is not None:
+        init_poses, init_rots = obstacle.get_world_poses()
+        obs_init_pos = init_poses[0]
+        obs_init_rot = init_rots[0]
+        print(f"🟢 [NEXUS 3.3.1] 成功捕获你手动调整的障碍物初始坐标: {obs_init_pos}")
+        
     world.play()
 
     # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
@@ -286,6 +308,18 @@ def main():
             # 🛡️ 绝对时钟步进：每次严格推进 0.01s
             world.step(render=True)
             tick += 1
+            
+            # 🛡️ 3.3.1 阶段自愈并网：100Hz 极速驱动立方体作正弦往复运动（等效于横穿马路的动态行人）
+            if obstacle is not None and obs_init_pos is not None:
+                t = tick * 0.01
+                # 🎯 物理重塑：对齐 X 轴物理位移极性！
+                # 以你在 GUI 里摆放的右侧 X 轴坐标为起点，进行 ±1.2 米的平滑正弦波横向穿梭
+                new_x = obs_init_pos[0] + 1.2 * np.sin(1.5 * t)
+                # 保持你在 GUI 中摆放的 Y 和 Z 世界坐标不变，仅相对运动 X 轴
+                obstacle.set_world_poses(
+                    positions=np.array([[new_x, obs_init_pos[1], obs_init_pos[2]]]),
+                    orientations=np.array([obs_init_rot])
+                )
 
             # B. 🛡️ SOTA 核心：直接从 Replicator 标注器中获取纯净的内存像素 [cite: 1.1.4]
             # 剥离不兼容 headless 且存在多余包装的 camera.get_rgb()

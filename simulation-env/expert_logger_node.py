@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "dora-rs==0.3.13",
+#     "pyarrow>=14.0.0",
+#     "numpy>=1.26.0"
+# ]
+# ///
 """
 =================================================================
 🗃️ NEXUS - 3.3 阶段：人类黄金数据黑匣子 (Expert Data Logger)
