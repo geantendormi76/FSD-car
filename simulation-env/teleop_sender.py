@@ -34,45 +34,50 @@ def main():
     current_v = 0.0  # 滤波后的当前实际线速度
     current_w = 0.0  # 滤波后的当前实际角速度
     
-    # 🛡️ 黄金自驾建图物理参数：限制最高速防止特征模糊，低速稳态建图才能获得 100% 回环率
-    max_v = 0.20  # 最大线速度限制在 0.20 m/s (极致稳态)
-    min_v = -0.10 # 最大倒车速度
-    max_w = 0.40  # 最大角速度限制在 0.40 rad/s
+    # 🏎️ 3.3阶段 Spiced RL 专属参数：全包线极限驾驶解锁
+    max_v = 1.00  # 解除封印：最高线速度飙升至 1.0 m/s
+    min_v = -0.30 # 最大倒车速度
+    max_w = 1.00  # 极限打舵角速度 1.0 rad/s
+    acc_step = 0.08 # 油门灵敏度
+    brake_step = 0.15 # 刹车灵敏度 (刹车比油门猛，符合真实车辆物理)
+    coast_decay = 0.03 # 松开油门时的自然滑行阻力 (Coasting)
     
-    v_step = 0.05 # 线速度步进 (按一次 W 增加 0.05)
-    
-    # 滤波时间系数：数值越小越平滑，防止轮子在物理引擎中打滑
-    alpha_v = 0.12  # 线速度一阶阻尼系数
-    alpha_w = 0.25  # 角速度一阶阻尼系数
-
+    # 滤波时间系数：调高响应度，让老司机的微操更跟手，同时保留防滑移底线
+    alpha_v = 0.25  
+    alpha_w = 0.40  
     print("========================================================")
-    print("🛰️  NEXUS - 工业级一阶滤波稳态建图控制器 (teleop_sender)已启动")
-    print("设计哲学: 保持型线速控制 | 自回中型角速控制 | 物理防滑移一阶低通滤波")
+    print("🏎️  NEXUS - 极限驾驶数据采集终端 (Spiced Teleop) 已启动")
+    print("设计哲学: 赛车级油门刹车逻辑 | 阻尼滑行 | 毫秒级跟手转向")
     print("--------------------------------------------------------")
-    print("控制手势 (请保持当前终端 Focus 状态，无需长按):")
-    print("  W : 增加向前目标车速 (+0.05 m/s)   S : 降低目标车速/倒车 (-0.05 m/s)")
-    print("  A : 靶向左转 (瞬时 nudging)       D : 靶向右转 (瞬时 nudging)")
-    print("  Space (空格键) : 紧急制动 (目标速度瞬间归零)")
-    print("  Q : 退出键盘控制端")
+    print("控制手势 (请保持当前终端 Focus 状态，长按生效):")
+    print("  [长按 W] : 踩油门加速 (最高 1.0 m/s)  [松开 W] : 自然滑行减速")
+    print("  [长按 S] : 踩刹车/倒车                [松开 S] : 停止倒车")
+    print("  [长按 A/D]: 极限打舵转向              [松开 A/D]: 方向盘自动回正")
+    print("  [Space]  : 紧急抱闸 (瞬间锁死)")
+    print("  [ Q ]    : 退出采集")
     print("========================================================")
-    
     try:
         while True:
             key = get_key(settings)
             
-            # A. 处理线速度 (保持型：按一下变一次，松手不减速，维持匀速爬坡)
+            # A. 处理线速度 (赛车踏板逻辑：按住加速，松开滑行，S键刹车)
             if key == 'w' or key == 'W':
-                target_v = min(max_v, target_v + v_step)
+                target_v = min(max_v, target_v + acc_step)
             elif key == 's' or key == 'S':
-                target_v = max(min_v, target_v - v_step)
-            
-            # B. 处理角速度 (自回中型：按住转弯，松手车头迅速自动回正)
+                target_v = max(min_v, target_v - brake_step)
+            else:
+                # 模拟自然滑行阻力 (Coasting)
+                if target_v > 0:
+                    target_v = max(0.0, target_v - coast_decay)
+                elif target_v < 0:
+                    target_v = min(0.0, target_v + coast_decay)
+
+            # B. 处理角速度 (方向盘逻辑：按住打死，松开瞬间回正)
             if key == 'a' or key == 'A':
                 target_w = max_w
             elif key == 'd' or key == 'D':
                 target_w = -max_w
             else:
-                # 无转向按键，角速度目标自动归零
                 target_w = 0.0
             
             # C. 处理紧急刹车

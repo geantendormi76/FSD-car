@@ -1,0 +1,60 @@
+# =================================================================
+# 🏎️ FSD-car V4.5: 3.3阶段专属 - 人类黄金数据(Spice)采集拓扑网
+# 架构哲学: 剥夺 NMPC 规控权 | 人类直接接管底盘 | 黑匣子旁路高频监听
+# =================================================================
+nodes:
+  # ---------------------------------------------------------------
+  # 🌌 1. 物理仿真界 (The Matrix) - Isaac Sim
+  # ---------------------------------------------------------------
+  - id: isaac_sim_env
+    path: /home/zhz/isaacsim/python.sh
+    args: simulation-env/isaac_dora_node.py
+    env:
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
+      LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
+    inputs:
+      # 🎯 核心变更：底盘控制权直接移交给键盘遥控器！
+      control_cmd: keyboard_teleop/control_cmd
+    outputs:
+      - obstacle_force
+      - odometry
+      - jpeg_image
+
+  # ---------------------------------------------------------------
+  # 🎮 2. 人类意志桥接器 (Keyboard Teleop Receiver)
+  # ---------------------------------------------------------------
+  - id: keyboard_teleop
+    path: python3
+    args: simulation-env/keyboard_teleop.py
+    outputs:
+      - control_cmd
+
+  # ---------------------------------------------------------------
+  # 🗃️ 3. 黑匣子数据记录仪 (Expert Data Logger)
+  # ---------------------------------------------------------------
+  - id: expert_data_logger
+    path: python3
+    args: simulation-env/expert_logger_node.py
+    inputs:
+      # 监听物理世界状态
+      odometry: isaac_sim_env/odometry
+      obstacle_force: isaac_sim_env/obstacle_force
+      # 监听人类下发的动作指令 (作为未来 RL 训练的 Label)
+      control_cmd: keyboard_teleop/control_cmd
+
+  # ---------------------------------------------------------------
+  # 📊 4. 旁路探针：NEXUS 可视化遥测大屏 (让你看着大屏开车)
+  # ---------------------------------------------------------------
+  - id: telemetry_dashboard
+    path: uv
+    args: run --cache-dir /home/zhz/.cache/uv_clean showcase/src/bin/telemetry_dashboard.py
+    env:
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+    inputs:
+      odometry: isaac_sim_env/odometry
+      obstacle_force: isaac_sim_env/obstacle_force
+      control_cmd: keyboard_teleop/control_cmd
+      jpeg_image: isaac_sim_env/jpeg_image
