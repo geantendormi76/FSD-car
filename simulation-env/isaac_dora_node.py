@@ -252,19 +252,20 @@ def main():
 
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
-    
+
     # 🛡️ 3.3.1 阶段自愈并网：注册并包裹动态避障立方体
     from isaacsim.core.prims import XFormPrim
-    obstacle_path = "/Root/dynamic_obstacles/box_obstacle_01"
+    # 6.0 批处理自愈：使用广义双通配符，穿透所有由于复制组产生的 dynamic_obstacles_xx 文件夹，一网打尽！
+    obstacle_path = "/Root/dynamic_obstacles*/box_obstacle_*"
     obstacle = None
-    # 3.3.1 核心自愈：新增初始姿态变量，用于动态捕获你在 GUI 中手动拖拽的位置
-    obs_init_pos = None
-    obs_init_rot = None
-    if stage.GetPrimAtPath(obstacle_path):
-        # 6.0 黄金标准：参数名必须对齐批处理表达式 prim_paths_expr [cite: 1.3.1]
+    # 3.3.1 核心自愈：升级为 numpy 矩阵，用于缓存所有复制出来的箱子的初始姿态（N, 3）和（N, 4）
+    obs_init_poses = None
+    obs_init_rots = None
+    if stage.GetPrimAtPath("/Root"):
         obstacle = XFormPrim(prim_paths_expr=obstacle_path, name="box_obstacle")
         world.scene.add(obstacle)
-        print("🟢 [NEXUS 3.3.1] Dynamic Obstacle successfully registered into Scene Manager!")
+        print("🟢 [NEXUS 3.3.1] Batch Dynamic Obstacles successfully registered into Scene Manager!")
+    
     
     camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
     
@@ -283,12 +284,11 @@ def main():
     frog_eye = BionicFrogEye(640, 480)
     world.reset()
     
-    # 🛡️ 3.3.1 核心自愈：在物理场景 Reset 完毕后，瞬间捕获你手动拖拽的初始位置与旋转角度
+    # 🛡️ 3.3.1 核心自愈：在物理场景 Reset 完毕后，瞬间高频捕获所有复制出来的箱子的初始坐标矩阵
     if obstacle is not None:
-        init_poses, init_rots = obstacle.get_world_poses()
-        obs_init_pos = init_poses[0]
-        obs_init_rot = init_rots[0]
-        print(f"🟢 [NEXUS 3.3.1] 成功捕获你手动调整的障碍物初始坐标: {obs_init_pos}")
+        # 6.0 批处理接口直接返回包含所有箱子的（N, 3）和（N, 4）NumPy 矩阵 [cite: 1.3.8]
+        obs_init_poses, obs_init_rots = obstacle.get_world_poses()
+        print(f"🟢 [NEXUS 3.3.1] 成功并网！捕获到关卡中共有 {len(obs_init_poses)} 个高能避障红箱子！")
         
     world.play()
 
@@ -310,17 +310,22 @@ def main():
             tick += 1
             
             # 🛡️ 3.3.1 阶段自愈并网：100Hz 极速驱动立方体作正弦往复运动（等效于横穿马路的动态行人）
-            if obstacle is not None and obs_init_pos is not None:
+            if obstacle is not None and obs_init_poses is not None:
                 t = tick * 0.01
-                # 🎯 物理重塑：对齐 X 轴物理位移极性！
-                # 以你在 GUI 里摆放的右侧 X 轴坐标为起点，进行 ±1.2 米的平滑正弦波横向穿梭
-                new_x = obs_init_pos[0] + 1.2 * np.sin(1.5 * t)
-                # 保持你在 GUI 中摆放的 Y 和 Z 世界坐标不变，仅相对运动 X 轴
-                obstacle.set_world_poses(
-                    positions=np.array([[new_x, obs_init_pos[1], obs_init_pos[2]]]),
-                    orientations=np.array([obs_init_rot])
-                )
-
+                # 复制一份初始坐标矩阵，保持 Y 轴和 Z 轴静止
+                new_poses = obs_init_poses.copy()
+                
+                # 🎯 2026 批处理艺术：为每一个复制出来的箱子，施加一个与索引相关的相位偏移量
+                # 这样每个箱子就会“参差不齐、错落有致”地摆动，形成一个绝佳的高动态博弈沙盘，避免整齐划一的机械感
+                num_obstacles = len(obs_init_poses)
+                phase_offsets = np.arange(num_obstacles) * 0.6  # 0.6 rad 的相位差
+                
+                # 矩阵式矢量计算：一次性求出所有箱子新的 X 世界坐标
+                new_poses[:, 0] = obs_init_poses[:, 0] + 1.2 * np.sin(1.5 * t + phase_offsets)
+                
+                # 一行代码，通过 GPU 极速下发所有箱子的位姿，性能高到离谱且绝不报错！
+                obstacle.set_world_poses(positions=new_poses, orientations=obs_init_rots)
+                
             # B. 🛡️ SOTA 核心：直接从 Replicator 标注器中获取纯净的内存像素 [cite: 1.1.4]
             # 剥离不兼容 headless 且存在多余包装的 camera.get_rgb()
             rgb_raw = rgb_annotator.get_data()
@@ -346,12 +351,18 @@ def main():
                 dora_node.send_output("odometry", arrow_odom)
 
                 # 🎯 战役三第六版核心：100Hz 本地极速经典感知避障（释放 GPU / 彻底消灭延迟）
-                # 我们将耗时的大型神经网络 CLIDD 彻底移出 100Hz 物理控制轴
-                # 青蛙眼利用本地 0.2ms 经典 FAST 屏蔽器阻断静态纹理，100Hz 时序控制环畅通无阻！
                 F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-
                 # 📸 SOTA 级并网：将 Isaac Sim 离屏渲染的 RGB 图像压缩为 JPEG 字节流广播
                 bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                
+                # 🛡️ 3.3.1 视觉白盒增稳：将青蛙眼的动态能量势场（红光）无缝糅进图像流
+                # 让你在 AR 大屏上能一眼看穿小车眼中的“高能运动危险区”，极大地提升录制黄金数据时的信心！
+                if heatmap is not None and np.any(heatmap > 20):
+                    # 将单通道灰度势场扩展为三通道红色通道蒙版 [B, G, R]
+                    red_glow = cv2.merge([np.zeros_like(heatmap), np.zeros_like(heatmap), heatmap])
+                    # 以 80% 原图亮度 + 40% 势场红光的比重融合（完全不影响 XFeat 特征提取）
+                    bgr_frame = cv2.addWeighted(bgr_frame, 0.8, red_glow, 0.4, 0)
+                
                 _, jpeg_encoded = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
                 dora_node.send_output("jpeg_image", arrow_jpeg)
