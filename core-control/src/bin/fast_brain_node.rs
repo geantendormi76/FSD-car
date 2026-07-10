@@ -207,8 +207,7 @@ async fn main() -> eyre::Result<()> {
                 let rebound_dir = 抑制后的期望_y.signum();
                 rebound_y = rebound_dir * (抑制后的期望_y.abs() * 0.75).min(0.35);
             }
-
-            let 目标线速度 = (0.20 + 滤波后的期望_x).clamp(0.0, 0.20); 
+            let 目标线速度 = (0.80 + 滤波后的期望_x).clamp(0.0, 0.80); 
             let mut 注入成功 = true;
             for k in 0..=20 {
                 let 比例 = (k as f64) / 20.0;

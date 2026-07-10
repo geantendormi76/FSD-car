@@ -119,17 +119,13 @@ impl 预测控制求解器 {
 
             let a_opt = u_opt[0];
             let w_cmd_raw = u_opt[1];
-
             // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
             let mut v_cmd = 当前线速度 + a_opt * 0.01;
-            
-            // 🎯 动力学限制对齐：硬限幅限制在 0.20 m/s
-            if v_cmd > 0.20 { v_cmd = 0.20; }
+            // 🎯 3.3.1 极速自愈：解锁 NMPC 求解器输出硬限幅至 0.80 m/s，并调大角速度至 1.0 以支撑中速切弯 [cite: Sim2Real-AD]
+            if v_cmd > 0.80 { v_cmd = 0.80; }
             if v_cmd < 0.0 { v_cmd = 0.0; }
-
-            // 角速度限幅 [-0.6, 0.6] (继承自 generate_solver.py 的硬约束)
-            let w_cmd = w_cmd_raw.clamp(-0.6, 0.6);
-
+            // 🎯 3.3.1 极速自愈：删除残余的 0.6 覆盖锁，彻底释放 1.0 rad/s 极限大角度打舵潜能！
+            let w_cmd = w_cmd_raw.clamp(-1.0, 1.0);
             Ok((v_cmd, w_cmd))
         }
     }
