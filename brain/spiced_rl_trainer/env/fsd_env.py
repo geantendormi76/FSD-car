@@ -24,9 +24,7 @@ class FSDCarGymEnv(gym.Env):
         self.max_steps = max_steps
         self.current_step = 0
         
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
-        
-        # 5D Pure Ego-centric Observation Space (No absolute world coordinate leak)
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float32)
         
         self.state_x = 0.0
@@ -104,12 +102,15 @@ class FSDCarGymEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         
-        delta_Q_y = float(action[0]) * 15.0
-        axis_a = 0.35 + float(action[1]) * 0.20
-        axis_b = 0.25 + float(action[2]) * 0.15
-        delta_v_ref = float(action[3]) * 0.20
+        v_cmd = float(action[0])
+        w_cmd = float(action[1])
         
-        target_velocity = np.clip(0.80 + delta_v_ref, 0.0, 0.80)
+        target_velocity = np.clip(v_cmd, 0.0, 0.8)
+        rebound_yaw = w_cmd * 0.25
+        
+        axis_a = 0.35
+        axis_b = 0.25
+        Q_y_tuned = 45.0
         
         nmpc_substeps = 10
         dt_sub = 0.01
@@ -144,7 +145,6 @@ class FSDCarGymEnv(gym.Env):
                 self.solver.constraints_set(0, "lbx", np.array([0.0, 0.0, 0.0, self.state_v]))
                 self.solver.constraints_set(0, "ubx", np.array([0.0, 0.0, 0.0, self.state_v]))
                 
-                Q_y_tuned = np.clip(45.0 + delta_Q_y, 10.0, 80.0)
                 W = np.zeros((6, 6))
                 W[0, 0] = 20.0
                 W[1, 1] = Q_y_tuned
@@ -157,15 +157,15 @@ class FSDCarGymEnv(gym.Env):
                     t = k / 20.0
                     ref_x = 3.0 * (1.0 - t)**2 * t * d_ff + 3.0 * (1.0 - t) * t**2 * (scaled_target_x - d_ff * math.cos(local_target_yaw)) + t**3 * scaled_target_x
                     ref_y = 3.0 * (1.0 - t) * t**2 * (scaled_target_y - d_ff * math.sin(local_target_yaw)) + t**3 * scaled_target_y
-                    ref_yaw = local_target_yaw * (t * t * (3.0 - 2.0 * t))
+                    ref_yaw = local_target_yaw * (t * t * (3.0 - 2.0 * t)) + (rebound_yaw * t)
                     
                     if k < 20:
-                        self.solver.cost_set(k, "W", W)
-                        self.solver.cost_set(k, "yref", np.array([ref_x, ref_y, ref_yaw, target_velocity, 0.0, 0.0]))
+                        self.solver.cost_set(k, "W", W) # Set W via cost_set
+                        self.solver.set(k, "yref", np.array([ref_x, ref_y, ref_yaw, target_velocity, 0.0, 0.0])) # Set yref via set
                     else:
                         W_e = np.diag([20.0, Q_y_tuned, 5.0, 1.0]) * 1.5
-                        self.solver.cost_set(k, "W", W_e)
-                        self.solver.cost_set(k, "yref", np.array([ref_x, ref_y, ref_yaw, target_velocity]))
+                        self.solver.cost_set(k, "W", W_e) # Set W_e via cost_set
+                        self.solver.set(k, "yref", np.array([ref_x, ref_y, ref_yaw, target_velocity])) # Set yref_e via set
                         
                     p = np.array([
                         self.obs_poses[0, 0], self.obs_poses[0, 1], axis_a, axis_b,

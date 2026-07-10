@@ -5,6 +5,8 @@ use eyre::eyre;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
+use ort::session::Session;
+use ort::value::Value;
 
 struct ExecutionContext {
     pub is_initialized: bool,
@@ -20,10 +22,56 @@ struct ExecutionContext {
     pub last_update_time: std::time::Instant,
 }
 
+fn auto_load_onnx_dylib() {
+    if std::env::var("ORT_DYLIB_PATH").is_ok() {
+        return;
+    }
+    let capi_dir = "/home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/onnxruntime/capi";
+    if std::path::Path::new(capi_dir).exists() {
+        if let Ok(entries) = std::fs::read_dir(capi_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name() {
+                        let name_str = file_name.to_string_lossy();
+                        if name_str.starts_with("libonnxruntime.so") {
+                            let abs_path = path.to_string_lossy().into_owned();
+                            println!("✓ Self-healing loaded versioned onnx dylib: {}", abs_path);
+                            std::env::set_var("ORT_DYLIB_PATH", abs_path);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let fallback_path = "/home/zhz/fsd-car/core-perception/lib_dylib/libonnxruntime.so";
+    if std::path::Path::new(fallback_path).exists() {
+        std::env::set_var("ORT_DYLIB_PATH", fallback_path);
+    }
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    println!("NEXUS Fast Brain planning node with Spline Generator has started...");
+    auto_load_onnx_dylib();
+
+    println!("NEXUS SOTA 2026 - PPO & NMPC Unified FSD Control Node starting...");
     let (mut node, mut events) = DoraNode::init_from_env()?;
+    
+    let mut onnx_path = std::path::PathBuf::from("model/spiced_brain.onnx");
+    if !onnx_path.exists() {
+        onnx_path = std::path::PathBuf::from("/home/zhz/fsd-car/model/spiced_brain.onnx");
+    }
+    
+    if !onnx_path.exists() {
+        return Err(eyre!("Critical Error: Spiced PPO ONNX weights missing at {:?}", onnx_path));
+    }
+    
+    let mut ppo_session = Session::builder()
+        .and_then(|b| b.with_intra_threads(1))
+        .and_then(|b| b.commit_from_file(&onnx_path))
+        .expect("Failed to mount Spiced PPO Brain");
+    println!("✓ Spiced PPO Brain model loaded. Ready for 10Hz neural inference.");
     
     let context = Arc::new(RwLock::new(ExecutionContext {
         is_initialized: false,
@@ -54,7 +102,12 @@ async fn main() -> eyre::Result<()> {
         
         let mut filtered_obs_x = 1000.0f64;
         let mut filtered_obs_y = 1000.0f64;
+        
+        let mut current_ppo_v = 0.0f64;
+        let mut current_ppo_w = 0.0f64;
         let mut last_omega_w = 0.0f64;
+        
+        let mut printed_unseal = false;
         
         use std::io::Write as _;
         let mut log_file = std::fs::OpenOptions::new()
@@ -132,7 +185,7 @@ async fn main() -> eyre::Result<()> {
             let mut suppressed_force_y = filtered_force_y;
             let abs_omega = last_omega_w.abs();
             if abs_omega > 0.12 {
-                let suppression_factor = (-4.5 * (abs_omega - 0.12)).exp();
+                let suppression_factor = (-4.5_f64 * (abs_omega - 0.12_f64)).exp();
                 suppressed_force_y *= suppression_factor.clamp(0.15, 1.0);
             }
             
@@ -162,14 +215,42 @@ async fn main() -> eyre::Result<()> {
                 (local_target_x, local_target_y)
             };
             
-            let mut rebound_y = 0.0f64;
-            if suppressed_force_y.abs() > 0.02 {
-                rebound_y = suppressed_force_y.signum() * (suppressed_force_y.abs() * 0.75).min(0.35);
+            if tick_count % 10 == 0 || tick_count == 1 {
+                let input_data = vec![
+                    (scaled_x * 0.20) as f32,
+                    (scaled_y * 0.20) as f32,
+                    (target_distance * 0.20) as f32,
+                    filtered_force_x as f32,
+                    filtered_force_y as f32,
+                ];
+                
+                let input_tensor = Value::from_array(([1, 5], input_data))
+                    .expect("Failed to build input tensor");
+                let inputs = ort::inputs![input_tensor];
+                
+                let outputs = ppo_session.run(inputs).expect("ONNX inference failed");
+                let (_, outputs_data) = outputs[0].try_extract_tensor::<f32>()
+                    .expect("Failed to extract output tensor");
+                
+                current_ppo_v = outputs_data[0] as f64;
+                current_ppo_w = outputs_data[1] as f64;
             }
             
-            let target_velocity = (0.80 + filtered_force_x).clamp(0.0, 0.80);
-            let mut injection_success = true;
+            let mut max_speed_limit = 0.80f64;
+            if tick_count <= 200 {
+                max_speed_limit = 0.25f64;
+                if tick_count == 1 {
+                    println!("🚀 [NEXUS AR] 200-Tick Simulation Speed Gating active. Capped at 0.25 m/s.");
+                }
+            } else if !printed_unseal {
+                println!("🚀 [NEXUS AR] Simulation speed gating unsealed! Unleashing full 0.80 m/s PPO potential.");
+                printed_unseal = true;
+            }
             
+            let target_velocity = current_ppo_v.clamp(0.0, max_speed_limit);
+            let rebound_yaw = current_ppo_w * 0.25;
+            
+            let mut injection_success = true;
             let d_ff = scaled_x / 3.0;
             
             for k in 0..=20 {
@@ -187,8 +268,8 @@ async fn main() -> eyre::Result<()> {
                 };
                 
                 let spiced_ref_x = ref_x + (filtered_force_x * t);
-                let spiced_ref_y = ref_y + (rebound_y * t);
-                let ref_yaw = local_target_yaw * (t * t * (3.0 - 2.0 * t));
+                let spiced_ref_y = ref_y;
+                let ref_yaw = local_target_yaw * (t * t * (3.0 - 2.0 * t)) + (rebound_yaw * t);
                 
                 if let Err(e) = brain.设置参考轨迹点(k, spiced_ref_x, spiced_ref_y, ref_yaw, target_velocity) {
                     eprintln!("Failed to inject spline reference at stage {}: {}", k, e);
@@ -201,9 +282,9 @@ async fn main() -> eyre::Result<()> {
                 continue;
             }
             
-            let (obs_x, obs_y, axis_a, axis_b) = if suppressed_force_y.abs() > 0.04 || filtered_force_x < -0.04 {
+            let (obs_x, obs_y, axis_a, axis_b) = if filtered_force_y.abs() > 0.04 || filtered_force_x < -0.04 {
                 let ox = 0.65;
-                let oy = -suppressed_force_y.clamp(-0.35, 0.35);
+                let oy = -filtered_force_y.clamp(-0.35, 0.35);
                 (ox, oy, 0.35, 0.25)
             } else {
                 (1000.0, 1000.0, 0.1, 0.1)
@@ -248,20 +329,24 @@ async fn main() -> eyre::Result<()> {
                 lock.current_velocity = v_cmd;
             }
             
-            last_omega_w = w_cmd;
-            
             let _ = writeln!(
                 log_file,
                 "{}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}",
                 tick_count, cur_x, cur_y, cur_yaw, tgt_x, tgt_y, tgt_yaw, active_force_x, active_force_y, v_cmd, w_cmd, cur_v
             );
             
+            let _ = log_file.flush();
+            
+            last_omega_w = w_cmd;
+            
             if tick_count % 100 == 0 {
-                let status_str = if filtered_obs_x < 100.0 { "DEFENSIVE" } else { "CLEAR" };
-                println!(
-                    "[NMPC 100Hz Telemetry] Tick: {:<5} | Status: {} | Target dist: {:.2}m | Force: (Fx:{:>6.3}, Fy:{:>6.3}) | v_cmd: {:.3} m/s | w_cmd: {:>6.3} rad/s",
-                    tick_count, status_str, target_distance, force_x, force_y, v_cmd, w_cmd
+                let status_str = if filtered_obs_x < 100.0 { "DEFENSIVE 🔴" } else { "CLEAR 🟢" };
+                print!(
+                    "[FSD SOTA 2026] Tick: {:<5} | {} | Target dist: {:.2}m | PPO Cmd: v={:.3}, w={:>6.3} | v_cmd: {:.3} m/s | w_cmd: {:>6.3} rad/s\r",
+                    tick_count, status_str, target_distance, current_ppo_v, current_ppo_w, v_cmd, w_cmd
                 );
+                use std::io::Write as _;
+                std::io::stdout().flush().unwrap();
             }
             
             let cmd_arrow = dora_node_api::arrow::array::Float32Array::from(vec![
@@ -313,7 +398,9 @@ async fn main() -> eyre::Result<()> {
                         lock.target_yaw = prior_array.value(2) as f64;
                         if !lock.is_initialized {
                             lock.is_initialized = true;
-                            println!("Warmstart gate unsealed: Slow brain homing signal linked!");
+                            print!("Warmstart gate unsealed: Slow brain homing signal linked!\r");
+                            use std::io::Write as _;
+                            std::io::stdout().flush().unwrap();
                         }
                         lock.last_update_time = std::time::Instant::now();
                     }
