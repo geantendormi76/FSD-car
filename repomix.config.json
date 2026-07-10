@@ -4,7 +4,7 @@
     "maxFileSize": 1048576
   },
   "output": {
-    "filePath": "repomix-output.xml",
+    "filePath": "fsd-car.xml",
     "style": "xml",
     "parsableStyle": false,
     "compress": false,
