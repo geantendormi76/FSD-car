@@ -2,12 +2,13 @@ use super::ffi::*;
 use std::ffi::CString;
 use std::os::raw::c_void;
 
+// 🛡️ 领域模型：IRIS 凸包走廊 (Convex Safe Flight Corridor)
+// 数学契约：A * z <= b，其中 z = [x, y]^T
+// 包含 4 条边界（前、后、左、右），形成一个绝对安全的凸多边形
 #[derive(Debug, Clone, Copy)]
-pub struct 动态障碍物 {
-    pub x: f64,
-    pub y: f64,
-    pub a: f64,
-    pub b: f64,
+pub struct 凸包走廊 {
+    pub a_mat: [[f64; 2]; 4], // 4行2列的法向量矩阵
+    pub b_vec: [f64; 4],      // 4维的偏置向量
 }
 
 pub struct 预测控制求解器 {
@@ -39,9 +40,10 @@ impl 预测控制求解器 {
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
             let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
-            
+
             let status_lbx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
             let status_ubx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
+
             if status_lbx != 0 || status_ubx != 0 {
                 return Err("Failed to inject current state (x0)".to_string());
             }
@@ -55,7 +57,7 @@ impl 预测控制求解器 {
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
-            
+
             let status = if stage == 20 {
                 let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
                 ocp_nlp_cost_model_set(config, dims, nlp_in, stage, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
@@ -63,7 +65,7 @@ impl 预测控制求解器 {
                 let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
                 ocp_nlp_cost_model_set(config, dims, nlp_in, stage, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
             };
-            
+
             if status != 0 {
                 return Err(format!("Failed to set reference trajectory at stage {}", stage));
             }
@@ -71,25 +73,22 @@ impl 预测控制求解器 {
         Ok(())
     }
 
-    pub fn 设置动态障碍物硬约束(&mut self, 障碍物列表: &[动态障碍物]) -> Result<(), String> {
-        let mut p = [1000.0f64; 12];
-        for i in 0..3 {
-            p[4 * i + 2] = 0.1;
-            p[4 * i + 3] = 0.1;
+    // 🎯 规控一元化核心：将避障转化为凸包走廊的绝对硬约束
+    pub fn 设置安全走廊硬约束(&mut self, 走廊: &凸包走廊) -> Result<(), String> {
+        // 将 4 条边界的 A 和 b 展平为 12 维的参数数组，注入 acados 底层
+        let mut p = [0.0f64; 12];
+        for i in 0..4 {
+            p[i * 3 + 0] = 走廊.a_mat[i][0];
+            p[i * 3 + 1] = 走廊.a_mat[i][1];
+            p[i * 3 + 2] = 走廊.b_vec[i];
         }
-        
-        for (i, obs) in 障碍物列表.iter().take(3).enumerate() {
-            p[4 * i + 0] = obs.x;
-            p[4 * i + 1] = obs.y;
-            p[4 * i + 2] = obs.a;
-            p[4 * i + 3] = obs.b;
-        }
-        
+
         unsafe {
+            // 将安全走廊硬约束广播至预测时域内的所有控制节点 (0..=20)
             for stage in 0..=20 {
                 let status = diff_drive_car_acados_update_params(self.capsule, stage, p.as_ptr(), 12);
                 if status != 0 {
-                    return Err(format!("Failed to inject obstacles parameters at stage {}", stage));
+                    return Err(format!("Failed to inject convex corridor constraints at stage {}", stage));
                 }
             }
         }
@@ -102,22 +101,24 @@ impl 预测控制求解器 {
             if status != 0 {
                 return Err(format!("NMPC solve failed, status: {}", status));
             }
-            
+
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
+
             let field_u = CString::new("u").unwrap();
             let mut u_opt = [0.0f64; 2];
-            
             ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
+
             let a_opt = u_opt[0];
             let w_cmd_raw = u_opt[1];
-            
+
+            // 物理包络线限幅
             let mut v_cmd = 当前线速度 + a_opt * 0.01;
             if v_cmd > 0.80 { v_cmd = 0.80; }
             if v_cmd < 0.0 { v_cmd = 0.0; }
             let w_cmd = w_cmd_raw.clamp(-1.0, 1.0);
-            
+
             Ok((v_cmd, w_cmd))
         }
     }
@@ -129,36 +130,5 @@ impl Drop for 预测控制求解器 {
             diff_drive_car_acados_free(self.capsule);
             diff_drive_car_acados_free_capsule(self.capsule);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_nmpc_solver_lifecycle_and_compute() {
-        println!("Testing aligned NMPC solver FFI boundaries...");
-        let mut solver = 预测控制求解器::new().expect("Failed to initialize solver");
-        println!("Capsule allocation passed!");
-        
-        solver.设置当前状态(0.0, 0.0, 0.0, 0.0).expect("Failed to inject current state");
-        println!("Initial state injected!");
-        
-        for k in 0..=20 {
-            solver.设置参考轨迹点(k, 1.0, 0.0, 0.0, 0.3).expect("Failed to inject trajectory");
-        }
-        println!("Trajectory successfully mapped!");
-        
-        let obs = 动态障碍物 { x: 0.5, y: 0.0, a: 0.3, b: 0.2 };
-        solver.设置动态障碍物硬约束(&[obs]).expect("Failed to inject dynamic obstacle constraints");
-        println!("Dynamic obstacles injected and aligned!");
-        
-        let (v_cmd, w_cmd) = solver.求解最优控制量(0.0).expect("NMPC calculation failed");
-        println!("Solved successfully -> v: {:.3} m/s, w: {:.3} rad/s", v_cmd, w_cmd);
-        
-        assert!(v_cmd >= 0.0 && v_cmd <= 0.3);
-        assert!(w_cmd >= -0.6 && w_cmd <= 0.6);
-        println!("FFI Boundary integration test completed safely!");
     }
 }

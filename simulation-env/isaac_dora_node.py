@@ -22,7 +22,6 @@ def load_env_manually():
                     parts = line.split("=", 1)
                     if len(parts) == 2:
                         os.environ[parts[0].strip()] = parts[1].strip()
-
 load_env_manually()
 
 try:
@@ -32,7 +31,7 @@ try:
         "headless": False,  
     })
     import omni
-    from pxr import UsdPhysics
+    from pxr import Usd, UsdPhysics, PhysxSchema
     from isaacsim.core.api import World
     from isaacsim.core.prims import Articulation
     from isaacsim.core.utils.stage import open_stage
@@ -56,7 +55,10 @@ class BionicFrogEye:
         self.event_threshold = 10.0
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
+        
+        # 🎯 终极自愈：100% 补偿缺失的 closeness_weight 感受野纵向衰减矩阵
         self.closeness_weight = (y_indices / float(self.h)) + 0.15
+        
         self.fast_detector = cv2.FastFeatureDetector_create(threshold=15, nonmaxSuppression=True)
 
     def process_frame(self, frame_rgb):
@@ -148,20 +150,9 @@ class CLIDDEngine:
 
 def main():
     if "DORA_NODE_CONFIG" not in os.environ:
-        print("=========================================================================")
-        print("⚠️  NEXUS - 进程孤立阻断拦截机制 (Standalone Isolation Intercept)")
-        print("=========================================================================")
-        print("💡 诊断结论：您正在尝试在【单兵终端调试模式】下直接运行仿真器节点。")
-        print("   由于本节点是 FSD 大一统数据流拓扑图的‘感知与物理引擎边界’，")
-        print("   它必须由 Dora 协调器大总管（Dora Coordinator）统一装载并注入数据通道配置。")
-        print("=========================================================================")
-        print("👉 请直接在终端执行以下大一统并网指令，一键拉起全系统闭环：")
-        print("   dora up")
-        print("   dora start dora_dataflow.yaml")
-        print("=========================================================================")
+        print("Standalone simulation testing is bypassed.")
         simulation_app.close()
         sys.exit(0)
-
     print("Launching FSD local zero-copy integration pipeline with ARS...")
     dora_node = Node()
     fsd_assets_dir = "/home/zhz/fsd-car/assets"
@@ -171,12 +162,9 @@ def main():
     default_usd_path = os.path.join(fsd_assets_dir, default_usd_name)
     if os.path.exists(clean_usd_path):
         usd_path = clean_usd_path
-        print(f"Map GOB aligned: Loading un-obstructed scene {clean_usd_name}")
     else:
         usd_path = default_usd_path
-        print(f"Fallback Active: Loading scene {default_usd_name}")
     if not os.path.exists(usd_path):
-        print(f"Fatal Error: usd file missing at {usd_path}")
         sys.exit(1)
     open_stage(usd_path=usd_path)
     world = World(
@@ -189,8 +177,8 @@ def main():
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath(car_path):
-        print(f"Fatal Error: Robot chassis missing at path {car_path}")
         sys.exit(1)
+    
     for prim in stage.Traverse():
         if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
             drive = UsdPhysics.DriveAPI.Get(prim, "angular")
@@ -198,6 +186,10 @@ def main():
                 drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
             drive.CreateStiffnessAttr(0.0)
             drive.CreateDampingAttr(1e5)
+            
+            physx_joint = PhysxSchema.PhysxJointAPI.Apply(prim)
+            physx_joint.CreateMaxJointVelocityAttr().Set(100000.0) 
+            
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
     from isaacsim.core.prims import XFormPrim
@@ -208,21 +200,16 @@ def main():
     if stage.GetPrimAtPath("/Root"):
         obstacle = XFormPrim(prim_paths_expr=obstacle_path, name="box_obstacle")
         world.scene.add(obstacle)
-        print("Vectorized dynamic obstacles successfully registered.")
     camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
     render_product = rep.create.render_product(camera_path, (640, 480))
     rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
     rgb_annotator.attach([render_product])
     clidd_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
     if not os.path.exists(clidd_model_path):
-        print(f"Fatal Error: ONNX missing at {clidd_model_path}")
         sys.exit(1)
     clidd_engine = CLIDDEngine(clidd_model_path)
     frog_eye = BionicFrogEye(640, 480)
-    
     world.reset()
-
-    # 1. Standardize Joint indexing dynamically based on USD joint names
     left_idx = 0
     right_idx = 1
     for idx, name in enumerate(car.dof_names):
@@ -230,11 +217,7 @@ def main():
             left_idx = idx
         elif "right" in name.lower():
             right_idx = idx
-    print(f"✓ Dynamic DOF Mapping -> Left joint: {car.dof_names[left_idx]} (idx: {left_idx}), Right joint: {car.dof_names[right_idx]} (idx: {right_idx})")
-
-    # 2. Dynamic Sign Calibration preheating phase (300ms)
     world.play()
-    print("Pre-heating off-screen rendering context & calibrating ARS signs...")
     left_sign = 1.0
     right_sign = 1.0
     for step_idx in range(60):
@@ -250,25 +233,19 @@ def main():
                 raw_right = float(joint_vels[0][right_idx])
                 left_sign = 1.0 if raw_left >= 0.0 else -1.0
                 right_sign = 1.0 if raw_right >= 0.0 else -1.0
-                print(f"✓ ARS Sign Calibration completed -> Left Multiplier: {left_sign}, Right Multiplier: {right_sign}")
             stop_targets = np.zeros(len(car.dof_names))
             car.set_joint_velocity_targets(stop_targets)
         world.step(render=True)
-
-    print("Offscreen pipeline activated successfully.")
-
+    
     L = 0.1125
-    R = 0.03
+    R = 0.03362 
     tick = 0
     v_cmd = 0.0
     w_cmd = 0.0
     rgb_frame = None
-
-    # Actuator Reality Shaping (ARS) Pure Feedforward Reference Model parameters
     alpha_ars = 30.0 
     v_left_ref = 0.0
     v_right_ref = 0.0
-
     try:
         while simulation_app.is_running():
             world.step(render=True)
@@ -317,14 +294,9 @@ def main():
                         if len(cmd_arr) == 2:
                             v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
                 elif ev_type == "STOP":
-                    print("DORA Stop signal received. Closing simulation...")
                     break
-
-            # 3. Kinematic target velocity calculation
             v_left_cmd = (v_cmd - w_cmd * L / 2.0) / R
             v_right_cmd = (v_cmd + w_cmd * L / 2.0) / R
-
-            # 4. Extract measured wheel velocities with dynamic sign alignment
             joint_vels = car.get_joint_velocities()
             if joint_vels is not None and len(joint_vels) > 0:
                 v_left_actual = float(joint_vels[0][left_idx]) * left_sign
@@ -332,21 +304,14 @@ def main():
             else:
                 v_left_actual = 0.0
                 v_right_actual = 0.0
-
-            # 5. Pure Feedforward ARS model reference controller (Kp=0.0, Ki=0.0)
-            # Reference model integration drives PhysX high-gain drive with zero tracking lag
             v_left_ref += 0.01 * alpha_ars * (v_left_cmd - v_left_ref)
             v_right_ref += 0.01 * alpha_ars * (v_right_cmd - v_right_ref)
-
             u_left = v_left_ref
             u_right = v_right_ref
-
-            # 6. Apply calibrated and shaped target velocity to corresponding joints
             targets = np.zeros(len(car.dof_names))
             targets[left_idx] = u_left * left_sign
             targets[right_idx] = u_right * right_sign
             car.set_joint_velocity_targets(targets)
-
             if tick % 100 == 0:
                 print(
                     f"[100Hz Odom Telemetry] Tick: {tick:<6} | "
@@ -355,7 +320,7 @@ def main():
                     f"DORA Cmd: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s"
                 )
     except KeyboardInterrupt:
-        print("Terminated by user keyboard interrupt.")
+        pass
     finally:
         try:
             car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
@@ -364,7 +329,5 @@ def main():
         except Exception:
             pass
         simulation_app.close()
-        print("Isaac Sim closed and unmounted successfully.")
-
 if __name__ == "__main__":
     main()
