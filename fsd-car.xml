@@ -50,6 +50,16 @@ The content is organized as follows:
 </user_provided_header>
 
 <directory_structure>
+brain/
+  spiced_rl_trainer/
+    env/
+      __init__.py
+      fsd_env.py
+    utils/
+      hindsight_purifier.py
+    __init__.py
+    train_bc_anchor.py
+    train_ppo_self_play.py
 core-control/
   src/
     bin/
@@ -96,6 +106,7 @@ simulation-env/
   isaac_dora_node.py
   keyboard_teleop.py
   nmpc_model.py
+  probe_isaac_dora.py
   teleop_sender.py
 .gitignore
 Cargo.toml
@@ -105,6 +116,446 @@ README.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="brain/spiced_rl_trainer/env/__init__.py">
+
+</file>
+
+<file path="brain/spiced_rl_trainer/utils/hindsight_purifier.py">
+import os
+import glob
+import csv
+import math
+import numpy as np
+def purify_and_hindsight():
+    raw_dir = "/home/zhz/fsd-car/dataset"
+    purified_dir = os.path.join(raw_dir, "purified")
+    os.makedirs(purified_dir, exist_ok=True)
+    csv_pattern = os.path.join(raw_dir, "spice_run_*.csv")
+    csv_files = sorted(glob.glob(csv_pattern))
+    if not csv_files:
+        print("Error: No raw dataset files found.")
+        return
+    print("=====================================================================================")
+    print("🛰️  NEXUS - Hindsight Goal Alignment & Purification (SOTA 2026)")
+    print("=====================================================================================")
+    print(f"{'File Name':<28} | {'Raw':<5} | {'Pauses':<6} | {'Purified':<8} | {'Max Vel':<8} | {'Align'}")
+    print("-" * 82)
+    for file_path in csv_files:
+        file_name = os.path.basename(file_path)
+        # Read all rows into memory
+        rows = []
+        with open(file_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                rows.append(row)
+        if len(rows) < 50:
+            # Skip corrupted/too short runs
+            print(f"{file_name:<28} | {len(rows):<5} | {'-':<6} | {'0':<8} | {'-':<8} | SKIP ❌ (Too short)")
+            continue
+        # 1. Hindsight: Extract the absolute last frame as the Dynamic Goal
+        last_row = rows[-1]
+        goal_x = float(last_row['odom_x'])
+        goal_y = float(last_row['odom_y'])
+        purified_rows = []
+        pause_count = 0
+        max_vel = 0.0
+        # 2. Recalculate homogeneous relative goals for every frame
+        for row in rows:
+            v = float(row['current_v'])
+            cmd_v = float(row['cmd_v'])
+            odom_x = float(row['odom_x'])
+            odom_y = float(row['odom_y'])
+            odom_yaw = float(row['odom_yaw'])
+            dx = goal_x - odom_x
+            dy = goal_y - odom_y
+            # Recalculate ego-centric coordinates based on final pose of this run
+            local_goal_x = dx * math.cos(odom_yaw) + dy * math.sin(odom_yaw)
+            local_goal_y = -dx * math.sin(odom_yaw) + dy * math.cos(odom_yaw)
+            local_goal_dist = math.sqrt(local_goal_x**2 + local_goal_y**2)
+            if v > max_vel:
+                max_vel = v
+            # Filter out intermediate idle pauses
+            if v < 0.05 and local_goal_dist > 0.35 and abs(cmd_v) < 0.01:
+                pause_count += 1
+                continue
+            # Update row values
+            row['local_goal_x'] = f"{local_goal_x:.6f}"
+            row['local_goal_y'] = f"{local_goal_y:.6f}"
+            row['local_goal_dist'] = f"{local_goal_dist:.6f}"
+            purified_rows.append(row)
+        if len(purified_rows) < 20:
+            print(f"{file_name:<28} | {len(rows):<5} | {pause_count:<6} | {len(purified_rows):<8} | {max_vel:<8.3f} | EMPTY ❌")
+            continue
+        # 3. Write purified, hindsight-aligned file back to disk
+        out_path = os.path.join(purified_dir, file_name)
+        with open(out_path, mode='w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(purified_rows)
+        print(f"{file_name:<28} | {len(rows):<5} | {pause_count:<6} | {len(purified_rows):<8} | {max_vel:<8.3f} | SUCCESS 🏆 (Aligned)")
+    print("=====================================================================================")
+    print("Hindsight dataset pre-processing completed. Stored at dataset/purified/")
+if __name__ == "__main__":
+    purify_and_hindsight()
+</file>
+
+<file path="brain/spiced_rl_trainer/__init__.py">
+
+</file>
+
+<file path="brain/spiced_rl_trainer/train_bc_anchor.py">
+import os
+import glob
+import csv
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+class SpicedDataset(Dataset):
+    def __init__(self, dataset_dir):
+        self.inputs = []
+        self.actions = []
+        csv_pattern = os.path.join(dataset_dir, "spice_run_*.csv")
+        csv_files = sorted(glob.glob(csv_pattern))
+        if not csv_files:
+            raise FileNotFoundError(f"No purified CSV files found in {dataset_dir}")
+        print(f"Loading and rebuilding {len(csv_files)} files with 5-frame sliding window...")
+        for file_path in csv_files:
+            rows = []
+            with open(file_path, mode='r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    rows.append(row)
+            if len(rows) < 300:
+                continue
+            max_vel = max([float(r['current_v']) for r in rows])
+            if max_vel < 0.20:
+                continue
+            start_idx = 0
+            for idx, r in enumerate(rows):
+                if float(r['current_v']) > 0.05 or abs(float(r['cmd_v'])) > 0.01:
+                    start_idx = idx
+                    break
+            end_idx = len(rows) - 1
+            for idx in range(len(rows) - 1, -1, -1):
+                r = rows[idx]
+                if float(r['current_v']) > 0.05 or float(r['local_goal_dist']) > 0.20:
+                    end_idx = idx
+                    break
+            if end_idx - start_idx < 150:
+                continue
+            valid_rows = rows[start_idx:end_idx + 1]
+            # Reconstruct 5-frame sliding window from chronological run sequences
+            for t in range(4, len(valid_rows)):
+                obs_25 = []
+                for d in range(5):
+                    r_hist = valid_rows[t - (4 - d)]
+                    l_goal_x = float(r_hist['local_goal_x']) * 0.20
+                    l_goal_y = float(r_hist['local_goal_y']) * 0.20
+                    l_goal_dist = float(r_hist['local_goal_dist']) * 0.20
+                    f_x = float(r_hist['frog_eye_fx'])
+                    f_y = float(r_hist['frog_eye_fy'])
+                    obs_25.extend([l_goal_x, l_goal_y, l_goal_dist, f_x, f_y])
+                cmd_v = float(valid_rows[t]['cmd_v'])
+                cmd_w = float(valid_rows[t]['cmd_w'])
+                act = np.array([cmd_v, cmd_w], dtype=np.float32)
+                self.inputs.append(np.array(obs_25, dtype=np.float32))
+                self.actions.append(act)
+        self.inputs = np.array(self.inputs)
+        self.actions = np.array(self.actions)
+        print(f"Sliding window dataset built. Total training samples: {len(self.inputs)}")
+    def __len__(self):
+        return len(self.inputs)
+    def __getitem__(self, idx):
+        return torch.from_numpy(self.inputs[idx]), torch.from_numpy(self.actions[idx])
+class GaussianPolicy(nn.Module):
+    # Refactored: input_dim=25 to match the sliding window size
+    def __init__(self, input_dim=25, action_dim=2):
+        super(GaussianPolicy, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh()
+        )
+        self.mean_head = nn.Linear(128, action_dim)
+        self.log_std = nn.Parameter(torch.zeros(action_dim))
+    def forward(self, x):
+        features = self.fc(x)
+        raw_mean = self.mean_head(features)
+        mean_v = torch.sigmoid(raw_mean[:, 0:1]) * 1.0
+        mean_w = torch.tanh(raw_mean[:, 1:2]) * 1.0
+        mean = torch.cat([mean_v, mean_w], dim=1)
+        return mean, self.log_std.expand_as(mean)
+class SpicedBrainInference(nn.Module):
+    def __init__(self, policy):
+        super(SpicedBrainInference, self).__init__()
+        self.policy = policy
+    def forward(self, x):
+        mean, _ = self.policy(x)
+        return mean
+def train_bc():
+    dataset_dir = "/home/zhz/fsd-car/dataset/purified"
+    model_dir = "/home/zhz/fsd-car/model"
+    os.makedirs(model_dir, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on device: {device}")
+    full_dataset = SpicedDataset(dataset_dir)
+    train_size = int(0.9 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    train_loader = DataLoader(train_dataset, batch_size=2048, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=2048, shuffle=False)
+    policy = GaussianPolicy().to(device)
+    optimizer = optim.Adam(policy.parameters(), lr=3e-4)
+    best_val_loss = float('inf')
+    epochs = 300
+    print("Beginning epoch-loop training (25D Sliding Window & Steering Balanced)...")
+    for epoch in range(1, epochs + 1):
+        policy.train()
+        train_loss = 0.0
+        for obs, act in train_loader:
+            obs, act = obs.to(device), act.to(device)
+            optimizer.zero_grad()
+            mean, log_std = policy(obs)
+            steer_weight = torch.where(torch.abs(act[:, 1]) > 0.02, 5.0, 1.0)
+            var = torch.exp(2 * log_std)
+            nll_elementwise = 0.5 * (((act - mean) ** 2) / var + 2 * log_std + np.log(2 * np.pi)).sum(dim=1)
+            nll = (nll_elementwise * steer_weight).mean()
+            nll.backward()
+            optimizer.step()
+            train_loss += nll.item() * obs.size(0)
+        train_loss /= len(train_loader.dataset)
+        policy.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for obs, act in val_loader:
+                obs, act = obs.to(device), act.to(device)
+                mean, log_std = policy(obs)
+                steer_weight = torch.where(torch.abs(act[:, 1]) > 0.02, 5.0, 1.0)
+                var = torch.exp(var_std := 2 * log_std)
+                nll_elementwise = 0.5 * (((act - mean) ** 2) / var + 2 * log_std + np.log(2 * np.pi)).sum(dim=1)
+                nll = (nll_elementwise * steer_weight).mean()
+                val_loss += nll.item() * obs.size(0)
+        val_loss /= len(val_loader.dataset)
+        if epoch % 30 == 0 or epoch == 1:
+            print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(policy.state_dict(), "bc_anchor.pth")
+    print("Optimization completed. Training 25D BC Anchor Coach succeeded.")
+    print("Compiling Spiced Brain model for ONNX export...")
+    policy.load_state_dict(torch.load("bc_anchor.pth"))
+    policy.eval()
+    inference_model = SpicedBrainInference(policy).to("cpu")
+    inference_model.eval()
+    # Updated to 25-dimensional input tensor
+    dummy_input = torch.zeros(1, 25, dtype=torch.float32)
+    onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
+    torch.onnx.export(
+        inference_model,
+        dummy_input,
+        onnx_path,
+        export_params=True,
+        opset_version=15,
+        do_constant_folding=True,
+        input_names=['input_state'],
+        output_names=['action_output'],
+        dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
+    )
+    print(f"SUCCESS: 25D Spiced Brain exported to {onnx_path}")
+if __name__ == "__main__":
+    train_bc()
+</file>
+
+<file path="brain/spiced_rl_trainer/train_ppo_self_play.py">
+import os
+import sys
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.distributions.normal import Normal
+sys.path.append("/home/zhz/fsd-car/brain/spiced_rl_trainer")
+from env.fsd_env import FSDCarGymEnv
+from train_bc_anchor import GaussianPolicy, SpicedBrainInference
+class ActorCritic(nn.Module):
+    def __init__(self, policy, input_dim=25):
+        super(ActorCritic, self).__init__()
+        self.actor = policy
+        self.critic = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 1)
+        )
+    def get_value(self, x):
+        return self.critic(x)
+    def get_action_and_value(self, x, action=None):
+        mean, log_std = self.actor(x)
+        std = torch.exp(log_std)
+        probs = Normal(mean, std)
+        if action is None:
+            action = probs.sample()
+            action[:, 0:1] = torch.clamp(action[:, 0:1], 0.0, 1.0)
+            action[:, 1:2] = torch.clamp(action[:, 1:2], -1.0, 1.0)
+        log_prob = probs.log_prob(action).sum(dim=1)
+        entropy = probs.entropy().sum(dim=1)
+        value = self.critic(x)
+        return action, log_prob, entropy, value
+def train_ppo():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"PPO training starting on device: {device}")
+    env = FSDCarGymEnv()
+    # Load refactored 25-input Gaussian Policy
+    anchor = GaussianPolicy(input_dim=25).to(device)
+    anchor_path = "/home/zhz/fsd-car/bc_anchor.pth"
+    if not os.path.exists(anchor_path):
+        anchor_path = "/home/zhz/fsd-car/brain/spiced_rl_trainer/bc_anchor.pth"
+    if os.path.exists(anchor_path):
+        anchor.load_state_dict(torch.load(anchor_path, map_location=device))
+        print(f"✓ Frozen 25D BC Anchor Coach successfully loaded from: {anchor_path}")
+    else:
+        print("Warning: BC Anchor weights missing. Training from scratch without prior.")
+    anchor.eval()
+    for param in anchor.parameters():
+        param.requires_grad = False
+    ppo_policy = GaussianPolicy(input_dim=25).to(device)
+    if os.path.exists(anchor_path):
+        ppo_policy.load_state_dict(torch.load(anchor_path, map_location=device))
+    ac_model = ActorCritic(ppo_policy, input_dim=25).to(device)
+    optimizer = optim.Adam(ac_model.parameters(), lr=1e-4)
+    num_iterations = 200
+    num_steps = 128
+    batch_size = num_steps
+    minibatch_size = 32
+    update_epochs = 10
+    gamma = 0.99
+    gae_lambda = 0.95
+    clip_coef = 0.2
+    entropy_coef = 0.001
+    vf_coef = 2.0
+    kl_lambda = 0.075
+    # Buffers enlarged to 25 dimensions to hold sliding window histories
+    obs_buffer = torch.zeros((num_steps, 25)).to(device)
+    action_buffer = torch.zeros((num_steps, 2)).to(device)
+    logprob_buffer = torch.zeros(num_steps).to(device)
+    reward_buffer = torch.zeros(num_steps).to(device)
+    done_buffer = torch.zeros(num_steps).to(device)
+    value_buffer = torch.zeros(num_steps).to(device)
+    next_obs, _ = env.reset()
+    next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
+    next_done = 0.0
+    print("Beginning Spiced PPO 25D self-play exploration loop...")
+    print("-" * 80)
+    for iteration in range(1, num_iterations + 1):
+        episode_reward = 0.0
+        step_reward_sum = 0.0
+        for step in range(num_steps):
+            obs_buffer[step] = next_obs_t
+            done_buffer[step] = next_done
+            with torch.no_grad():
+                action, logprob, _, value = ac_model.get_action_and_value(next_obs_t.unsqueeze(0))
+                value_buffer[step] = value.flatten()
+            action_buffer[step] = action.flatten()
+            logprob_buffer[step] = logprob.flatten()
+            act_np = action.cpu().numpy().flatten()
+            next_obs, reward, terminated, truncated, _ = env.step(act_np)
+            step_reward_sum += reward
+            done = float(terminated or truncated)
+            reward_buffer[step] = reward
+            next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
+            next_done = done
+            if done:
+                next_obs, _ = env.reset()
+                next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
+                episode_reward = step_reward_sum
+                step_reward_sum = 0.0
+        b_obs = obs_buffer
+        b_actions = action_buffer
+        b_logprobs = logprob_buffer
+        with torch.no_grad():
+            next_value = ac_model.get_value(next_obs_t.unsqueeze(0)).flatten()
+            advantages = torch.zeros_like(reward_buffer).to(device)
+            lastgaelam = 0
+            for t in reversed(range(num_steps)):
+                if t == num_steps - 1:
+                    nextnonterminal = 1.0 - next_done
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - done_buffer[t + 1]
+                    nextvalues = value_buffer[t + 1]
+                delta = reward_buffer[t] + gamma * nextvalues * nextnonterminal - value_buffer[t]
+                advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + value_buffer
+        b_advantages = advantages
+        b_returns = returns
+        for epoch in range(update_epochs):
+            b_inds = np.arange(batch_size)
+            np.random.shuffle(b_inds)
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
+                mb_inds = b_inds[start:end]
+                _, newlogprob, entropy, newvalue = ac_model.get_action_and_value(
+                    b_obs[mb_inds], b_actions[mb_inds]
+                )
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+                mb_advantages = b_advantages[mb_inds]
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                v_loss = 0.5 * ((newvalue.flatten() - b_returns[mb_inds]) ** 2).mean()
+                with torch.no_grad():
+                    mean_anchor, log_std_anchor = anchor(b_obs[mb_inds])
+                mean_pi, log_std_pi = ac_model.actor(b_obs[mb_inds])
+                std_anchor = torch.exp(log_std_anchor)
+                std_pi = torch.exp(log_std_pi)
+                kl_div = torch.sum(
+                    log_std_pi - log_std_anchor + 
+                    (std_anchor**2 + (mean_anchor - mean_pi)**2) / (2.0 * std_pi**2) - 0.5,
+                    dim=1
+                ).mean()
+                loss = pg_loss - entropy_coef * entropy.mean() + v_loss * vf_coef + kl_div * kl_lambda
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(ac_model.parameters(), 1.0)
+                optimizer.step()
+        if iteration % 20 == 0 or iteration == 1:
+            print(f"Iter: {iteration:03d} | Pg Loss: {pg_loss.item():.4f} | Val Loss: {v_loss.item():.4f} | KL Div: {kl_div.item():.4f} | Ep Reward: {episode_reward:.2f}")
+    print("-------------------------------------------------------------------------------------")
+    print("Spiced PPO self-play 25D optimization completed successfully.")
+    print("Compiling final 25D PPO Brain for ONNX deployment...")
+    ac_model.eval()
+    inference_model = SpicedBrainInference(ac_model.actor).to("cpu")
+    inference_model.eval()
+    dummy_input = torch.zeros(1, 25, dtype=torch.float32)
+    model_dir = "/home/zhz/fsd-car/model"
+    onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
+    torch.onnx.export(
+        inference_model,
+        dummy_input,
+        onnx_path,
+        export_params=True,
+        opset_version=15,
+        do_constant_folding=True,
+        input_names=['input_state'],
+        output_names=['action_output'],
+        dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
+    )
+    print(f"🏆 SUCCESS: Final 25D Spiced PPO Brain exported to {onnx_path}")
+    env.close()
+if __name__ == "__main__":
+    train_ppo()
+</file>
 
 <file path="core-control/src/bin/nmpc_bench.rs">
 // 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
@@ -386,6 +837,254 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("========================================================");
     Ok(())
 }
+</file>
+
+<file path="simulation-env/probe_isaac_dora.py">
+import sys
+import traceback
+sys.path.append("/home/zhz/fsd-car/simulation-env")
+print("🛰️ NEXUS - Starting Rigorous Diagnostic Probe...", flush=True)
+try:
+    print("1. Attempting to import isaac_dora_node...", flush=True)
+    import isaac_dora_node
+    print("✓ Import succeeded!", flush=True)
+    print("2. Testing CLIDDEngine instantiation with ONNX...", flush=True)
+    engine = isaac_dora_node.CLIDDEngine("/home/zhz/fsd-car/model/xfeat_640x640.onnx")
+    print("✓ CLIDDEngine instantiation succeeded!", flush=True)
+    print("3. Testing BionicFrogEye instantiation...", flush=True)
+    frog = isaac_dora_node.BionicFrogEye(640, 480)
+    print("✓ BionicFrogEye instantiation succeeded!", flush=True)
+    print("4. Executing main() inside guarded try-except block...", flush=True)
+    isaac_dora_node.main()
+except Exception as e:
+    print("\n❌ CRITICAL CRASH DETECTED IN PROBE!", flush=True)
+    print("========================================================", flush=True)
+    print(f"Exception Type: {type(e).__name__}", flush=True)
+    print(f"Exception Message: {e}", flush=True)
+    print("Traceback:", flush=True)
+    traceback.print_exc(file=sys.stdout)
+    print("========================================================", flush=True)
+    sys.exit(1)
+</file>
+
+<file path="brain/spiced_rl_trainer/env/fsd_env.py">
+import sys
+import os
+import math
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+from collections import deque
+sys.path.append("/home/zhz/fsd-car/simulation-env")
+sys.path.append("/home/zhz/fsd-car/simulation-env/c_generated_code")
+try:
+    from acados_template import AcadosOcpSolver
+except ImportError:
+    print("Warning: acados_template could not be loaded. Please ensure acados path is configured.")
+class FSDCarGymEnv(gym.Env):
+    metadata = {"render_modes": ["human"], "render_fps": 10}
+    def __init__(self, goal_x=0.52, goal_y=4.11, max_steps=150):
+        super(FSDCarGymEnv, self).__init__()
+        self.goal_x = goal_x
+        self.goal_y = goal_y
+        self.max_steps = max_steps
+        self.current_step = 0
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        # Refactored: 5 frames * 5 features = 25 dimensional observation space
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(25,), dtype=np.float32)
+        self.state_x = 0.0
+        self.state_y = 0.0
+        self.state_yaw = 0.0
+        self.state_v = 0.0
+        self.state_w = 0.0
+        self.num_obstacles = 3
+        self.obs_init_poses = np.array([
+            [0.2, 1.5, 0.0],
+            [0.4, 2.8, 0.0],
+            [-0.1, 3.5, 0.0]
+        ])
+        self.obs_poses = self.obs_init_poses.copy()
+        # Sliding Window Queue for 5 frames temporal correlation
+        self.obs_history = deque(maxlen=5)
+        # Potential-based reward tracking
+        self.prev_dist_to_goal = 0.0
+        self.solver = None
+        json_path = "/home/zhz/fsd-car/simulation-env/acados_ocp.json"
+        if os.path.exists(json_path):
+            self.solver = AcadosOcpSolver(None, json_file=json_path, generate=False, build=False)
+        else:
+            print(f"Warning: acados solver config not found at: {json_path}. Mock solver fallback active.")
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.state_x = 0.0
+        self.state_y = 0.0
+        self.state_yaw = 0.0
+        self.state_v = 0.0
+        self.state_w = 0.0
+        self.current_step = 0
+        self.obs_poses = self.obs_init_poses.copy()
+        if self.solver is not None:
+            init_state = np.array([0.0, 0.0, 0.0, 0.0])
+            self.solver.constraints_set(0, "lbx", init_state)
+            self.solver.constraints_set(0, "ubx", init_state)
+        # Initialize Potential reward tracking
+        start_dx = self.goal_x - self.state_x
+        start_dy = self.goal_y - self.state_y
+        self.prev_dist_to_goal = math.sqrt(start_dx**2 + start_dy**2)
+        # Initialize 5-frame Sliding Window history
+        self.obs_history.clear()
+        first_frame = self._get_single_obs()
+        for _ in range(5):
+            self.obs_history.append(first_frame)
+        return self._get_obs_25(), {}
+    def _get_single_obs(self):
+        dx = self.goal_x - self.state_x
+        dy = self.goal_y - self.state_y
+        local_goal_x = dx * math.cos(self.state_yaw) + dy * math.sin(self.state_yaw)
+        local_goal_y = -dx * math.sin(self.state_yaw) + dy * math.cos(self.state_yaw)
+        local_goal_dist = math.sqrt(local_goal_x**2 + local_goal_y**2)
+        f_x, f_y = 0.0, 0.0
+        for obs_pos in self.obs_poses:
+            ox, oy = obs_pos[0], obs_pos[1]
+            rel_x = ox - self.state_x
+            rel_y = oy - self.state_y
+            ego_x = rel_x * math.cos(self.state_yaw) + rel_y * math.sin(self.state_yaw)
+            ego_y = -rel_x * math.sin(self.state_yaw) + rel_y * math.cos(self.state_yaw)
+            dist = math.sqrt(ego_x**2 + ego_y**2)
+            if dist < 1.5 and ego_x > 0.0:
+                weight = 1.0 / (dist + 1e-3)
+                f_x -= (ego_x / dist) * weight * 0.1
+                f_y -= (ego_y / dist) * weight * 0.2
+        return np.array([
+            local_goal_x * 0.20,
+            local_goal_y * 0.20,
+            local_goal_dist * 0.20,
+            f_x,
+            f_y
+        ], dtype=np.float32)
+    def _get_obs_25(self):
+        # Concatenate 5 frames * 5 values to form a 25D vector
+        return np.concatenate(list(self.obs_history)).astype(np.float32)
+    def step(self, action):
+        self.current_step += 1
+        v_cmd = float(action[0])
+        w_cmd = float(action[1])
+        target_velocity = np.clip(v_cmd, 0.0, 0.8)
+        rebound_yaw = w_cmd * 0.25
+        axis_a = 0.35
+        axis_b = 0.25
+        Q_y_tuned = 45.0
+        nmpc_substeps = 10
+        dt_sub = 0.01
+        collision_occurred = False
+        off_road_occurred = False
+        for sub_step in range(nmpc_substeps):
+            t_world = (self.current_step * nmpc_substeps + sub_step) * dt_sub
+            for idx in range(self.num_obstacles):
+                phase = idx * 0.6
+                self.obs_poses[idx, 0] = self.obs_init_poses[idx, 0] + 1.2 * math.sin(1.5 * t_world + phase)
+            dx = self.goal_x - self.state_x
+            dy = self.goal_y - self.state_y
+            local_target_x = dx * math.cos(self.state_yaw) + dy * math.sin(self.state_yaw)
+            local_target_y = -dx * math.sin(self.state_yaw) + dy * math.cos(self.state_yaw)
+            local_target_yaw = np.clip(0.0 - self.state_yaw, -0.25, 0.25)
+            target_dist = math.sqrt(local_target_x**2 + local_target_y**2)
+            scaled_target_x = local_target_x
+            scaled_target_y = local_target_y
+            if target_dist > 1.2:
+                scale = 1.2 / target_dist
+                scaled_target_x *= scale
+                scaled_target_y *= scale
+            d_ff = scaled_target_x / 3.0
+            if self.solver is not None:
+                self.solver.constraints_set(0, "lbx", np.array([0.0, 0.0, 0.0, self.state_v]))
+                self.solver.constraints_set(0, "ubx", np.array([0.0, 0.0, 0.0, self.state_v]))
+                W = np.zeros((6, 6))
+                W[0, 0] = 20.0
+                W[1, 1] = Q_y_tuned
+                W[2, 2] = 5.0
+                W[3, 3] = 1.0
+                W[4, 4] = 0.1
+                W[5, 5] = 0.03
+                for k in range(21):
+                    t = k / 20.0
+                    ref_x = 3.0 * (1.0 - t)**2 * t * d_ff + 3.0 * (1.0 - t) * t**2 * (scaled_target_x - d_ff * math.cos(local_target_yaw)) + t**3 * scaled_target_x
+                    ref_y = 3.0 * (1.0 - t) * t**2 * (scaled_target_y - d_ff * math.sin(local_target_yaw)) + t**3 * scaled_target_y
+                    ref_yaw = local_target_yaw * (t * t * (3.0 - 2.0 * t)) + (rebound_yaw * t)
+                    if k < 20:
+                        self.solver.cost_set(k, "W", W)
+                        self.solver.set(k, "yref", np.array([ref_x, ref_y, ref_yaw, target_velocity, 0.0, 0.0]))
+                    else:
+                        W_e = np.diag([20.0, Q_y_tuned, 5.0, 1.0]) * 1.5
+                        self.solver.cost_set(k, "W", W_e)
+                        self.solver.set(k, "yref", np.array([ref_x, ref_y, ref_yaw, target_velocity]))
+                    p = np.array([
+                        self.obs_poses[0, 0], self.obs_poses[0, 1], axis_a, axis_b,
+                        self.obs_poses[1, 0], self.obs_poses[1, 1], axis_a, axis_b,
+                        self.obs_poses[2, 0], self.obs_poses[2, 1], axis_a, axis_b
+                    ])
+                    for idx in range(3):
+                        rel_x = p[4 * idx + 0] - self.state_x
+                        rel_y = p[4 * idx + 1] - self.state_y
+                        p[4 * idx + 0] = rel_x * math.cos(self.state_yaw) + rel_y * math.sin(self.state_yaw)
+                        p[4 * idx + 1] = -rel_x * math.sin(self.state_yaw) + rel_y * math.cos(self.state_yaw)
+                    self.solver.set(k, "p", p)
+                status = self.solver.solve()
+                if status == 0:
+                    u_opt = self.solver.get(0, "u")
+                    acc = u_opt[0]
+                    omega = u_opt[1]
+                else:
+                    acc, omega = -1.0, 0.0
+            else:
+                acc = -0.5 * (self.state_v - target_velocity)
+                omega = (local_target_y / (local_target_x**2 + 1e-3)) * 0.6
+            self.state_x += self.state_v * math.cos(self.state_yaw) * dt_sub
+            self.state_y += self.state_v * math.sin(self.state_yaw) * dt_sub
+            self.state_yaw += omega * dt_sub
+            self.state_v = np.clip(self.state_v + acc * dt_sub, 0.0, 0.8)
+            self.state_w = omega
+            for obs_pos in self.obs_poses:
+                dist = math.sqrt((self.state_x - obs_pos[0])**2 + (self.state_y - obs_pos[1])**2)
+                if dist < 0.28:
+                    collision_occurred = True
+                    break
+            if abs(self.state_x) > 1.5:
+                off_road_occurred = True
+                break
+            if collision_occurred or off_road_occurred:
+                break
+        # Append new frame to sliding window history
+        new_frame = self._get_single_obs()
+        self.obs_history.append(new_frame)
+        obs_25 = self._get_obs_25()
+        # Reward design: Sparse rewards + Dense Potential-based reward shaper
+        sparse_reward = 0.0
+        terminated = False
+        truncated = False
+        dist_to_goal = math.sqrt((self.state_x - self.goal_x)**2 + (self.state_y - self.goal_y)**2)
+        if dist_to_goal < 0.15:
+            sparse_reward = 10.0 # High value success incentive
+            terminated = True
+        elif collision_occurred:
+            sparse_reward = -10.0 # High value collision penalty
+            terminated = True
+        elif off_road_occurred:
+            sparse_reward = -10.0
+            terminated = True
+        elif self.current_step >= self.max_steps:
+            sparse_reward = 0.0
+            truncated = True
+        # Dense Potential Reward: Continuous guidance towards goal
+        progress_reward = 3.0 * (self.prev_dist_to_goal - dist_to_goal)
+        self.prev_dist_to_goal = dist_to_goal
+        # Action smooth regularization to prevent extreme high-frequency shaking
+        smooth_penalty = -0.01 * (v_cmd**2 + w_cmd**2)
+        total_reward = sparse_reward + progress_reward + smooth_penalty
+        return obs_25, total_reward, terminated, truncated, {}
+    def close(self):
+        if self.solver is not None:
+            del self.solver
 </file>
 
 <file path="core-control/src/sensor_fusion.rs">
@@ -2005,130 +2704,6 @@ if __name__ == "__main__":
     main()
 </file>
 
-<file path="simulation-env/nmpc_model.py">
-# nmpc_model.py
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-from acados_template import AcadosModel
-import casadi as ca
-def setup_car_model():
-    model_name = "diff_drive_car"
-    # 1. 定义系统状态量 (States)
-    # x: X轴位置, y: Y轴位置, theta: 航向角, v: 前进线速度 [cite: 21]
-    x = ca.MX.sym('x')
-    y = ca.MX.sym('y')
-    theta = ca.MX.sym('theta')
-    v = ca.MX.sym('v')
-    states = ca.vcat([x, y, theta, v])
-    # 2. 定义控制输入量 (Controls)
-    # a: 前进加速度, omega: 旋转角速度
-    a = ca.MX.sym('a')
-    omega = ca.MX.sym('omega')
-    controls = ca.vcat([a, omega])
-    # 3. 定义状态导数 (State derivatives for ODE)
-    x_dot = ca.MX.sym('x_dot')
-    y_dot = ca.MX.sym('y_dot')
-    theta_dot = ca.MX.sym('theta_dot')
-    v_dot = ca.MX.sym('v_dot')
-    states_dot = ca.vcat([x_dot, y_dot, theta_dot, v_dot])
-    # 4. 连续时间非线性动力学方程 (连续常微分方程) [cite: 21]
-    f_expl = ca.vcat([
-        v * ca.cos(theta),
-        v * ca.sin(theta),
-        omega,
-        a
-    ])
-    # 5. 🎯 战役三核心：引入外部实时参数 (Parameters)
-    # obs_x, obs_y: 虚拟动态障碍物中心坐标
-    # a_axis, b_axis: 膨胀椭圆的半长轴和半短轴 (安全边界)
-    obs_x = ca.MX.sym('obs_x')
-    obs_y = ca.MX.sym('obs_y')
-    a_axis = ca.MX.sym('a_axis')
-    b_axis = ca.MX.sym('b_axis')
-    parameters = ca.vcat([obs_x, obs_y, a_axis, b_axis])
-    # 6. 🎯 战役三核心：构建非线性空间避障硬约束 (Non-linear Constraint)
-    # 椭圆方程：(x - obs_x)^2 / a_axis^2 + (y - obs_y)^2 / b_axis^2 >= 1
-    # 我们将表达式定义为 h_expr，稍后在 generate_solver 中限制其下界为 1.0
-    h_expr = ((x - obs_x)**2) / (a_axis**2) + ((y - obs_y)**2) / (b_axis**2)
-    # 7. 组装 acados 模型对象
-    model = AcadosModel()
-    model.f_impl_expr = states_dot - f_expl # 隐式表达式
-    model.f_expl_expr = f_expl              # 显式表达式
-    model.x = states
-    model.xdot = states_dot
-    model.u = controls
-    model.p = parameters                    # 注册参数金库
-    model.con_h_expr = h_expr               # 注册非线性约束表达式
-    model.name = model_name
-    return model
-</file>
-
-<file path="core-control/src/ffi.rs">
-#![allow(non_camel_case_types)]
-use libc::{c_char, c_int, c_void};
-/// 🛡️ 不透明结构体：代表 acados 内部的求解器内存胶囊
-#[repr(C)]
-pub struct diff_drive_car_solver_capsule {
-    _unused: [u8; 0],
-}
-// 声明外部 C 函数符号
-extern "C" {
-    // 生命周期管理 (现代 Acados API 契约)
-    pub fn diff_drive_car_acados_create_capsule() -> *mut diff_drive_car_solver_capsule;
-    pub fn diff_drive_car_acados_create(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
-    pub fn diff_drive_car_acados_solve(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
-    pub fn diff_drive_car_acados_free(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
-    pub fn diff_drive_car_acados_free_capsule(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
-    // 内部组件指针获取
-    pub fn diff_drive_car_acados_get_nlp_in(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    pub fn diff_drive_car_acados_get_nlp_out(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    pub fn diff_drive_car_acados_get_nlp_config(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    pub fn diff_drive_car_acados_get_nlp_dims(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
-    // 🎯 战役三核心：暴露 Acados 实时参数更新接口
-    // 用于在 100Hz 运行期，将动态障碍物的坐标 (obs_x, obs_y) 实时射入 C 内存胶囊
-    pub fn diff_drive_car_acados_update_params(
-        capsule: *mut diff_drive_car_solver_capsule,
-        stage: c_int,
-        value: *const f64,
-        np: c_int,
-    ) -> c_int;
-    // 通用数据注入与提取算子
-    pub fn ocp_nlp_in_set(
-        config: *mut c_void,
-        dims: *mut c_void,
-        nlp_in: *mut c_void,
-        stage: c_int,
-        field: *const c_char,
-        value: *mut c_void,
-    ) -> c_int;
-    // 🛡️ 架构师 2026 SOTA 修正：现代 Acados 强制将约束与代价函数设置隔离为专用函数，废除万能的 in_set
-    pub fn ocp_nlp_constraints_model_set(
-        config: *mut c_void,
-        dims: *mut c_void,
-        nlp_in: *mut c_void,
-        nlp_out: *mut c_void, 
-        stage: c_int,
-        field: *const c_char,
-        value: *mut c_void,
-    ) -> c_int;
-    pub fn ocp_nlp_cost_model_set(
-        config: *mut c_void,
-        dims: *mut c_void,
-        nlp_in: *mut c_void,
-        stage: c_int,
-        field: *const c_char,
-        value: *mut c_void,
-    ) -> c_int;
-    pub fn ocp_nlp_out_get(
-        config: *mut c_void,
-        dims: *mut c_void,
-        nlp_out: *mut c_void,
-        stage: c_int,
-        field: *const c_char,
-        value: *mut c_void,
-    ); 
-}
-</file>
-
 <file path="core-control/src/lib.rs">
 // 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 pub mod ffi;
@@ -2138,34 +2713,6 @@ pub mod sensor_fusion;
 // 🛡️ 向上层暴露安全的规控接口
 pub use solver::预测控制求解器;
 pub use sensor_fusion::层级传感器融合中心;
-</file>
-
-<file path="core-control/Cargo.toml">
-[package]
-name = "core-control"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 继承自根目录 Workspace 的统一定义
-opencv = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-libc = "0.2" # 🛡️ 新增：用于 FFI C 类型映射
-
-# 🛡️ 新增：DORA 节点 API 与 Arrow 内存底座
-dora-node-api = "0.3.13"
-# ⚠️ 架构师修正：删除独立的 arrow 依赖，直接使用 dora_node_api 内部重导出的版本，杜绝多重宇宙冲突！
-eyre = "0.6"
-
-# 🚑 紧急修复：强行锁定 chrono 版本，解决 arrow 52.0 与 chrono 0.4.45 的 quarter() 命名冲突
-chrono = "=0.4.39"
-
-# 🛡️ 新增：引入感知引擎，实现快系统闭环
-core-perception = { path = "../core-perception" }
-
-[build-dependencies]
-cc = "1.0" # 🛡️ 新增：用于编译或链接 C 代码
 </file>
 
 <file path="core-decision/Cargo.toml">
@@ -2218,6 +2765,54 @@ path = "src/bin/demo_frog.rs"
 [[bin]]
 name = "perception_sandbox"
 path = "src/bin/perception_sandbox.rs"
+</file>
+
+<file path="simulation-env/nmpc_model.py">
+from acados_template import AcadosModel
+import casadi as ca
+def setup_car_model():
+    model_name = "diff_drive_car"
+    x = ca.MX.sym('x')
+    y = ca.MX.sym('y')
+    theta = ca.MX.sym('theta')
+    v = ca.MX.sym('v')
+    states = ca.vcat([x, y, theta, v])
+    a = ca.MX.sym('a')
+    omega = ca.MX.sym('omega')
+    controls = ca.vcat([a, omega])
+    x_dot = ca.MX.sym('x_dot')
+    y_dot = ca.MX.sym('y_dot')
+    theta_dot = ca.MX.sym('theta_dot')
+    v_dot = ca.MX.sym('v_dot')
+    states_dot = ca.vcat([x_dot, y_dot, theta_dot, v_dot])
+    f_expl = ca.vcat([
+        v * ca.cos(theta),
+        v * ca.sin(theta),
+        omega,
+        a
+    ])
+    M = 3
+    parameters = ca.MX.sym('p', 4 * M)
+    h_list = []
+    eps = 1e-6
+    for i in range(M):
+        obs_x = parameters[4 * i + 0]
+        obs_y = parameters[4 * i + 1]
+        a_axis = parameters[4 * i + 2]
+        b_axis = parameters[4 * i + 3]
+        h_i = ((x - obs_x)**2) / (a_axis**2 + eps) + ((y - obs_y)**2) / (b_axis**2 + eps)
+        h_list.append(h_i)
+    con_h_expr = ca.vcat(h_list)
+    model = AcadosModel()
+    model.f_impl_expr = states_dot - f_expl
+    model.f_expl_expr = f_expl
+    model.x = states
+    model.xdot = states_dot
+    model.u = controls
+    model.p = parameters
+    model.con_h_expr = con_h_expr
+    model.name = model_name
+    return model
 </file>
 
 <file path="simulation-env/teleop_sender.py">
@@ -2380,6 +2975,65 @@ panic = "abort"
 strip = true
 </file>
 
+<file path="core-control/src/ffi.rs">
+#![allow(non_camel_case_types)]
+use libc::{c_char, c_int, c_void};
+#[repr(C)]
+pub struct diff_drive_car_solver_capsule {
+    _unused: [u8; 0],
+}
+extern "C" {
+    pub fn diff_drive_car_acados_create_capsule() -> *mut diff_drive_car_solver_capsule;
+    pub fn diff_drive_car_acados_create(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_solve(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_free_capsule(capsule: *mut diff_drive_car_solver_capsule) -> c_int;
+    pub fn diff_drive_car_acados_get_nlp_in(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_out(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_config(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_get_nlp_dims(capsule: *mut diff_drive_car_solver_capsule) -> *mut c_void;
+    pub fn diff_drive_car_acados_update_params(
+        capsule: *mut diff_drive_car_solver_capsule,
+        stage: c_int,
+        value: *const f64,
+        np: c_int,
+    ) -> c_int;
+    pub fn ocp_nlp_in_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+    pub fn ocp_nlp_constraints_model_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        nlp_out: *mut c_void, 
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+    pub fn ocp_nlp_cost_model_set(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_in: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ) -> c_int;
+    pub fn ocp_nlp_out_get(
+        config: *mut c_void,
+        dims: *mut c_void,
+        nlp_out: *mut c_void,
+        stage: c_int,
+        field: *const c_char,
+        value: *mut c_void,
+    ); 
+}
+</file>
+
 <file path="core-control/build.rs">
 // core-control/build.rs
 use std::env;
@@ -2441,6 +3095,28 @@ fn main() {
         println!("cargo:rerun-if-changed={}", c_solver_source.display());
     }
 }
+</file>
+
+<file path="core-control/Cargo.toml">
+[package]
+name = "core-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+opencv = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+libc = "0.2"
+ort = { workspace = true }
+
+dora-node-api = "0.3.13"
+eyre = "0.6"
+chrono = "=0.4.39"
+core-perception = { path = "../core-perception" }
+
+[build-dependencies]
+cc = "1.0"
 </file>
 
 <file path="core-perception/src/perception/xfeat_engine.rs">
@@ -2764,32 +3440,30 @@ impl 仿生特征提取器 {
 use super::ffi::*;
 use std::ffi::CString;
 use std::os::raw::c_void;
-/// 🛡️ 规控大脑：NMPC 求解器安全封装金库
-/// 彻底隔离 C 语言的裸指针，对外提供 100% 内存安全的 Rust 接口
+#[derive(Debug, Clone, Copy)]
+pub struct 动态障碍物 {
+    pub x: f64,
+    pub y: f64,
+    pub a: f64,
+    pub b: f64,
+}
 pub struct 预测控制求解器 {
     capsule: *mut diff_drive_car_solver_capsule,
 }
-// 🛡️ 架构师指令：显式声明线程安全。
-// 只要我们保证在 Rust 层以 `&mut self` 独占借用的方式调用，C 求解器在多线程间传递就是安全的。
 unsafe impl Send for 预测控制求解器 {}
 impl 预测控制求解器 {
-    /// 构造函数：在堆内存中分配 C 求解器
     pub fn new() -> Result<Self, String> {
-        // 1. 分配物理内存胶囊
         let capsule = unsafe { diff_drive_car_acados_create_capsule() };
         if capsule.is_null() {
-            return Err("❌ NMPC 求解器 C 内存胶囊分配失败！".to_string());
+            return Err("Capsule allocation failed".to_string());
         }
-        // 2. 执行内部矩阵与求解器初始化
         let status = unsafe { diff_drive_car_acados_create(capsule) };
         if status != 0 {
-            // 初始化失败时，必须手动释放刚刚分配的胶囊，防止内存泄漏
             unsafe { diff_drive_car_acados_free_capsule(capsule); }
-            return Err(format!("❌ NMPC 求解器内部初始化失败，状态码: {}", status));
+            return Err(format!("Solver init failed, status: {}", status));
         }
         Ok(Self { capsule })
     }
-    /// 注入当前物理状态 (对应 Python 中的 lbx, ubx)
     pub fn 设置当前状态(&mut self, x: f64, y: f64, yaw: f64, v: f64) -> Result<(), String> {
         let state = [x, y, yaw, v];
         let field_lbx = CString::new("lbx").unwrap();
@@ -2798,87 +3472,81 @@ impl 预测控制求解器 {
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
-            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule); // 🛡️ SOTA 修正：获取 nlp_out 句柄 [cite: 3.1.6]
-            // 🛡️ 架构师 2026 SOTA 修正：传入 7 个完备参数（新增 nlp_out），彻底根治由栈破坏引起的 SIGSEGV 段错误！
+            let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
             let status_lbx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_lbx.as_ptr(), state.as_ptr() as *mut c_void);
             let status_ubx = ocp_nlp_constraints_model_set(config, dims, nlp_in, nlp_out, 0, field_ubx.as_ptr(), state.as_ptr() as *mut c_void);
             if status_lbx != 0 || status_ubx != 0 {
-                return Err("❌ NMPC 初始状态 (x0) 注入失败！".to_string());
+                return Err("Failed to inject current state (x0)".to_string());
             }
         }
         Ok(())
     }
-    /// 注入未来预测步的参考轨迹点 (对应 Python 中的 yref)
-    pub fn 设置参考轨迹点(&mut self, 预测步: i32, ref_x: f64, ref_y: f64, ref_yaw: f64, ref_v: f64) -> Result<(), String> {
+    pub fn 设置参考轨迹点(&mut self, stage: i32, ref_x: f64, ref_y: f64, ref_yaw: f64, ref_v: f64) -> Result<(), String> {
         let field_yref = CString::new("yref").unwrap();
         unsafe {
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_in = diff_drive_car_acados_get_nlp_in(self.capsule);
-            // 🛡️ 架构师 2026 SOTA 修正：设置参考代价函数 yref 必须使用 ocp_nlp_cost_model_set
-            let status = if 预测步 == 20 { 
-                // 终端步 (Terminal Stage): ny_e = 4
+            let status = if stage == 20 {
                 let yref_e = [ref_x, ref_y, ref_yaw, ref_v];
-                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
+                ocp_nlp_cost_model_set(config, dims, nlp_in, stage, field_yref.as_ptr(), yref_e.as_ptr() as *mut c_void)
             } else {
-                // 中间步 (Intermediate Stage): ny = 6 (补齐 a 和 omega 的参考值 0.0)
                 let yref = [ref_x, ref_y, ref_yaw, ref_v, 0.0, 0.0];
-                ocp_nlp_cost_model_set(config, dims, nlp_in, 预测步, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
+                ocp_nlp_cost_model_set(config, dims, nlp_in, stage, field_yref.as_ptr(), yref.as_ptr() as *mut c_void)
             };
             if status != 0 {
-                return Err(format!("❌ NMPC 第 {} 步参考轨迹注入失败！", 预测步));
+                return Err(format!("Failed to set reference trajectory at stage {}", stage));
             }
         }
         Ok(())
     }
-    /// 🎯 战役三核心：注入动态障碍物非线性硬约束参数
-    /// 将青蛙眼坍缩出的虚拟障碍物坐标，以 100Hz 频率物理烧录进求解器的 20 个预测步中
-    pub fn 设置动态障碍物硬约束(&mut self, obs_x: f64, obs_y: f64, a_axis: f64, b_axis: f64) -> Result<(), String> {
-        // 严格对齐 Python 侧定义的 parameters 顺序: [obs_x, obs_y, a_axis, b_axis]
-        let p = [obs_x, obs_y, a_axis, b_axis];
+    pub fn 设置动态障碍物硬约束(&mut self, 障碍物列表: &[动态障碍物]) -> Result<(), String> {
+        let mut p = [1000.0f64; 12];
+        for i in 0..3 {
+            p[4 * i + 2] = 0.1;
+            p[4 * i + 3] = 0.1;
+        }
+        for (i, obs) in 障碍物列表.iter().take(3).enumerate() {
+            p[4 * i + 0] = obs.x;
+            p[4 * i + 1] = obs.y;
+            p[4 * i + 2] = obs.a;
+            p[4 * i + 3] = obs.b;
+        }
         unsafe {
-            // 必须为 NMPC 的每一个预测步 (0 到 20) 都更新这个参数
             for stage in 0..=20 {
-                // np = 4 表示我们传入了 4 个 f64 参数
-                let status = diff_drive_car_acados_update_params(self.capsule, stage, p.as_ptr(), 4);
+                let status = diff_drive_car_acados_update_params(self.capsule, stage, p.as_ptr(), 12);
                 if status != 0 {
-                    return Err(format!("❌ 致命错误：第 {} 步障碍物硬约束参数注入失败！", stage));
+                    return Err(format!("Failed to inject obstacles parameters at stage {}", stage));
                 }
             }
         }
         Ok(())
     }
-    /// 执行 RTI-SQP 求解，并返回平滑处理后的 (线速度, 角速度)
     pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
         unsafe {
             let status = diff_drive_car_acados_solve(self.capsule);
             if status != 0 {
-                return Err(format!("⚠️ NMPC 求解器发散或失败，状态码: {}", status));
+                return Err(format!("NMPC solve failed, status: {}", status));
             }
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
             let nlp_out = diff_drive_car_acados_get_nlp_out(self.capsule);
             let field_u = CString::new("u").unwrap();
-            let mut u_opt = [0.0f64; 2]; // [a, omega]
+            let mut u_opt = [0.0f64; 2];
             ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
             let a_opt = u_opt[0];
             let w_cmd_raw = u_opt[1];
-            // 物理运动学积分：v_cmd = current_v + a * dt (dt=0.01)
             let mut v_cmd = 当前线速度 + a_opt * 0.01;
-            // 🎯 3.3.1 极速自愈：解锁 NMPC 求解器输出硬限幅至 0.80 m/s，并调大角速度至 1.0 以支撑中速切弯 [cite: Sim2Real-AD]
             if v_cmd > 0.80 { v_cmd = 0.80; }
             if v_cmd < 0.0 { v_cmd = 0.0; }
-            // 🎯 3.3.1 极速自愈：删除残余的 0.6 覆盖锁，彻底释放 1.0 rad/s 极限大角度打舵潜能！
             let w_cmd = w_cmd_raw.clamp(-1.0, 1.0);
             Ok((v_cmd, w_cmd))
         }
     }
 }
-// 🛡️ 内存守卫：RAII 机制。当 `预测控制求解器` 离开作用域时，自动调用 C 语言的 free 释放内存，彻底杜绝内存泄漏！
 impl Drop for 预测控制求解器 {
     fn drop(&mut self) {
         unsafe {
-            // 必须严格按照逆序释放：先释放内部矩阵，再释放胶囊本身
             diff_drive_car_acados_free(self.capsule);
             diff_drive_car_acados_free_capsule(self.capsule);
         }
@@ -2889,35 +3557,28 @@ mod tests {
     use super::*;
     #[test]
     fn test_nmpc_solver_lifecycle_and_compute() {
-        println!("🛡️ [单测启动] 正在测试 NMPC 求解器 C FFI 边界...");
-        // 1. 测试内存胶囊分配 (如果 C 动态库链接失败，这里会直接 panic)
-        let mut solver = 预测控制求解器::new().expect("❌ 求解器初始化失败，请检查 C 动态库链接！");
-        println!("✅ 求解器内存胶囊分配成功！");
-        // 2. 测试状态注入 (温启动：当前处于原点，静止)
-        solver.设置当前状态(0.0, 0.0, 0.0, 0.0).expect("❌ 初始状态注入失败");
-        println!("✅ 初始状态注入成功！");
-        // 3. 测试参考轨迹注入 (预测步长 N=20)
+        println!("Testing aligned NMPC solver FFI boundaries...");
+        let mut solver = 预测控制求解器::new().expect("Failed to initialize solver");
+        println!("Capsule allocation passed!");
+        solver.设置当前状态(0.0, 0.0, 0.0, 0.0).expect("Failed to inject current state");
+        println!("Initial state injected!");
         for k in 0..=20 {
-            // 假设目标在正前方 1.0 米处，期望线速度 0.3 m/s
-            solver.设置参考轨迹点(k, 1.0, 0.0, 0.0, 0.3).expect(&format!("❌ 第 {} 步参考轨迹注入失败", k));
+            solver.设置参考轨迹点(k, 1.0, 0.0, 0.0, 0.3).expect("Failed to inject trajectory");
         }
-        println!("✅ 参考轨迹注入成功！");
-        // 4. 测试核心求解算子
-        let (v_cmd, w_cmd) = solver.求解最优控制量(0.0).expect("❌ NMPC 求解失败");
-        println!("✅ 求解成功！输出控制量 -> 线速度: {:.3} m/s, 角速度: {:.3} rad/s", v_cmd, w_cmd);
-        // 5. 物理主权断言：确保输出严格遵守我们在 generate_solver.py 中定义的硬约束
-        assert!(v_cmd >= 0.0 && v_cmd <= 0.3, "线速度超限！");
-        assert!(w_cmd >= -0.6 && w_cmd <= 0.6, "角速度超限！");
-        // 6. 隐式测试：当 `solver` 离开此作用域时，Rust 会自动调用 Drop trait。
-        // 如果 C 侧的 free 逻辑有误，这里会触发段错误 (Segmentation Fault)。
-        println!("✅ 测试结束，准备安全释放 C 语言内存胶囊...");
+        println!("Trajectory successfully mapped!");
+        let obs = 动态障碍物 { x: 0.5, y: 0.0, a: 0.3, b: 0.2 };
+        solver.设置动态障碍物硬约束(&[obs]).expect("Failed to inject dynamic obstacle constraints");
+        println!("Dynamic obstacles injected and aligned!");
+        let (v_cmd, w_cmd) = solver.求解最优控制量(0.0).expect("NMPC calculation failed");
+        println!("Solved successfully -> v: {:.3} m/s, w: {:.3} rad/s", v_cmd, w_cmd);
+        assert!(v_cmd >= 0.0 && v_cmd <= 0.3);
+        assert!(w_cmd >= -0.6 && w_cmd <= 0.6);
+        println!("FFI Boundary integration test completed safely!");
     }
 }
 </file>
 
 <file path="simulation-env/generate_solver.py">
-# generate_solver.py
-# 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 import os
 import numpy as np
 from acados_template import AcadosOcp, AcadosOcpSolver
@@ -2926,16 +3587,11 @@ def generate_nmpc_solver():
     ocp = AcadosOcp()
     model = setup_car_model()
     ocp.model = model
-    # 1. 设定时域参数
-    N = 20  # 预测步长 (Horizon)
-    T_pred = 1.0  # 预测总时间 (1秒)
+    N = 20
+    T_pred = 1.0
     ocp.dims.N = N
     ocp.solver_options.tf = T_pred
-    # 2. 设定代价函数 (Q 权重增加，R 控制惩罚加大以获得极致平顺感) [cite: 21]
-    # 🛡️ SOTA 约束收紧：横向偏差 (Y轴) 权重拉满至 45.0，航向角 (theta) 权重拉至 5.0 [cite: 15]
-    # 强制 NMPC 把“完美贴着黄金示教路径走”作为最高准则，绝不在立柱前发生任何割线和偏移！ [cite: 4]
     Q = np.diag([20.0, 45.0, 5.0, 1.0])
-    # 降低控制打舵惩罚 R，确保在遇到横向偏差时具备极速、零迟滞的打舵响应
     R = np.diag([0.1, 0.03])
     nx = model.x.size()[0]
     nu = model.u.size()[0]
@@ -2954,45 +3610,33 @@ def generate_nmpc_solver():
     ocp.cost.W_e = Q * 1.5
     ocp.cost.yref = np.zeros(ny)
     ocp.cost.yref_e = np.zeros(nx)
-    # 3. 设定控制量硬约束 [cite: 24]
-    # 我们将最大转向角速度硬限制收紧到 [-0.6, 0.6] rad/s，彻底杜绝原地打转 [cite: 24]
-    ocp.constraints.lbu = np.array([-1.0, -0.6])  # 限制角速度在 [-0.6, 0.6] [cite: 24]
-    ocp.constraints.ubu = np.array([1.0, 0.6])    # [cite: 24]
+    ocp.constraints.lbu = np.array([-1.0, -0.6])
+    ocp.constraints.ubu = np.array([1.0, 0.6])
     ocp.constraints.idxbu = np.array([0, 1])
-    # 4. 初始状态设定
     ocp.constraints.x0 = np.array([0.0, 0.0, 0.0, 0.0])
-    # 5. 🎯 战役三核心：配置非线性空间避障硬约束 (Non-linear Constraints)
-    # 对应 model.con_h_expr，要求 h_expr >= 1.0
-    ocp.constraints.lh = np.array([1.0])       # 下界为 1.0 (必须在椭圆外部)
-    ocp.constraints.uh = np.array([1e15])      # 上界为无穷大 (离得越远越好)
-    # 🎯 第四版核心重构：激活非线性约束的松弛变量 (Slack Variables / 软约束)
-    # 将第 0 个非线性约束 (即 con_h_expr 椭圆禁区) 注册为可松弛的软约束
-    ocp.constraints.idxsh = np.array([0])
-    # 设定松弛变量的惩罚系数 (L1 & L2 Penalty)
-    # zl, zu 是 L1 线性惩罚 (小车轻微触碰边缘时快速做出排斥反应)
-    # Zl, Zu 是 L2 二次惩罚 (深度侵入时惩罚呈指数飙升，作为底盘绝对安全防线)
-    # 1e3 与 1e5 的黄金配比不仅能够消灭数值病态 (Ill-conditioning)，更保证了数学空间绝对有解
-    ocp.cost.zl = np.array([1e3])
-    ocp.cost.zu = np.array([1e3])
-    ocp.cost.Zl = np.array([1e5])
-    ocp.cost.Zu = np.array([1e5])
-    # 6. 🎯 战役三核心：初始化外部参数 (Parameters)
-    # [obs_x, obs_y, a_axis, b_axis]
-    # 默认将虚拟障碍物放在极远处 (1000.0, 1000.0)，避免在无障碍时干扰正常行驶
-    # 默认椭圆半轴设为 0.1m，防止除以 0 的数学奇点崩溃
-    ocp.parameter_values = np.array([1000.0, 1000.0, 0.1, 0.1])
-    # 7. 配置求解器参数 [cite: 3, 9]
+    M = 3
+    ocp.constraints.lh = np.ones(M)
+    ocp.constraints.uh = np.ones(M) * 1e15
+    ocp.constraints.idxsh = np.arange(M)
+    ocp.cost.zl = np.ones(M) * 1e3
+    ocp.cost.zu = np.ones(M) * 1e3
+    ocp.cost.Zl = np.ones(M) * 1e5
+    ocp.cost.Zu = np.ones(M) * 1e5
+    ocp.parameter_values = np.array([
+        1000.0, 1000.0, 0.1, 0.1,
+        1000.0, 1000.0, 0.1, 0.1,
+        1000.0, 1000.0, 0.1, 0.1
+    ])
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "ERK"
     ocp.solver_options.nlp_solver_type = "SQP_RTI"
-    # 一键自动编译生成 C 代码 [cite: 8]
     json_file = os.path.join("./", "acados_ocp.json")
     solver = AcadosOcpSolver(ocp, json_file=json_file)
     return solver
 if __name__ == "__main__":
     generate_nmpc_solver()
-    print("====== acados C代码求解器生成并编译成功！ ======")
+    print("====== acados C solver generated and compiled successfully ======")
 </file>
 
 <file path="README.md">
@@ -3393,424 +4037,7 @@ nodes:
       jpeg_image: isaac_sim_env/jpeg_image  # 📸 新增：订阅高频离屏图像流
 </file>
 
-<file path="core-control/src/bin/fast_brain_node.rs">
-// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-/*
-=================================================================
-🛡️ FSD-car V3.1: 快系统规控大脑节点 (NMPC & 仿生避障全自愈版)
-设计哲学: 局部相对坐标系强制锚定 | 100Hz 物理步长完全对齐 | 零拷贝内存重塑
-=================================================================
-*/
-use core_control::预测控制求解器;
-use dora_node_api::{DoraNode, Event, MetadataParameters};
-use eyre::eyre;
-use std::sync::Arc;
-use std::sync::RwLock; // 状态金库轻量级锁
-use std::time::Duration;
-/// 状态金库：快大脑 100Hz 线程与 避障力接收线程 间绝对安全的无锁共享上下文
-struct 执行上下文 {
-    pub 物理主权已初始化: bool,
-    pub 期望_x: f64,              // 纵向势场排斥力 (避障减速 - Spice)
-    pub 期望_y: f64,              // 横向势场逃逸力 (变道机动 - Spice)
-    pub 当前线速度: f64,           // 上一帧 NMPC 输出并在物理世界执行后的真实线速度
-    // 🎯 里程碑 2.1：物理小脑绝对坐标与人类引力锚点
-    pub 当前_x: f64,
-    pub 当前_y: f64,
-    pub 当前_yaw: f64,
-    pub 引力_x: f64,
-    pub 引力_y: f64,
-    pub 引力_yaw: f64,
-    // 🛡️ 状态缓存：记录上一次引力点成功接收的时间戳，用于看门狗倒计时 [cite: 1.2.5]
-    pub 上次引力更新时间: std::time::Instant,
-}
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    println!("🧠 [快系统] 规控大脑节点已启动，等待 DORA 共享内存注入...");
-    // 1. 接入 DORA 数据流网络 (接管生命周期与共享内存池)
-    let (mut node, mut events) = DoraNode::init_from_env()?;
-    // 2. 初始化全简体中文状态金库
-    let 状态金库 = Arc::new(RwLock::new(执行上下文 {
-        物理主权已初始化: false,
-        期望_x: 0.0,              // 默认无纵向排斥
-        期望_y: 0.0,              // 默认无横向逃逸
-        当前线速度: 0.0,
-        当前_x: 0.0,              // 🎯 物理小脑高频绝对坐标 X 初始值
-        当前_y: 0.0,              // 🎯 物理小脑高频绝对坐标 Y 初始值
-        当前_yaw: 0.0,            // 🎯 物理小脑高频绝对角度 Yaw 初始值
-        引力_x: 0.0,              // 🎯 慢系统人类引力锚点 X 初始值
-        引力_y: 0.0,              // 🎯 慢系统人类引力锚点 Y 初始值
-        引力_yaw: 0.0,            // 🎯 慢系统人类引力锚点 Yaw 初始值
-        上次引力更新时间: std::time::Instant::now(),
-    }));
-    let 金库_规控 = 状态金库.clone();
-    // ---------------------------------------------------------
-    // [线程 A]：100Hz 极速 NMPC 控制环路 (The Control Loop)
-    // ---------------------------------------------------------
-    let 规控句柄 = tokio::spawn(async move {
-        let mut 规控大脑 = 预测控制求解器::new().expect("❌ NMPC 求解器初始化失败");
-        let mut 求解器已就绪 = false;
-        let mut 循环计数: u64 = 0;
-        // 🎯 SOTA 药方 2：自激振荡一阶低通防抖阻尼器状态 (PT1 Filter) [cite: 1.1.2]
-        let mut 滤波后的期望_x = 0.0f64;
-        let mut 滤波后的期望_y = 0.0f64;
-        // 🎯 SOTA 药方 3：基于一阶滞后空间归一化的平滑前视滤波器状态 (First-Order Lag Spatial Filter) [cite: 21]
-        let mut 滤波后的引力_x = 0.0f64;
-        let mut 滤波后的引力_y = 0.0f64;
-        let mut 滤波后的引力_yaw = 0.0f64;
-        // 🎯 战役三第七版核心：接通障碍物物理平滑滤波器状态，消灭突变
-        let mut 滤波后的障碍物_x = 1000.0f64;
-        let mut 滤波后的障碍物_y = 1000.0f64;
-        // 🛡️ SCAN-Planner 状态缓存：记录上一次控制周期的角速度输出，用于自车光流虚警抑制
-        let mut 上一次角速度_w = 0.0f64;
-        // 🎯 建立高频落盘时序审计日志 (CSV 格式)
-        use std::io::Write as _;
-        let mut 日志文件 = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("nmpc_telemetry.csv")
-            .expect("❌ 无法创建高频时序审计日志");
-        // 写入 CSV 表头，对齐所有控制维度
-        let _ = writeln!(
-            日志文件,
-            "tick,cur_x,cur_y,cur_yaw,target_x,target_y,target_yaw,force_x,force_y,v_cmd,w_cmd,cur_v"
-        );
-        let mut 节拍器 = tokio::time::interval(Duration::from_millis(10));
-        节拍器.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            节拍器.tick().await;
-            循环计数 += 1;
-            // 极速读取状态金库 (新增生命时间戳获取)
-            let (已初始化, 期望_x, 期望_y, 当前线速度, 上次更新时间) = {
-                let lock = 金库_规控.read().unwrap();
-                (lock.物理主权已初始化, lock.期望_x, lock.期望_y, lock.当前线速度, lock.上次引力更新时间)
-            };
-            if !已初始化 {
-                continue;
-            }
-            // 🛡️ 第四道防线：生命看门狗安全自愈守护 (Failsafe Watchdog) [cite: 1.2.5]
-            // 飞控级底线防线：由于视觉重定位与重放存在天然的 1Hz 帧率抖动，我们将超时宽限放宽至 5.0 秒 [cite: 1.2.5]
-            // 允许小车在特征偏稀疏的盲区（如 Node 6/7）暂时丢失视觉锁时，完全依赖 100Hz 高频惯性航位推算平滑“滑行（Glide）”通过！ [cite: 1.2.5]
-            let 失联时长 = 上次更新时间.elapsed();
-            if 失联时长 > std::time::Duration::from_millis(5000) {
-                eprintln!("⚠️ [Failsafe Watchdog] 致命警告: 慢脑失联时长过长 ({:.2?}s)！触发安全防线紧急抱闸！", 失联时长.as_secs_f64());
-                let 零速度指令_arrow = dora_node_api::arrow::array::Float32Array::from(vec![0.0f32, 0.0f32]);
-                let _ = node.send_output(
-                    "control_cmd".to_string().into(),
-                    MetadataParameters::default(),
-                    零速度指令_arrow,
-                );
-                continue; // 阻断 NMPC 主线程，保证底盘绝对安全
-            }
-            // NMPC 求解器温启动
-            if !求解器已就绪 {
-                println!("✅ [快系统] NMPC 求解器温启动完成，物理主权接管就绪！");
-                求解器已就绪 = true;
-            }
-            if let Err(e) = 规控大脑.设置当前状态(0.0, 0.0, 0.0, 当前线速度) {
-                eprintln!("⚠️ 局部状态锚定失败: {}，跳过本帧", e);
-                continue;
-            }
-            let (当前_x, 当前_y, 当前_yaw) = {
-                let lock = 金库_规控.read().unwrap();
-                (lock.当前_x, lock.当前_y, lock.当前_yaw)
-            };
-            let (引力_x, 引力_y, 引力_yaw) = {
-                let lock = 金库_规控.read().unwrap();
-                (lock.引力_x, lock.引力_y, lock.引力_yaw)
-            };
-            // 🛡️ 第三道防线：基于一阶滞后空间归一化的平滑前视滤波器 (First-Order Lag Spatial Filter) [cite: 21]
-            // 物理作用：将示教地图中高频突变的 20-30cm 阶跃（锯齿折线）平滑拟合为 C2 连续的过渡渐进线 [cite: 21]
-            // 避免 NMPC 在切换节点时高频左右摆舵，从根本上消灭轮速差和车身抖动的物理共振！ [cite: 21]
-            // 🚨 战役三 Rust 降噪屏障 A：低速静默闸 (Evasion Gating Guard)
-            let (有效期望_x, 有效期望_y) = if 当前线速度.abs() < 0.04 {
-                (0.0f64, 0.0f64)
-            } else {
-                (期望_x, 期望_y)
-            };
-            // 🎯 3.3.1 核心自愈：横纵交叉耦合减速机制 (Cross-Coupling Deceleration)
-            // 彻底消灭“比例盲区”！只要横向逃逸避障力 (有效期望_y) 显著存在，
-            // 说明障碍物正在切入马路，我们强行注入一个与横向力大小成正比的纵向刹车力减速！
-            let 横向引发的减速惩罚 = - (有效期望_y.abs() * 0.45); // 0.45 为黄金减速耦合增益
-            let 综合期望_x = 有效期望_x + 横向引发的减速惩罚;
-            // 🎯 战役三第六版：滤波系统响应升级
-            let 侧向滤波系数 = 0.125f64; 
-            滤波后的期望_x += 0.125f64 * (综合期望_x - 滤波后的期望_x);
-            滤波后的期望_y += 侧向滤波系数 * (有效期望_y - 滤波后的期望_y);
-            // 🎯 🛡️ SCAN-Planner 药方 2：自车运动光流虚警抑制 (Egomotion Flow Suppression)
-            let mut 抑制后的期望_y = 滤波后的期望_y;
-            let 角速度绝对值 = 上一次角速度_w.abs();
-            if 角速度绝对值 > 0.12 {
-                let 抑制因子 = (-4.5 * (角速度绝对值 - 0.12)).exp();
-                抑制后的期望_y *= 抑制因子.clamp(0.15, 1.0);
-            }
-            // 🎯 第五版核心：控制主权仲裁器 (Supervisory Control Allocation)
-            // 实时精算避障势场力的最大绝对值，代表当前的危险逼近程度
-            // =================================================================
-            // 🎯 战役三第七版大一统控制逻辑（NMPC 弹性松弛避障）
-            // =================================================================
-            // 1. 🛡️ 基于一阶滞后空间归一化的平滑前视滤波器
-            if 循环计数 == 1 || (引力_x == 0.0 && 引力_y == 0.0) {
-                滤波后的引力_x = 引力_x;
-                滤波后的引力_y = 引力_y;
-                滤波后的引力_yaw = 引力_yaw;
-            } else {
-                let 空间滤波系数 = 0.15f64; // 前视目标点在 100-150ms 内平滑过渡
-                滤波后的引力_x += 空间滤波系数 * (引力_x - 滤波后的引力_x);
-                滤波后的引力_y += 空间滤波系数 * (引力_y - 滤波后的引力_y);
-                滤波后的引力_yaw += 空间滤波系数 * (引力_yaw - 滤波后的引力_yaw);
-            }
-            // 2. 局部相对坐标系变换
-            let dx = 滤波后的引力_x - 当前_x;
-            let dy = 滤波后的引力_y - 当前_y;
-            let mut 局部目标_x = dx * 当前_yaw.cos() + dy * 当前_yaw.sin();
-            let mut 局部目标_y = -dx * 当前_yaw.sin() + dy * 当前_yaw.cos();
-            // 3. SCAN-Planner 双圆盘体态切向对齐 [cite: 2]
-            let mut 局部目标_yaw = 滤波后的引力_yaw - 当前_yaw;
-            局部目标_yaw = 局部目标_yaw.clamp(-0.25, 0.25);
-            // 4. 前视引力弹性限制器
-            let 物理跨度 = (局部目标_x * 局部目标_x + 局部目标_y * 局部目标_y).sqrt();
-            let 物理前视极限 = 1.2f64;
-            if 物理跨度 > 物理前视极限 {
-                let 缩放比 = 物理前视极限 / 物理跨度;
-                局部目标_x *= 缩放比;
-                局部目标_y *= 缩放比;
-            }
-            // 5. 注入 20 步参考轨迹
-            // 采用第一版的经典无约束参考速度与路径形变设定（仅靠 Q/R 代价矩阵牵引）
-            let mut rebound_y = 0.0f64;
-            if 抑制后的期望_y.abs() > 0.02 {
-                let rebound_dir = 抑制后的期望_y.signum();
-                rebound_y = rebound_dir * (抑制后的期望_y.abs() * 0.75).min(0.35);
-            }
-            let 目标线速度 = (0.80 + 滤波后的期望_x).clamp(0.0, 0.80); 
-            let mut 注入成功 = true;
-            for k in 0..=20 {
-                let 比例 = (k as f64) / 20.0;
-                let 基础_ref_x = 局部目标_x * 比例;
-                let 基础_ref_y = 局部目标_y * 比例;
-                let 基础_ref_yaw = 局部目标_yaw * 比例;
-                let spiced_ref_x = 基础_ref_x + (滤波后的期望_x * 比例);
-                let spiced_ref_y = 基础_ref_y + (rebound_y * 比例); 
-                if let Err(e) = 规控大脑.设置参考轨迹点(k, spiced_ref_x, spiced_ref_y, 基础_ref_yaw, 目标线速度) {
-                    eprintln!("⚠️ 第 {} 步参考轨迹注入失败: {}", k, e);
-                    注入成功 = false;
-                    break;
-                }
-            }
-            if !注入成功 { continue; }
-            // 6. 🎯 战役三第七版精髓：障碍物坐标连续低通飘移
-            // 将经由经典 FAST 特征纯净化（无静态地标虚警）后的纯动态斥力，在小车坐标系正前方坍缩
-            let (目标障碍物_x, 目标障碍物_y, 椭圆长轴_a, 椭圆短轴_b) = if 抑制后的期望_y.abs() > 0.04 || 滤波后的期望_x < -0.04 {
-                // 障碍物在前方 0.65 米处，其横向偏置与我们逃逸打舵方向完全相反
-                let ox = 0.65;
-                let oy = -抑制后的期望_y.clamp(-0.35, 0.35); 
-                (ox, oy, 0.35, 0.25)
-            } else {
-                // 安全期：优雅地流放到 1000m 外，维持极小轴
-                (1000.0, 1000.0, 0.1, 0.1)
-            };
-            // 120ms 一阶阻尼平滑过滤器，杜绝水泥墙“空降砸脸”
-            let 障碍物阻尼系数 = 0.125f64; 
-            if 目标障碍物_x > 500.0 {
-                滤波后的障碍物_x = 目标障碍物_x;
-                滤波后的障碍物_y = 目标障碍物_y;
-            } else {
-                if 滤波后的障碍物_x > 500.0 {
-                    滤波后的障碍物_x = 目标障碍物_x;
-                    滤波后的障碍物_y = 目标障碍物_y;
-                } else {
-                    滤波后的障碍物_x += 障碍物阻尼系数 * (目标障碍物_x - 滤波后的障碍物_x);
-                    滤波后的障碍物_y += 障碍物阻尼系数 * (目标障碍物_y - 滤波后的障碍物_y);
-                }
-            }
-            // 将阻尼移动后的椭圆物理参数实时喂入求解器！
-            // 此时由于求解器内部具备第四版 L1/L2 软弹性床垫，遇到危险时小车将顺滑绕行，绝不发散或抖动！
-            let _ = 规控大脑.设置动态障碍物硬约束(滤波后的障碍物_x, 滤波后的障碍物_y, 椭圆长轴_a, 椭圆短轴_b);
-            // 7. 纯净 RTI-SQP 求解
-            let (线速度_v, 角速度_w) = match 规控大脑.求解最优控制量(当前线速度) {
-                Ok((v, w)) => (v, w),
-                Err(e) => {
-                    eprintln!("⚠️ NMPC 求解器非线性解算异常: {}", e);
-                    (0.0, 0.0) // 紧急锁死安全防线
-                }
-            };
-            // 统一写入并更新状态金库，保证下个控制周期所有权正常流转
-            {
-                let mut lock = 金库_规控.write().unwrap();
-                lock.当前线速度 = 线速度_v;
-            }
-            上一次角速度_w = 角速度_w;
-            // 📊 2026 工业级落盘时序审计
-            let _ = writeln!(
-                日志文件,
-                "{}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}",
-                循环计数, 当前_x, 当前_y, 当前_yaw, 引力_x, 引力_y, 引力_yaw, 有效期望_x, 有效期望_y, 线速度_v, 角速度_w, 当前线速度
-            );
-            // 📊 2026 工业级数值探针
-            if 循环计数 % 100 == 0 {
-                let 禁区状态 = if 滤波后的障碍物_x < 100.0 { "🔴 弹性防御" } else { "🟢 畅通无阻" };
-                // 优化控制台打印：显式输出从 DORA 接收到的青蛙眼避障原始推力，实现数据白盒化
-                println!(
-                    "[快脑 100Hz 遥测] 步: {:<5} | {} | 势场原始力: (Fx:{:>6.3}, Fy:{:>6.3}) | 速度: {:.3} m/s | 打舵: {:>6.3} rad/s",
-                    循环计数, 禁区状态, 期望_x, 期望_y, 线速度_v, 角速度_w
-                );
-            }
-            // 🎯 架构师升维：构建 Arrow Float32Array，通过共享内存零拷贝直达 Python
-            let 运动指令_arrow = dora_node_api::arrow::array::Float32Array::from(vec![
-                线速度_v as f32, 
-                角速度_w as f32
-            ]);
-            if let Err(e) = node.send_output(
-                "control_cmd".to_string().into(),
-                MetadataParameters::default(),
-                运动指令_arrow,
-            ) {
-                eprintln!("❌ 控制指令发送失败: {}", e);
-            }
-        }
-    });
-    // ---------------------------------------------------------
-    // [线程 B]：DORA 神经反射弧 (The Event Loop - 100Hz 避障力注入)
-    // ---------------------------------------------------------
-    while let Some(event) = events.recv_async().await {
-        match event {
-            Event::Input { id, data, .. } => {
-                if id.as_str() == "obstacle_force" {
-                    // 🎯 架构师升维：直接将 Arrow 内存映射为 Float32Array，彻底消除反序列化
-                    let 势场数组 = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>()
-                        .ok_or_else(|| eyre!("❌ 无法将 DORA 数据转换为 Float32Array"))?;
-                    if 势场数组.len() < 2 {
-                        continue;
-                    }
-                    let f_x = 势场数组.value(0) as f64;
-                    let f_y = 势场数组.value(1) as f64;
-                    // 🎯 物理揉入：将解出来的仿生势场逃逸矢量，写入状态金库
-                    {
-                        let mut lock = 状态金库.write().unwrap();
-                        lock.期望_x = f_x; // 作用于 NMPC 的纵向参考速度
-                        lock.期望_y = f_y; // 作用于 NMPC 的横向路径偏移
-                    }
-                }
-                else if id.as_str() == "odometry" {
-                    let arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
-                    if arr.len() >= 3 {
-                        let mut lock = 状态金库.write().unwrap();
-                        lock.当前_x = arr.value(0) as f64;
-                        lock.当前_y = arr.value(1) as f64;
-                        lock.当前_yaw = arr.value(2) as f64;
-                    }
-                }
-                else if id.as_str() == "human_prior" {
-                    let arr = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>().unwrap();
-                    if arr.len() >= 3 {
-                        let mut lock = 状态金库.write().unwrap();
-                        lock.引力_x = arr.value(0) as f64;
-                        lock.引力_y = arr.value(1) as f64;
-                        lock.引力_yaw = arr.value(2) as f64;
-                        // 🎯 战役三第六版：起跑线温启动锁定闸 (Start-line Gating)
-                        // 只有当慢脑初次匹配成功、发来第一个有效人类引力坐标时，才允许并网激活物理主权！
-                        // 彻底杜绝冷启动前 7 秒由于无引力目标导致小车在原点打转偏航的惨剧！
-                        if !lock.物理主权已初始化 {
-                            lock.物理主权已初始化 = true;
-                            println!("🟢 [温启动] 慢脑首帧匹配成功！物理主权安全并网，起跑线解锁！");
-                        }
-                        // 🎯 喂狗：刷新引力点接收时间戳，喂养生命看门狗！ [cite: 1.2.5]
-                        lock.上次引力更新时间 = std::time::Instant::now();
-                    }
-                }
-            }
-            Event::Stop(_) => {
-                println!("🛑 [快系统] 接收到 DORA 停止信号，安全卸载并释放控制权...");
-                break;
-            }
-            _ => {}
-        }
-    }
-    // 优雅卸载
-    规控句柄.abort();
-    Ok(())
-}
-#[cfg(test)]
-mod tests {
-    use dora_node_api::arrow::array::{Float32Array, StructArray, FixedSizeListArray, Array};
-    use dora_node_api::arrow::datatypes::{DataType, Field};
-    use std::sync::Arc;
-    #[test]
-    fn test_arrow_struct_array_zero_copy_deserialization() {
-        println!("🛡️ [内存探针] 正在模拟 Python 端 pyarrow 内存布局...");
-        // 1. 模拟 Python 端构建 Arrow StructArray 的过程 (2个 XFeat 特征点)
-        let x_arr = Arc::new(Float32Array::from(vec![10.5, 20.5])) as Arc<dyn Array>;
-        let y_arr = Arc::new(Float32Array::from(vec![15.2, 25.2])) as Arc<dyn Array>;
-        let score_arr = Arc::new(Float32Array::from(vec![0.95, 0.88])) as Arc<dyn Array>;
-        // 构建 64 维描述子 (2个特征点，共 128 个 f32 连续内存)
-        let mut desc_data = Vec::with_capacity(128);
-        for i in 0..128 {
-            desc_data.push(i as f32 * 0.1);
-        }
-        let desc_flat = Float32Array::from(desc_data);
-        let field = Arc::new(Field::new("item", DataType::Float32, true));
-        let desc_list_arr = Arc::new(
-            FixedSizeListArray::try_new(
-                field.clone(),
-                64,
-                Arc::new(desc_flat),
-                None,
-            ).expect("FixedSizeListArray 构建失败")
-        ) as Arc<dyn Array>;
-        // 组装为最终的 StructArray (严格对齐 Python 端的 names)
-        let struct_arr = StructArray::from(vec![
-            (Arc::new(Field::new("x", DataType::Float32, false)), x_arr),
-            (Arc::new(Field::new("y", DataType::Float32, false)), y_arr),
-            (Arc::new(Field::new("score", DataType::Float32, false)), score_arr),
-            (Arc::new(Field::new("descriptor", DataType::FixedSizeList(field, 64), false)), desc_list_arr),
-        ]);
-        // 模拟 DORA 跨进程传递过来的 Arc<dyn Array> 泛型指针
-        let data: Arc<dyn Array> = Arc::new(struct_arr);
-        println!("✅ [内存探针] 虚拟共享内存构建完毕，开始执行 Rust 端零拷贝解析...");
-        // ----------------------------------------------------------------
-        // 2. 验证 Rust 端的零拷贝解析逻辑 (严格对齐 slow_brain_node.rs 的业务代码)
-        // ----------------------------------------------------------------
-        let 结构体数组 = data.as_any().downcast_ref::<StructArray>().expect("❌ 致命错误：向下转型为 StructArray 失败");
-        assert_eq!(结构体数组.len(), 2, "特征点数量应该为 2");
-        let 解析_x = 结构体数组.column_by_name("x").unwrap().as_any().downcast_ref::<Float32Array>().unwrap();
-        let 解析_y = 结构体数组.column_by_name("y").unwrap().as_any().downcast_ref::<Float32Array>().unwrap();
-        let 解析_score = 结构体数组.column_by_name("score").unwrap().as_any().downcast_ref::<Float32Array>().unwrap();
-        let 解析_desc_list = 结构体数组.column_by_name("descriptor").unwrap().as_any().downcast_ref::<FixedSizeListArray>().unwrap();
-        let 解析_desc_values = 解析_desc_list.values().as_any().downcast_ref::<Float32Array>().unwrap();
-        // ----------------------------------------------------------------
-        // 3. 物理断言：验证内存指针偏移与数值精度是否绝对无损
-        // ----------------------------------------------------------------
-        assert_eq!(解析_x.value(0), 10.5, "X 坐标解析错误");
-        assert_eq!(解析_y.value(1), 25.2, "Y 坐标解析错误");
-        assert_eq!(解析_score.value(0), 0.95, "置信度解析错误");
-        // 验证第一个特征点的描述子 (偏移量 0)
-        let offset_0 = 0;
-        assert_eq!(解析_desc_values.value(offset_0 + 0), 0.0);
-        assert_eq!(解析_desc_values.value(offset_0 + 1), 0.1);
-        // 验证第二个特征点的描述子 (偏移量 64)
-        let offset_1 = 64;
-        assert_eq!(解析_desc_values.value(offset_1 + 0), 6.4); // 64 * 0.1
-        assert_eq!(解析_desc_values.value(offset_1 + 1), 6.5); // 65 * 0.1
-        println!("🏆 [验证结论] Arrow StructArray 零拷贝解析逻辑完美通过！");
-        println!("诊断报告：");
-        println!("  1. 内存对齐：Python 端的列式内存布局被 Rust 完美识别。");
-        println!("  2. 零拷贝：全程未使用任何反序列化函数，仅通过指针偏移 (downcast_ref) 完成数据提取。");
-        println!("  3. 性能预估：解析 1000 个特征点的耗时将从之前的数毫秒暴降至纳秒级 (O(1) 复杂度)。");
-    }
-}
-</file>
-
 <file path="simulation-env/isaac_dora_node.py">
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-=================================================================
-🛡️ FSD-car V4.1: 仿真环境物理代理节点 (Ubuntu 26.04 绝对确定性版)
-设计哲学: Headless 离屏 | 100Hz 绝对物理时钟锁定 | 共享内存直通
-核心规范: Isaac Sim 2026 Core API (SimulationContext)
-=================================================================
-"""
 import os
 import sys
 import struct
@@ -3821,10 +4048,6 @@ import torch.nn.functional as F
 import onnxruntime as ort
 import pyarrow as pa
 from dora import Node
-# ---------------------------------------------------------------------------
-# 🛡️ 物理资产与环境变量自愈
-# ---------------------------------------------------------------------------
-# 🛡️ SOTA 核心：必须在 SimulationApp 实例化前，强行将底层 RTX 离屏相机渲染管道唤醒！
 os.environ["ENABLE_CAMERAS"] = "1"
 os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
 def load_env_manually():
@@ -3838,11 +4061,7 @@ def load_env_manually():
                     if len(parts) == 2:
                         os.environ[parts[0].strip()] = parts[1].strip()
 load_env_manually()
-# ---------------------------------------------------------------------------
-# 🛡️ NVIDIA Isaac Sim 2026 启动哨兵 (防管道死锁版)
-# ---------------------------------------------------------------------------
 try:
-    # 🛡️ 核心修复 1：通过 sys.argv 底层注入静默参数，防止海量日志塞满 DORA 管道！
     sys.argv.extend(["--/log/level=error", "--/log/fileLogLevel=error"])
     from isaacsim import SimulationApp
     simulation_app = SimulationApp({
@@ -3850,57 +4069,40 @@ try:
     })
     import omni
     from pxr import UsdPhysics
-    # 🛡️ 核心修复 2：使用 2026 核心 API，World 继承自 SimulationContext 并提供 scene 管理
     from isaacsim.core.api import World
     from isaacsim.core.prims import Articulation
     from isaacsim.core.utils.stage import open_stage
-    # 🛡️ SOTA 核心：引入 Replicator 离屏标注组件
     import omni.replicator.core as rep
-    print("✅ [物理代理] NVIDIA Isaac Sim 2026 核心引擎启动成功！(Headless 模式)")
+    print("NVIDIA Isaac Sim 2026 Core Engine successfully initialized.")
 except ImportError as e:
-    print(f"❌ 致命错误：无法在本地导入 Isaac Sim 模块！报错: {e}")
+    print(f"ImportError: {e}")
     sys.exit(1)
-# ===========================================================================
-# 🐸 仿生青蛙眼不对称时空感受野（ERF/IRF）算法引擎
-# ===========================================================================
 class BionicFrogEye:
     def __init__(self, width=640, height=480):
         self.w = width
         self.h = height
-        # 🛡️ 2026 SOTA 优化：引入历史帧滑动队列 (时间跨度为 5 帧，即 50ms 差分窗口)
-        # 完美解决 100Hz 高频采样下相邻帧位移过小、差分被门限熔断的问题！
         self.frame_buffer = []
         self.buffer_size = 5
         self.erf = np.zeros((height, width), dtype=np.float32)
         self.irf = np.zeros((height, width), dtype=np.float32)
+        self.beta = 0.5
         self.alpha_erf = 0.4
         self.alpha_irf = 0.85
-        self.beta = 0.5
-        # 适当调低门限至 10.0，增强对微观边缘运动的敏感度
         self.event_threshold = 10.0
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
-        # 🛡️ 3.3.1 极速自愈：彻底根治“近视眼开跑车”漏洞！
-        # 将二次衰减降维为线性衰减，并引入 0.15 基础前视视能底噪，让远马路边界（y=160）感知权重从 11% 暴涨至 48%！
         self.closeness_weight = (y_indices / float(self.h)) + 0.15
-        # 🎯 战役三第六版核心：初始化经典极速 FAST 角点检测器 (0.2ms 超低CPU延迟)
-        # 用于在 100Hz 本地物理频率抓取高对比度静态纹理（如木斜坡边缘），物理阻断伪排斥力
         self.fast_detector = cv2.FastFeatureDetector_create(threshold=15, nonmaxSuppression=True)
     def process_frame(self, frame_rgb):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        # 维持滑动窗口
         self.frame_buffer.append(gray)
         if len(self.frame_buffer) < self.buffer_size:
             return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-        # 提取 50ms 前的历史帧进行差分计算，积累物理运动标量
         history_frame = self.frame_buffer.pop(0)
         diff = cv2.absdiff(history_frame, gray)
-        # 🎯 战役三第六版核心：自对齐静态地标反向遮罩 (FAST Masking)
-        # 本地提取高对比度静态角点，在差分差值上打上 25px 物理掩膜圆（抹零值）
-        # 静态贴图（如斜坡木纹、地表白线）由于车身运动产生的相对晃动能量将被完全过滤，不再干扰避障势场！
         keypoints = self.fast_detector.detect(gray, None)
-        mask_radius = 25  # 25 像素掩膜半径，完全屏蔽静态角点引发的相对位移光流
+        mask_radius = 25
         for kp in keypoints:
             u, v = int(kp.pt[0]), int(kp.pt[1])
             cv2.circle(diff, (u, v), mask_radius, 0, -1)
@@ -3909,33 +4111,23 @@ class BionicFrogEye:
         self.erf = self.erf * self.alpha_erf + events_rf
         self.irf = self.irf * self.alpha_irf + events_rf
         net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
-        self.prev_gray = gray
         weighted_energy = net_energy * self.closeness_weight
         total_energy = np.sum(weighted_energy)
         if total_energy > 15.0:
             x_c = np.sum(self.x_coords * weighted_energy) / total_energy
             dx = (x_c - self.w / 2.0) / (self.w / 2.0)
-            # 🎯 2026 极性纠偏：修正避障逃逸力极性反转错误！
-            # 在机器人局部坐标系中，+Y 为左，-Y 为右。
-            # 当障碍物偏右（dx > 0）时，期望避障力 F_y 必须为正（F_y > 0，向左逃逸）；
-            # 当障碍物偏左（dx < 0）时，期望避障力 F_y 必须为负（F_y < 0，向右逃逸）。
-            # 彻底粉碎“吸引力陷阱”，将其重塑为“绝对排斥力”！
             F_y = dx * 1.5
             F_x = - (total_energy / (self.w * self.h)) * 5.0
         else:
             F_x, F_y = 0.0, 0.0
         heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
         return F_x, F_y, heatmap
-# ====================================================
-#  📸 XFeat 局部高精度特征提取引擎
-# ====================================================
 class CLIDDEngine:
     def __init__(self, model_path):
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
-        print(f"✓ [CLIDD-N64] 跨层可变形神经网络引擎装载完毕！")
-        print(f"  -> 架构优势: 0.019M 极简参数 | 842 FPS 吞吐 | 64维高抗畸变描述子")
+        print("CLIDD Local Neural Localization Engine successfully loaded.")
     def extract(self, frame_rgb, top_k=200):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         pad_y = (640 - 480) // 2
@@ -3959,7 +4151,7 @@ class CLIDDEngine:
         mask = (conf == conf_nms) & (conf > 0.05)
         conf_flat = conf[mask]
         if len(conf_flat) == 0:
-            return None, None, None
+            return None
         topk = min(top_k, len(conf_flat))
         scores_k, indices = torch.topk(conf_flat, topk)
         y, x = torch.where(mask[0, 0])
@@ -3975,11 +4167,9 @@ class CLIDDEngine:
         valid = (y >= 0) & (y < 480)
         x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
         x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
-        # 🎯 架构师升维：构建 Arrow StructArray，实现 100% 零拷贝内存布局
         x_arr = pa.array(x_np, type=pa.float32())
         y_arr = pa.array(y_np, type=pa.float32())
         s_arr = pa.array(s_np, type=pa.float32())
-        # 将 (N, 64) 的描述子展平后构建为 FixedSizeListArray
         d_flat = pa.array(d_np.flatten(), type=pa.float32())
         d_arr = pa.FixedSizeListArray.from_arrays(d_flat, 64)
         struct_arr = pa.StructArray.from_arrays(
@@ -3987,41 +4177,35 @@ class CLIDDEngine:
             names=['x', 'y', 'score', 'descriptor']
         )
         return struct_arr
-# ===========================================================================
-#  🚀 DORA 原生节点主循环与 2026 确定性仿真执行器
-# ===========================================================================
 def main():
-    print("💎 [物理主权] 正在构建 FSD 本地零拷贝并网通道...")
+    print("Launching FSD local zero-copy integration pipeline...")
     dora_node = Node()
     fsd_assets_dir = "/home/zhz/fsd-car/assets"
-    # 🛡️ 路径翻译官：实现 clean 净化变体的自适应检测与零硬编码自愈装载
     clean_usd_name = "fsd_car_clean1.usd"
     default_usd_name = "fsd_car_racetrack.usd"
     clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)
     default_usd_path = os.path.join(fsd_assets_dir, default_usd_name)
     if os.path.exists(clean_usd_path):
         usd_path = clean_usd_path
-        print(f"🟢 [路径翻译官] 成功检测到无障碍净化变体 Stage: {clean_usd_name}")
+        print(f"Map GOB aligned: Loading un-obstructed scene {clean_usd_name}")
     else:
         usd_path = default_usd_path
-        print(f"⚠️ [路径翻译官] 未检测到净化变体，自适应装载默认 Stage: {default_usd_name}")
+        print(f"Fallback Active: Loading scene {default_usd_name}")
     if not os.path.exists(usd_path):
-        print(f"❌ 致命错误：找不到物理场景文件 -> {usd_path}")
+        print(f"Fatal Error: usd file missing at {usd_path}")
         sys.exit(1)
     open_stage(usd_path=usd_path)
-    # 🛡️ 核心修复 3：使用 World (继承自 SimulationContext) 锁定 100Hz 绝对时钟并管理 Scene
     world = World(
         physics_dt=0.01, 
         rendering_dt=0.01, 
         backend="numpy"
     )
-    # 🎯 架构师级并网：启用 2026 级确定性时间环路运行器，强制将 Omniverse Kit 的时钟线、渲染主循环、物理步长锁死在 100Hz 确定性步长下 [cite: 2.3.1]
     from isaacsim.core.rendering_manager import RenderingManager
     RenderingManager.set_dt(0.01)
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath(car_path):
-        print(f"❌ 致命错误：仿真场景中找不到小车模型，期望路径 -> {car_path}")
+        print(f"Fatal Error: Robot chassis missing at path {car_path}")
         sys.exit(1)
     for prim in stage.Traverse():
         if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
@@ -4032,110 +4216,78 @@ def main():
             drive.CreateDampingAttr(1e5)
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
-    # 🛡️ 3.3.1 阶段自愈并网：注册并包裹动态避障立方体
     from isaacsim.core.prims import XFormPrim
-    # 6.0 批处理自愈：使用广义双通配符，穿透所有由于复制组产生的 dynamic_obstacles_xx 文件夹，一网打尽！
     obstacle_path = "/Root/dynamic_obstacles*/box_obstacle_*"
     obstacle = None
-    # 3.3.1 核心自愈：升级为 numpy 矩阵，用于缓存所有复制出来的箱子的初始姿态（N, 3）和（N, 4）
     obs_init_poses = None
     obs_init_rots = None
     if stage.GetPrimAtPath("/Root"):
         obstacle = XFormPrim(prim_paths_expr=obstacle_path, name="box_obstacle")
         world.scene.add(obstacle)
-        print("🟢 [NEXUS 3.3.1] Batch Dynamic Obstacles successfully registered into Scene Manager!")
+        print("Vectorized dynamic obstacles successfully registered.")
     camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
-    # 🛡️ SOTA 重构：直接将小车原生的 Camera 节点绑定为独立的离屏渲染产品 (Render Product)
-    print(f"🎯 [物理主权] 正在将 {camera_path} 绑定为离屏 Render Product...")
     render_product = rep.create.render_product(camera_path, (640, 480))
-    # 获取并注册 GPU 直接内存标注器 [cite: 1.1.4]
     rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
     rgb_annotator.attach([render_product])
-    print("✅ [物理主权] Replicator 离屏标注器并网完成！")
     clidd_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
     if not os.path.exists(clidd_model_path):
-        print(f"❌ 致命错误：找不到 CLIDD ONNX 权重文件 -> {clidd_model_path}")
+        print(f"Fatal Error: ONNX missing at {clidd_model_path}")
         sys.exit(1)
     clidd_engine = CLIDDEngine(clidd_model_path)
     frog_eye = BionicFrogEye(640, 480)
     world.reset()
-    # 🛡️ 3.3.1 核心自愈：在物理场景 Reset 完毕后，瞬间高频捕获所有复制出来的箱子的初始坐标矩阵
     if obstacle is not None:
-        # 6.0 批处理接口直接返回包含所有箱子的（N, 3）和（N, 4）NumPy 矩阵 [cite: 1.3.8]
         obs_init_poses, obs_init_rots = obstacle.get_world_poses()
-        print(f"🟢 [NEXUS 3.3.1] 成功并网！捕获到关卡中共有 {len(obs_init_poses)} 个高能避障红箱子！")
+        print(f"Verification matched: {len(obs_init_poses)} obstacles mapped.")
     world.play()
-    # 🛡️ 2026 工业级预热：让离屏 RTX 渲染管道进行硬件级深度温启动
-    print("⏳ [物理代理] 正在进行离屏 RTX 渲染管道硬件预热...")
+    print("Pre-heating off-screen rendering context...")
     for _ in range(60):
         world.step(render=True)
-    print("✅ [物理代理] RTX 渲染管道预热完毕，高保真图像流并网！")
-    print("🏆 [物理代理] 本地物理界仿真节点已成功激活，正在向 DORA 共享内存灌注高频流...")
+    print("Offscreen pipeline activated successfully.")
     L = 0.1125
     R = 0.03
     tick = 0
     v_cmd = 0.0
     w_cmd = 0.0
+    rgb_frame = None
     try:
         while simulation_app.is_running():
-            # 🛡️ 绝对时钟步进：每次严格推进 0.01s
             world.step(render=True)
             tick += 1
-            # 🛡️ 3.3.1 阶段自愈并网：100Hz 极速驱动立方体作正弦往复运动（等效于横穿马路的动态行人）
             if obstacle is not None and obs_init_poses is not None:
                 t = tick * 0.01
-                # 复制一份初始坐标矩阵，保持 Y 轴和 Z 轴静止
                 new_poses = obs_init_poses.copy()
-                # 🎯 2026 批处理艺术：为每一个复制出来的箱子，施加一个与索引相关的相位偏移量
-                # 这样每个箱子就会“参差不齐、错落有致”地摆动，形成一个绝佳的高动态博弈沙盘，避免整齐划一的机械感
                 num_obstacles = len(obs_init_poses)
-                phase_offsets = np.arange(num_obstacles) * 0.6  # 0.6 rad 的相位差
-                # 矩阵式矢量计算：一次性求出所有箱子新的 X 世界坐标
+                phase_offsets = np.arange(num_obstacles) * 0.6
                 new_poses[:, 0] = obs_init_poses[:, 0] + 1.2 * np.sin(1.5 * t + phase_offsets)
-                # 一行代码，通过 GPU 极速下发所有箱子的位姿，性能高到离谱且绝不报错！
                 obstacle.set_world_poses(positions=new_poses, orientations=obs_init_rots)
-            # B. 🛡️ SOTA 核心：直接从 Replicator 标注器中获取纯净的内存像素 [cite: 1.1.4]
-            # 剥离不兼容 headless 且存在多余包装的 camera.get_rgb()
             rgb_raw = rgb_annotator.get_data()
             if rgb_raw is not None:
                 rgb_frame = rgb_raw
-                # Replicator 吐出的是带 Alpha 通道的 (480, 640, 4) 矩阵
-                # 极速剥离 Alpha 通道，转为算法标准的 3 通道 RGB [cite: 1.1.4]
                 if len(rgb_frame.shape) == 3 and rgb_frame.shape[2] == 4:
                     rgb_frame = rgb_frame[:, :, :3]
                 if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
                     rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
-            if rgb_frame.size > 0:
-                # 🎯 里程碑 1.1：提取底盘真实物理位姿 (模拟 VIO 积分输出)
+            if rgb_frame is not None and rgb_frame.size > 0:
                 positions, orientations = car.get_world_poses()
                 pose_x, pose_y = float(positions[0][0]), float(positions[0][1])
                 qw, qx, qy, qz = orientations[0]
-                # 四元数转偏航角 (Yaw)
                 pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
-                # 100Hz 高频广播物理里程计
                 arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
-                # 🎯 战役三第六版核心：100Hz 本地极速经典感知避障（释放 GPU / 彻底消灭延迟）
                 F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                # 📸 SOTA 级并网：将 Isaac Sim 离屏渲染的 RGB 图像压缩为 JPEG 字节流广播
                 bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                # 🛡️ 3.3.1 视觉白盒增稳：将青蛙眼的动态能量势场（红光）无缝糅进图像流
-                # 让你在 AR 大屏上能一眼看穿小车眼中的“高能运动危险区”，极大地提升录制黄金数据时的信心！
                 if heatmap is not None and np.any(heatmap > 20):
-                    # 将单通道灰度势场扩展为三通道红色通道蒙版 [B, G, R]
                     red_glow = cv2.merge([np.zeros_like(heatmap), np.zeros_like(heatmap), heatmap])
-                    # 以 80% 原图亮度 + 40% 势场红光的比重融合（完全不影响 XFeat 特征提取）
                     bgr_frame = cv2.addWeighted(bgr_frame, 0.8, red_glow, 0.4, 0)
                 _, jpeg_encoded = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
                 dora_node.send_output("jpeg_image", arrow_jpeg)
-                # 🎯 架构师升维：直接构建 Arrow Float32 数组，消除 struct.pack 字节拷贝
                 arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                 dora_node.send_output("obstacle_force", arrow_obstacle_force)
-                # 🚨 频域解耦：深度神经网络 CLIDD 回归原本的 1Hz 慢节拍，专心保障定位，绝不拖垮 100Hz 物理底盘！
                 if tick % 100 == 0:
                     arrow_clidd_features = clidd_engine.extract(rgb_frame, top_k=200)
-                    if arrow_clidd_features is not None and len(arrow_clidd_features) > 0:
+                    if arrow_clidd_features is not None:
                         dora_node.send_output("xfeat_features", arrow_clidd_features)
             event = dora_node.next(timeout=0.001)
             if event is not None:
@@ -4146,23 +4298,20 @@ def main():
                         if len(cmd_arr) == 2:
                             v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
                 elif ev_type == "STOP":
-                    print("🛑 [物理代理] 收到 DORA 全局停止指令，退出仿真。")
+                    print("DORA Stop signal received. Closing simulation...")
                     break
-            # 🛡️ 极性自愈：移除右轮公式前的负号。
-            # 使 DORA 的 v_cmd=0.3 完美映射为左右轮同向正转（同号 10.0 rad/s），驱动小车直线向前！
             v_left = (v_cmd - w_cmd * L / 2.0) / R
             v_right = (v_cmd + w_cmd * L / 2.0) / R
             car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
-            # 📊 2026 工业级数值探针：每 100 步输出一次全量高保真遥测数据，消除主观观测盲区
             if tick % 100 == 0:
                 print(
-                    f"[物理代理 100Hz 遥测] 步数: {tick:<6} | "
-                    f"仿生眼避障力: F_x={F_x:>6.3f}, F_y={F_y:>6.3f} | "
-                    f"DORA 规控指令: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s | "
-                    f"电调靶向速度: Left={v_left:>6.2f} rad/s, Right={v_right:>6.2f} rad/s"
+                    f"[100Hz Odom Telemetry] Tick: {tick:<6} | "
+                    f"Repulsion: F_x={F_x:>6.3f}, F_y={F_y:>6.3f} | "
+                    f"DORA Cmd: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s | "
+                    f"Wheel Velocity Targets: L={v_left:>6.2f} rad/s, R={v_right:>6.2f} rad/s"
                 )
     except KeyboardInterrupt:
-        print("\n🛑 用户手动中断，优雅下线。")
+        print("Terminated by user keyboard interrupt.")
     finally:
         try:
             car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
@@ -4171,9 +4320,429 @@ def main():
         except Exception:
             pass
         simulation_app.close()
-        print("🔌 物理仿真界代理已安全卸载。")
+        print("Isaac Sim closed and unmounted successfully.")
 if __name__ == "__main__":
     main()
+</file>
+
+<file path="core-control/src/bin/fast_brain_node.rs">
+use core_control::预测控制求解器;
+use core_control::solver::动态障碍物;
+use dora_node_api::{DoraNode, Event, MetadataParameters};
+use eyre::eyre;
+use std::sync::Arc;
+use std::sync::RwLock;
+use std::time::Duration;
+use ort::session::Session;
+use ort::value::Value;
+struct ExecutionContext {
+    pub is_initialized: bool,
+    pub desired_force_x: f64,
+    pub desired_force_y: f64,
+    pub current_velocity: f64,
+    pub current_x: f64,
+    pub current_y: f64,
+    pub current_yaw: f64,
+    pub target_x: f64,
+    pub target_y: f64,
+    pub target_yaw: f64,
+    pub last_update_time: std::time::Instant,
+}
+fn auto_load_onnx_dylib() {
+    if std::env::var("ORT_DYLIB_PATH").is_ok() {
+        return;
+    }
+    let capi_dir = "/home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/onnxruntime/capi";
+    if std::path::Path::new(capi_dir).exists() {
+        if let Ok(entries) = std::fs::read_dir(capi_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name() {
+                        let name_str = file_name.to_string_lossy();
+                        if name_str.starts_with("libonnxruntime.so") {
+                            let abs_path = path.to_string_lossy().into_owned();
+                            println!("✓ Self-healing loaded versioned onnx dylib: {}", abs_path);
+                            std::env::set_var("ORT_DYLIB_PATH", abs_path);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let fallback_path = "/home/zhz/fsd-car/core-perception/lib_dylib/libonnxruntime.so";
+    if std::path::Path::new(fallback_path).exists() {
+        std::env::set_var("ORT_DYLIB_PATH", fallback_path);
+    }
+}
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    auto_load_onnx_dylib();
+    println!("NEXUS SOTA 2026 - PPO & NMPC Unified FSD Control Node starting...");
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+    let mut onnx_path = std::path::PathBuf::from("model/spiced_brain.onnx");
+    if !onnx_path.exists() {
+        onnx_path = std::path::PathBuf::from("/home/zhz/fsd-car/model/spiced_brain.onnx");
+    }
+    if !onnx_path.exists() {
+        return Err(eyre!("Critical Error: Spiced PPO ONNX weights missing at {:?}", onnx_path));
+    }
+    let mut ppo_session = Session::builder()
+        .and_then(|b| b.with_intra_threads(1))
+        .and_then(|b| b.commit_from_file(&onnx_path))
+        .expect("Failed to mount Spiced PPO Brain");
+    println!("✓ Spiced PPO Brain model loaded. Ready for 100Hz/10Hz Cascade inference.");
+    let context = Arc::new(RwLock::new(ExecutionContext {
+        is_initialized: false,
+        desired_force_x: 0.0,
+        desired_force_y: 0.0,
+        current_velocity: 0.0,
+        current_x: 0.0,
+        current_y: 0.0,
+        current_yaw: 0.0,
+        target_x: 0.0,
+        target_y: 0.0,
+        target_yaw: 0.0,
+        last_update_time: std::time::Instant::now(),
+    }));
+    let ctrl_context = context.clone();
+    let control_handle = tokio::spawn(async move {
+        let mut brain = 预测控制求解器::new().expect("Failed to initialize NMPC solver");
+        let mut obs_history: std::collections::VecDeque<Vec<f32>> = std::collections::VecDeque::with_capacity(5);
+        let mut solver_ready = false;
+        let mut tick_count: u64 = 0;
+        let mut filtered_force_x = 0.0f64;
+        let mut filtered_force_y = 0.0f64;
+        let mut filtered_target_x = 0.0f64;
+        let mut filtered_target_y = 0.0f64;
+        let mut filtered_target_yaw = 0.0f64;
+        let mut filtered_obs_x = 1000.0f64;
+        let mut filtered_obs_y = 1000.0f64;
+        let mut current_ppo_v = 0.0f64;
+        let mut current_ppo_w = 0.0f64;
+        let mut last_omega_w = 0.0f64;
+        let mut printed_unseal = false;
+        let mut obs_memory_x = 1000.0f64;
+        let mut obs_memory_y = 1000.0f64;
+        let mut obs_memory_timer = 0i32;
+        use std::io::Write as _;
+        let mut log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("nmpc_telemetry.csv")
+            .expect("Failed to create NMPC telemetry log");
+        let _ = writeln!(
+            log_file,
+            "tick,cur_x,cur_y,cur_yaw,target_x,target_y,target_yaw,force_x,force_y,v_cmd,w_cmd,cur_v"
+        );
+        let mut audit_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("/tmp/nexus_audit_trace.csv")
+            .expect("Failed to create audit log");
+        let _ = writeln!(
+            audit_file,
+            "tick,cur_x,cur_y,cur_yaw,tgt_x,tgt_y,tgt_yaw,loc_x,loc_y,dist,raw_fx,raw_fy,ppo_v,ppo_w,nmpc_obs_y,nmpc_v,nmpc_w,ref_yaw_pull"
+        );
+        let mut ticker = tokio::time::interval(Duration::from_millis(10));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            tick_count += 1;
+            let (initialized, force_x, force_y, cur_v, last_time, cur_x, cur_y, cur_yaw, tgt_x, tgt_y, tgt_yaw) = {
+                let lock = ctrl_context.read().unwrap();
+                (
+                    lock.is_initialized, lock.desired_force_x, lock.desired_force_y, 
+                    lock.current_velocity, lock.last_update_time,
+                    lock.current_x, lock.current_y, lock.current_yaw,
+                    lock.target_x, lock.target_y, lock.target_yaw
+                )
+            };
+            if !initialized {
+                continue;
+            }
+            let watchdog_timeout = last_time.elapsed();
+            if watchdog_timeout > std::time::Duration::from_millis(5000) {
+                eprintln!("Failsafe Watchdog triggered: Timeout {:.2?}s! Stop vehicle.", watchdog_timeout.as_secs_f64());
+                let zero_cmd = dora_node_api::arrow::array::Float32Array::from(vec![0.0f32, 0.0f32]);
+                let _ = node.send_output(
+                    "control_cmd".to_string().into(),
+                    MetadataParameters::default(),
+                    zero_cmd,
+                );
+                continue;
+            }
+            if !solver_ready {
+                println!("NMPC Solver Warm-start completed. Control mapped.");
+                solver_ready = true;
+            }
+            if let Err(e) = brain.设置当前状态(0.0, 0.0, 0.0, cur_v) {
+                eprintln!("Failed to anchor local coordinates: {}", e);
+                continue;
+            }
+            // 🎯 SOTA Active Ego-Motion Cancellation:
+            // Dynamically subtract self-rotation optical sweeps from the raw forces!
+            let compensated_force_y = force_y - (1.25f64 * last_omega_w);
+            let compensated_force_x = force_x + (0.15f64 * last_omega_w.abs());
+            let (active_force_x, active_force_y) = if cur_v.abs() < 0.04 {
+                (0.0f64, 0.0f64)
+            } else {
+                (compensated_force_x.clamp(-1.5, 0.0), compensated_force_y.clamp(-1.5, 1.5))
+            };
+            let cross_coupling_decel = -(active_force_y.abs() * 0.45);
+            let combined_force_x = active_force_x + cross_coupling_decel;
+            filtered_force_x += 0.125f64 * (combined_force_x - filtered_force_x);
+            filtered_force_y += 0.125f64 * (active_force_y - filtered_force_y);
+            let mut suppressed_force_y = filtered_force_y;
+            let abs_omega = last_omega_w.abs();
+            if abs_omega > 0.12 {
+                let suppression_factor = (-4.5_f64 * (abs_omega - 0.12_f64)).exp();
+                suppressed_force_y *= suppression_factor.clamp(0.15, 1.0);
+            }
+            if tick_count == 1 || (tgt_x == 0.0 && tgt_y == 0.0) {
+                filtered_target_x = tgt_x;
+                filtered_target_y = tgt_y;
+                filtered_target_yaw = tgt_yaw;
+            } else {
+                let spatial_filter_coeff = 0.15f64;
+                filtered_target_x += spatial_filter_coeff * (tgt_x - filtered_target_x);
+                filtered_target_y += spatial_filter_coeff * (tgt_y - filtered_target_y);
+                filtered_target_yaw += spatial_filter_coeff * (tgt_yaw - filtered_target_yaw);
+            }
+            let dx = filtered_target_x - cur_x;
+            let dy = filtered_target_y - cur_y;
+            let local_target_x = dx * cur_yaw.cos() + dy * cur_yaw.sin();
+            let local_target_y = -dx * cur_yaw.sin() + dy * cur_yaw.cos();
+            let local_target_yaw_final = (filtered_target_yaw - cur_yaw).clamp(-0.25, 0.25);
+            let target_distance = (local_target_x * local_target_x + local_target_y * local_target_y).sqrt();
+            // 🎯 Phase III: Dynamic Line-of-Sight (LOS) Homing & Yaw Decoupling
+            let local_target_yaw = if target_distance > 0.60 {
+                local_target_y.atan2(local_target_x).clamp(-0.25, 0.25)
+            } else {
+                let los_yaw = local_target_y.atan2(local_target_x);
+                let alpha = ((target_distance - 0.15) / 0.45).clamp(0.0, 1.0);
+                (alpha * los_yaw + (1.0 - alpha) * local_target_yaw_final).clamp(-0.25, 0.25)
+            };
+            let target_limit = 1.2f64;
+            let (scaled_x, scaled_y) = if target_distance > target_limit {
+                let scale = target_limit / target_distance;
+                (local_target_x * scale, local_target_y * scale)
+            } else {
+                (local_target_x, local_target_y)
+            };
+            if tick_count % 10 == 0 || tick_count == 1 {
+                let obs_single = vec![
+                    (local_target_x * 0.20) as f32, 
+                    (local_target_y * 0.20) as f32, 
+                    (target_distance * 0.20) as f32,
+                    active_force_x as f32,          
+                    active_force_y as f32,          
+                ];
+                if obs_history.is_empty() {
+                    for _ in 0..5 {
+                        obs_history.push_back(obs_single.clone());
+                    }
+                } else {
+                    obs_history.push_back(obs_single);
+                    if obs_history.len() > 5 {
+                        obs_history.pop_front();
+                    }
+                }
+                let mut input_data = Vec::with_capacity(25);
+                for frame in &obs_history {
+                    input_data.extend_from_slice(frame);
+                }
+                let input_tensor = Value::from_array(([1, 25], input_data))
+                    .expect("Failed to build input tensor");
+                let inputs = ort::inputs![input_tensor];
+                let outputs = ppo_session.run(inputs).expect("ONNX inference failed");
+                let (_, outputs_data) = outputs[0].try_extract_tensor::<f32>()
+                    .expect("Failed to extract output tensor");
+                current_ppo_v = outputs_data[0] as f64;
+                current_ppo_w = outputs_data[1] as f64;
+            }
+            let mut max_speed_limit = 0.80f64;
+            if tick_count <= 200 { // 2 seconds speed gate ramp-up (200 ticks * 10ms = 2s)
+                max_speed_limit = 0.25f64;
+                if tick_count == 1 {
+                    println!("🚀 [NEXUS AR] Speed Gating active. Capped at 0.25 m/s.");
+                }
+            } else if !printed_unseal {
+                println!("🚀 [NEXUS AR] Speed Gating unsealed! Unleashing full 0.80 m/s PPO potential.");
+                printed_unseal = true;
+            }
+            let target_velocity = current_ppo_v.clamp(0.0, max_speed_limit);
+            let rebound_yaw = current_ppo_w * 0.25;
+            let mut injection_success = true;
+            let d_ff = scaled_x / 3.0;
+            for k in 0..=20 {
+                let t = (k as f64) / 20.0;
+                let (ref_x, ref_y) = if t == 0.0 {
+                    (0.0, 0.0)
+                } else {
+                    let bx = 3.0 * (1.0 - t).powi(2) * t * d_ff 
+                           + 3.0 * (1.0 - t) * t.powi(2) * (scaled_x - d_ff * local_target_yaw.cos()) 
+                           + t.powi(3) * scaled_x;
+                    let by = 3.0 * (1.0 - t) * t.powi(2) * (scaled_y - d_ff * local_target_yaw.sin()) 
+                           + t.powi(3) * scaled_y;
+                    (bx, by)
+                };
+                let spiced_ref_x = ref_x;
+                let spiced_ref_y = ref_y;
+                let ref_yaw = local_target_yaw * (t * t * (3.0 - 2.0 * t)) + (rebound_yaw * t);
+                if let Err(e) = brain.设置参考轨迹点(k, spiced_ref_x, spiced_ref_y, ref_yaw, target_velocity) {
+                    eprintln!("Failed to inject spline reference at stage {}: {}", k, e);
+                    injection_success = false;
+                    break;
+                }
+            }
+            if !injection_success {
+                continue;
+            }
+            // 🎯 Phase V: Sliding Map Hysteresis Watchdog State Machine
+            let sensor_active = suppressed_force_y.abs() > 0.04 || filtered_force_x < -0.04;
+            let (obs_x, obs_y, axis_a, axis_b) = if sensor_active {
+                obs_memory_x = 0.65;
+                obs_memory_y = -suppressed_force_y.clamp(-0.35, 0.35);
+                obs_memory_timer = 40; 
+                (obs_memory_x, obs_memory_y, 0.35, 0.25)
+            } else if obs_memory_timer > 0 {
+                obs_memory_timer -= 1;
+                obs_memory_x -= cur_v * 0.01; 
+                if obs_memory_x < -0.20 {
+                    obs_memory_timer = 0;
+                    obs_memory_x = 1000.0;
+                    obs_memory_y = 1000.0;
+                }
+                (obs_memory_x, obs_memory_y, 0.35, 0.25)
+            } else {
+                (1000.0, 1000.0, 0.1, 0.1)
+            };
+            let obstacle_damping = 0.125f64;
+            if obs_x > 500.0 {
+                filtered_obs_x = obs_x;
+                filtered_obs_y = obs_y;
+            } else {
+                if filtered_obs_x > 500.0 {
+                    filtered_obs_x = obs_x;
+                    filtered_obs_y = obs_y;
+                } else {
+                    filtered_obs_x += obstacle_damping * (obs_x - filtered_obs_x);
+                    filtered_obs_y += obstacle_damping * (obs_y - filtered_obs_y);
+                }
+            }
+            let mut active_obstacles = Vec::new();
+            if filtered_obs_x < 500.0 {
+                active_obstacles.push(动态障碍物 {
+                    x: filtered_obs_x,
+                    y: filtered_obs_y,
+                    a: axis_a,
+                    b: axis_b,
+                });
+            }
+            let _ = brain.设置动态障碍物硬约束(&active_obstacles);
+            let (v_cmd_solved, w_cmd) = match brain.求解最优控制量(cur_v) {
+                Ok((v, w)) => (v, w),
+                Err(e) => {
+                    eprintln!("NMPC calculation error: {}", e);
+                    (0.0, 0.0)
+                }
+            };
+            let v_cmd = v_cmd_solved;
+            {
+                let mut lock = ctrl_context.write().unwrap();
+                lock.current_velocity = v_cmd;
+            }
+            let _ = writeln!(
+                log_file,
+                "{}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}, {:.4}",
+                tick_count, cur_x, cur_y, cur_yaw, tgt_x, tgt_y, tgt_yaw, active_force_x, active_force_y, v_cmd, w_cmd, cur_v
+            );
+            let _ = log_file.flush();
+            let _ = writeln!(
+                audit_file,
+                "{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                tick_count, cur_x, cur_y, cur_yaw, tgt_x, tgt_y, tgt_yaw, local_target_x, local_target_y, target_distance, active_force_x, active_force_y, current_ppo_v, current_ppo_w, obs_y, v_cmd, w_cmd, local_target_yaw
+            );
+            let _ = audit_file.flush();
+            last_omega_w = w_cmd;
+            if tick_count % 100 == 0 { // Print telemetry every 1 second
+                let status_str = if filtered_obs_x < 100.0 { "DEFENSIVE 🔴" } else { "CLEAR 🟢" };
+                print!(
+                    "[FSD SOTA 2026] Tick: {:<5} | {} | Target dist: {:.2}m | PPO Cmd: v={:.3}, w={:>6.3} | v_cmd: {:.3} m/s | w_cmd: {:>6.3} rad/s\r",
+                    tick_count, status_str, target_distance, current_ppo_v, current_ppo_w, v_cmd, w_cmd
+                );
+                use std::io::Write as _;
+                std::io::stdout().flush().unwrap();
+            }
+            let cmd_arrow = dora_node_api::arrow::array::Float32Array::from(vec![
+                v_cmd as f32,
+                w_cmd as f32
+            ]);
+            if let Err(e) = node.send_output(
+                "control_cmd".to_string().into(),
+                MetadataParameters::default(),
+                cmd_arrow,
+            ) {
+                eprintln!("Failed to send control command to DORA: {}", e);
+            }
+        }
+    });
+    while let Some(event) = events.recv_async().await {
+        match event {
+            Event::Input { id, data, .. } => {
+                if id.as_str() == "obstacle_force" {
+                    let force_array = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("Failed to map obstacle force to Float32Array"))?;
+                    if force_array.len() >= 2 {
+                        let f_x = force_array.value(0) as f64;
+                        let f_y = force_array.value(1) as f64;
+                        let mut lock = context.write().unwrap();
+                        lock.desired_force_x = f_x;
+                        lock.desired_force_y = f_y;
+                    }
+                }
+                else if id.as_str() == "odometry" {
+                    let odom_array = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("Failed to map odometry to Float32Array"))?;
+                    if odom_array.len() >= 3 {
+                        let mut lock = context.write().unwrap();
+                        lock.current_x = odom_array.value(0) as f64;
+                        lock.current_y = odom_array.value(1) as f64;
+                        lock.current_yaw = odom_array.value(2) as f64;
+                    }
+                }
+                else if id.as_str() == "human_prior" {
+                    let prior_array = data.as_any().downcast_ref::<dora_node_api::arrow::array::Float32Array>()
+                        .ok_or_else(|| eyre!("Failed to map human prior to Float32Array"))?;
+                    if prior_array.len() >= 3 {
+                        let mut lock = context.write().unwrap();
+                        lock.target_x = prior_array.value(0) as f64;
+                        lock.target_y = prior_array.value(1) as f64;
+                        lock.target_yaw = prior_array.value(2) as f64;
+                        if !lock.is_initialized {
+                            lock.is_initialized = true;
+                            print!("Warmstart gate unsealed: Slow brain homing signal linked!\r");
+                            use std::io::Write as _;
+                            std::io::stdout().flush().unwrap();
+                        }
+                        lock.last_update_time = std::time::Instant::now();
+                    }
+                }
+            }
+            Event::Stop(_) => {
+                println!("DORA Stop event caught. Terminating fast brain...");
+                break;
+            }
+            _ => {}
+        }
+    }
+    control_handle.abort();
+    Ok(())
+}
 </file>
 
 </files>

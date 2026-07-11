@@ -12,7 +12,7 @@ from env.fsd_env import FSDCarGymEnv
 from train_bc_anchor import GaussianPolicy, SpicedBrainInference
 
 class ActorCritic(nn.Module):
-    def __init__(self, policy, input_dim=5):
+    def __init__(self, policy, input_dim=25):
         super(ActorCritic, self).__init__()
         self.actor = policy
         self.critic = nn.Sequential(
@@ -22,10 +22,10 @@ class ActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(128, 1)
         )
-        
+
     def get_value(self, x):
         return self.critic(x)
-        
+
     def get_action_and_value(self, x, action=None):
         mean, log_std = self.actor(x)
         std = torch.exp(log_std)
@@ -42,29 +42,30 @@ class ActorCritic(nn.Module):
 def train_ppo():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"PPO training starting on device: {device}")
-    
     env = FSDCarGymEnv()
     
-    anchor = GaussianPolicy().to(device)
-    # Self-healing path searching for bc_anchor
+    # Load refactored 25-input Gaussian Policy
+    anchor = GaussianPolicy(input_dim=25).to(device)
+    
     anchor_path = "/home/zhz/fsd-car/bc_anchor.pth"
     if not os.path.exists(anchor_path):
         anchor_path = "/home/zhz/fsd-car/brain/spiced_rl_trainer/bc_anchor.pth"
         
     if os.path.exists(anchor_path):
         anchor.load_state_dict(torch.load(anchor_path, map_location=device))
-        print(f"✓ Frozen BC Anchor Coach successfully loaded from: {anchor_path}")
+        print(f"✓ Frozen 25D BC Anchor Coach successfully loaded from: {anchor_path}")
     else:
         print("Warning: BC Anchor weights missing. Training from scratch without prior.")
+        
     anchor.eval()
     for param in anchor.parameters():
         param.requires_grad = False
         
-    ppo_policy = GaussianPolicy().to(device)
+    ppo_policy = GaussianPolicy(input_dim=25).to(device)
     if os.path.exists(anchor_path):
         ppo_policy.load_state_dict(torch.load(anchor_path, map_location=device))
-    ac_model = ActorCritic(ppo_policy).to(device)
-    
+        
+    ac_model = ActorCritic(ppo_policy, input_dim=25).to(device)
     optimizer = optim.Adam(ac_model.parameters(), lr=1e-4)
     
     num_iterations = 200
@@ -72,7 +73,6 @@ def train_ppo():
     batch_size = num_steps
     minibatch_size = 32
     update_epochs = 10
-    
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
@@ -80,7 +80,8 @@ def train_ppo():
     vf_coef = 2.0
     kl_lambda = 0.075
     
-    obs_buffer = torch.zeros((num_steps, 5)).to(device)
+    # Buffers enlarged to 25 dimensions to hold sliding window histories
+    obs_buffer = torch.zeros((num_steps, 25)).to(device)
     action_buffer = torch.zeros((num_steps, 2)).to(device)
     logprob_buffer = torch.zeros(num_steps).to(device)
     reward_buffer = torch.zeros(num_steps).to(device)
@@ -91,13 +92,12 @@ def train_ppo():
     next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
     next_done = 0.0
     
-    print("Beginning Spiced PPO self-play exploration loop...")
+    print("Beginning Spiced PPO 25D self-play exploration loop...")
     print("-" * 80)
     
     for iteration in range(1, num_iterations + 1):
         episode_reward = 0.0
         step_reward_sum = 0.0
-        
         for step in range(num_steps):
             obs_buffer[step] = next_obs_t
             done_buffer[step] = next_done
@@ -105,12 +105,12 @@ def train_ppo():
             with torch.no_grad():
                 action, logprob, _, value = ac_model.get_action_and_value(next_obs_t.unsqueeze(0))
                 value_buffer[step] = value.flatten()
+                
             action_buffer[step] = action.flatten()
             logprob_buffer[step] = logprob.flatten()
-            
             act_np = action.cpu().numpy().flatten()
-            next_obs, reward, terminated, truncated, _ = env.step(act_np)
             
+            next_obs, reward, terminated, truncated, _ = env.step(act_np)
             step_reward_sum += reward
             done = float(terminated or truncated)
             reward_buffer[step] = reward
@@ -127,8 +127,6 @@ def train_ppo():
         b_obs = obs_buffer
         b_actions = action_buffer
         b_logprobs = logprob_buffer
-        b_advantages = torch.zeros_like(reward_buffer).to(device)
-        b_returns = torch.zeros_like(reward_buffer).to(device)
         
         with torch.no_grad():
             next_value = ac_model.get_value(next_obs_t.unsqueeze(0)).flatten()
@@ -154,11 +152,9 @@ def train_ppo():
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
-                
                 _, newlogprob, entropy, newvalue = ac_model.get_action_and_value(
                     b_obs[mb_inds], b_actions[mb_inds]
                 )
-                
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
                 
@@ -177,7 +173,6 @@ def train_ppo():
                 
                 std_anchor = torch.exp(log_std_anchor)
                 std_pi = torch.exp(log_std_pi)
-                
                 kl_div = torch.sum(
                     log_std_pi - log_std_anchor + 
                     (std_anchor**2 + (mean_anchor - mean_pi)**2) / (2.0 * std_pi**2) - 0.5,
@@ -195,17 +190,16 @@ def train_ppo():
             print(f"Iter: {iteration:03d} | Pg Loss: {pg_loss.item():.4f} | Val Loss: {v_loss.item():.4f} | KL Div: {kl_div.item():.4f} | Ep Reward: {episode_reward:.2f}")
             
     print("-------------------------------------------------------------------------------------")
-    print("Spiced PPO self-play optimization completed successfully.")
+    print("Spiced PPO self-play 25D optimization completed successfully.")
     
-    print("Compiling final PPO Brain for ONNX deployment...")
+    print("Compiling final 25D PPO Brain for ONNX deployment...")
     ac_model.eval()
     inference_model = SpicedBrainInference(ac_model.actor).to("cpu")
     inference_model.eval()
     
-    dummy_input = torch.zeros(1, 5, dtype=torch.float32)
+    dummy_input = torch.zeros(1, 25, dtype=torch.float32)
     model_dir = "/home/zhz/fsd-car/model"
     onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
-    
     torch.onnx.export(
         inference_model,
         dummy_input,
@@ -217,7 +211,7 @@ def train_ppo():
         output_names=['action_output'],
         dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
     )
-    print(f"🏆 SUCCESS: Final Spiced PPO Brain exported to {onnx_path}")
+    print(f"🏆 SUCCESS: Final 25D Spiced PPO Brain exported to {onnx_path}")
     env.close()
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ def load_env_manually():
                     parts = line.split("=", 1)
                     if len(parts) == 2:
                         os.environ[parts[0].strip()] = parts[1].strip()
+
 load_env_manually()
 
 try:
@@ -61,29 +62,23 @@ class BionicFrogEye:
     def process_frame(self, frame_rgb):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        
         self.frame_buffer.append(gray)
         if len(self.frame_buffer) < self.buffer_size:
             return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-            
         history_frame = self.frame_buffer.pop(0)
         diff = cv2.absdiff(history_frame, gray)
-        
         keypoints = self.fast_detector.detect(gray, None)
         mask_radius = 25
         for kp in keypoints:
             u, v = int(kp.pt[0]), int(kp.pt[1])
             cv2.circle(diff, (u, v), mask_radius, 0, -1)
-            
         _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
         events_rf = cv2.GaussianBlur(events, (21, 21), 0)
         self.erf = self.erf * self.alpha_erf + events_rf
         self.irf = self.irf * self.alpha_irf + events_rf
         net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
-        
         weighted_energy = net_energy * self.closeness_weight
         total_energy = np.sum(weighted_energy)
-        
         if total_energy > 15.0:
             x_c = np.sum(self.x_coords * weighted_energy) / total_energy
             dx = (x_c - self.w / 2.0) / (self.w / 2.0)
@@ -91,7 +86,6 @@ class BionicFrogEye:
             F_x = - (total_energy / (self.w * self.h)) * 5.0
         else:
             F_x, F_y = 0.0, 0.0
-            
         heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
         return F_x, F_y, heatmap
 
@@ -109,55 +103,43 @@ class CLIDDEngine:
         tensor = torch.from_numpy(padded).float().unsqueeze(0).unsqueeze(0)
         mean, std = tensor.mean(), tensor.std()
         tensor = (tensor - mean) / (std + 1e-6)
-        
         outs = self.session.run(None, {self.input_name: tensor.numpy()})
         desc, scores, rel = [torch.from_numpy(x) for x in outs]
-        
         if desc.shape[1] == 80 and desc.shape[2] == 80:
             desc = desc.permute(0, 3, 1, 2)
         if scores.shape[1] == 80 and scores.shape[2] == 80:
             scores = scores.permute(0, 3, 1, 2)
         if len(rel.shape) == 4 and rel.shape[3] == 1 and rel.shape[1] == 80 and rel.shape[2] == 80:
             rel = rel.permute(0, 3, 1, 2)
-            
         scores = F.softmax(scores, dim=1)[:, :-1, :, :]
         scores = F.pixel_shuffle(scores, 8)
         rel = F.interpolate(rel, size=(640, 640), mode='bilinear', align_corners=False)
         conf = scores * rel
-        
         conf_nms = F.max_pool2d(conf, kernel_size=5, stride=1, padding=2)
         mask = (conf == conf_nms) & (conf > 0.05)
         conf_flat = conf[mask]
-        
         if len(conf_flat) == 0:
             return None
-            
         topk = min(top_k, len(conf_flat))
         scores_k, indices = torch.topk(conf_flat, topk)
         y, x = torch.where(mask[0, 0])
         y, x = y[indices], x[indices]
-        
         grid_x = (x.float() / 639.0) * 2.0 - 1.0
         grid_y = (y.float() / 639.0) * 2.0 - 1.0
         grid = torch.stack([grid_x, grid_y], dim=1).unsqueeze(0).unsqueeze(2)
-        
         desc_sampled = F.grid_sample(desc, grid, mode='bilinear', align_corners=False)
         desc_sampled = desc_sampled.squeeze(0).squeeze(2).t()
         desc_sampled = F.normalize(desc_sampled, p=2, dim=1)
-        
         y = y.float() - pad_y
         x = x.float()
         valid = (y >= 0) & (y < 480)
         x, y, scores_k, desc_sampled = x[valid], y[valid], scores_k[valid], desc_sampled[valid]
-        
         x_np, y_np, s_np, d_np = x.numpy(), y.numpy(), scores_k.numpy(), desc_sampled.numpy()
-        
         x_arr = pa.array(x_np, type=pa.float32())
         y_arr = pa.array(y_np, type=pa.float32())
         s_arr = pa.array(s_np, type=pa.float32())
         d_flat = pa.array(d_np.flatten(), type=pa.float32())
         d_arr = pa.FixedSizeListArray.from_arrays(d_flat, 64)
-        
         struct_arr = pa.StructArray.from_arrays(
             [x_arr, y_arr, s_arr, d_arr],
             names=['x', 'y', 'score', 'descriptor']
@@ -165,44 +147,50 @@ class CLIDDEngine:
         return struct_arr
 
 def main():
-    print("Launching FSD local zero-copy integration pipeline...")
+    if "DORA_NODE_CONFIG" not in os.environ:
+        print("=========================================================================")
+        print("⚠️  NEXUS - 进程孤立阻断拦截机制 (Standalone Isolation Intercept)")
+        print("=========================================================================")
+        print("💡 诊断结论：您正在尝试在【单兵终端调试模式】下直接运行仿真器节点。")
+        print("   由于本节点是 FSD 大一统数据流拓扑图的‘感知与物理引擎边界’，")
+        print("   它必须由 Dora 协调器大总管（Dora Coordinator）统一装载并注入数据通道配置。")
+        print("=========================================================================")
+        print("👉 请直接在终端执行以下大一统并网指令，一键拉起全系统闭环：")
+        print("   dora up")
+        print("   dora start dora_dataflow.yaml")
+        print("=========================================================================")
+        simulation_app.close()
+        sys.exit(0)
+
+    print("Launching FSD local zero-copy integration pipeline with ARS...")
     dora_node = Node()
     fsd_assets_dir = "/home/zhz/fsd-car/assets"
-    
     clean_usd_name = "fsd_car_clean1.usd"
     default_usd_name = "fsd_car_racetrack.usd"
     clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)
     default_usd_path = os.path.join(fsd_assets_dir, default_usd_name)
-    
     if os.path.exists(clean_usd_path):
         usd_path = clean_usd_path
         print(f"Map GOB aligned: Loading un-obstructed scene {clean_usd_name}")
     else:
         usd_path = default_usd_path
         print(f"Fallback Active: Loading scene {default_usd_name}")
-        
     if not os.path.exists(usd_path):
         print(f"Fatal Error: usd file missing at {usd_path}")
         sys.exit(1)
-        
     open_stage(usd_path=usd_path)
-    
     world = World(
         physics_dt=0.01, 
         rendering_dt=0.01, 
         backend="numpy"
     )
-    
     from isaacsim.core.rendering_manager import RenderingManager
     RenderingManager.set_dt(0.01)
-    
     car_path = "/Root/jetbot"
     stage = omni.usd.get_context().get_stage()
-    
     if not stage.GetPrimAtPath(car_path):
         print(f"Fatal Error: Robot chassis missing at path {car_path}")
         sys.exit(1)
-        
     for prim in stage.Traverse():
         if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
             drive = UsdPhysics.DriveAPI.Get(prim, "angular")
@@ -210,58 +198,81 @@ def main():
                 drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
             drive.CreateStiffnessAttr(0.0)
             drive.CreateDampingAttr(1e5)
-            
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
-    
     from isaacsim.core.prims import XFormPrim
     obstacle_path = "/Root/dynamic_obstacles*/box_obstacle_*"
     obstacle = None
     obs_init_poses = None
     obs_init_rots = None
-    
     if stage.GetPrimAtPath("/Root"):
         obstacle = XFormPrim(prim_paths_expr=obstacle_path, name="box_obstacle")
         world.scene.add(obstacle)
         print("Vectorized dynamic obstacles successfully registered.")
-        
     camera_path = f"{car_path}/chassis/rgb_camera/jetbot_camera"
     render_product = rep.create.render_product(camera_path, (640, 480))
     rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
     rgb_annotator.attach([render_product])
-    
     clidd_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
     if not os.path.exists(clidd_model_path):
         print(f"Fatal Error: ONNX missing at {clidd_model_path}")
         sys.exit(1)
-        
     clidd_engine = CLIDDEngine(clidd_model_path)
     frog_eye = BionicFrogEye(640, 480)
     
     world.reset()
-    if obstacle is not None:
-        obs_init_poses, obs_init_rots = obstacle.get_world_poses()
-        print(f"Verification matched: {len(obs_init_poses)} obstacles mapped.")
-        
+
+    # 1. Standardize Joint indexing dynamically based on USD joint names
+    left_idx = 0
+    right_idx = 1
+    for idx, name in enumerate(car.dof_names):
+        if "left" in name.lower():
+            left_idx = idx
+        elif "right" in name.lower():
+            right_idx = idx
+    print(f"✓ Dynamic DOF Mapping -> Left joint: {car.dof_names[left_idx]} (idx: {left_idx}), Right joint: {car.dof_names[right_idx]} (idx: {right_idx})")
+
+    # 2. Dynamic Sign Calibration preheating phase (300ms)
     world.play()
-    
-    print("Pre-heating off-screen rendering context...")
-    for _ in range(60):
+    print("Pre-heating off-screen rendering context & calibrating ARS signs...")
+    left_sign = 1.0
+    right_sign = 1.0
+    for step_idx in range(60):
+        if step_idx < 30:
+            test_targets = np.zeros(len(car.dof_names))
+            test_targets[left_idx] = 2.0
+            test_targets[right_idx] = 2.0
+            car.set_joint_velocity_targets(test_targets)
+        elif step_idx == 30:
+            joint_vels = car.get_joint_velocities()
+            if joint_vels is not None and len(joint_vels) > 0:
+                raw_left = float(joint_vels[0][left_idx])
+                raw_right = float(joint_vels[0][right_idx])
+                left_sign = 1.0 if raw_left >= 0.0 else -1.0
+                right_sign = 1.0 if raw_right >= 0.0 else -1.0
+                print(f"✓ ARS Sign Calibration completed -> Left Multiplier: {left_sign}, Right Multiplier: {right_sign}")
+            stop_targets = np.zeros(len(car.dof_names))
+            car.set_joint_velocity_targets(stop_targets)
         world.step(render=True)
+
     print("Offscreen pipeline activated successfully.")
-    
+
     L = 0.1125
     R = 0.03
     tick = 0
     v_cmd = 0.0
     w_cmd = 0.0
     rgb_frame = None
-    
+
+    # Actuator Reality Shaping (ARS) Pure Feedforward Reference Model parameters
+    alpha_ars = 30.0 
+    v_left_ref = 0.0
+    v_right_ref = 0.0
+
     try:
         while simulation_app.is_running():
             world.step(render=True)
             tick += 1
-            
             if obstacle is not None and obs_init_poses is not None:
                 t = tick * 0.01
                 new_poses = obs_init_poses.copy()
@@ -269,7 +280,6 @@ def main():
                 phase_offsets = np.arange(num_obstacles) * 0.6
                 new_poses[:, 0] = obs_init_poses[:, 0] + 1.2 * np.sin(1.5 * t + phase_offsets)
                 obstacle.set_world_poses(positions=new_poses, orientations=obs_init_rots)
-                
             rgb_raw = rgb_annotator.get_data()
             if rgb_raw is not None:
                 rgb_frame = rgb_raw
@@ -277,35 +287,27 @@ def main():
                     rgb_frame = rgb_frame[:, :, :3]
                 if rgb_frame.dtype == np.float32 or rgb_frame.dtype == np.float64:
                     rgb_frame = (rgb_frame * 255.0).astype(np.uint8)
-                    
             if rgb_frame is not None and rgb_frame.size > 0:
                 positions, orientations = car.get_world_poses()
                 pose_x, pose_y = float(positions[0][0]), float(positions[0][1])
                 qw, qx, qy, qz = orientations[0]
                 pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
-                
                 arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
-                
                 F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
                 bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                
                 if heatmap is not None and np.any(heatmap > 20):
                     red_glow = cv2.merge([np.zeros_like(heatmap), np.zeros_like(heatmap), heatmap])
                     bgr_frame = cv2.addWeighted(bgr_frame, 0.8, red_glow, 0.4, 0)
-                    
                 _, jpeg_encoded = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
                 dora_node.send_output("jpeg_image", arrow_jpeg)
-                
                 arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                 dora_node.send_output("obstacle_force", arrow_obstacle_force)
-                
                 if tick % 100 == 0:
                     arrow_clidd_features = clidd_engine.extract(rgb_frame, top_k=200)
                     if arrow_clidd_features is not None:
                         dora_node.send_output("xfeat_features", arrow_clidd_features)
-                        
             event = dora_node.next(timeout=0.001)
             if event is not None:
                 ev_type = event["type"]
@@ -317,17 +319,40 @@ def main():
                 elif ev_type == "STOP":
                     print("DORA Stop signal received. Closing simulation...")
                     break
-                    
-            v_left = (v_cmd - w_cmd * L / 2.0) / R
-            v_right = (v_cmd + w_cmd * L / 2.0) / R
-            car.set_joint_velocity_targets(np.array([[v_left, v_right]]))
-            
+
+            # 3. Kinematic target velocity calculation
+            v_left_cmd = (v_cmd - w_cmd * L / 2.0) / R
+            v_right_cmd = (v_cmd + w_cmd * L / 2.0) / R
+
+            # 4. Extract measured wheel velocities with dynamic sign alignment
+            joint_vels = car.get_joint_velocities()
+            if joint_vels is not None and len(joint_vels) > 0:
+                v_left_actual = float(joint_vels[0][left_idx]) * left_sign
+                v_right_actual = float(joint_vels[0][right_idx]) * right_sign
+            else:
+                v_left_actual = 0.0
+                v_right_actual = 0.0
+
+            # 5. Pure Feedforward ARS model reference controller (Kp=0.0, Ki=0.0)
+            # Reference model integration drives PhysX high-gain drive with zero tracking lag
+            v_left_ref += 0.01 * alpha_ars * (v_left_cmd - v_left_ref)
+            v_right_ref += 0.01 * alpha_ars * (v_right_cmd - v_right_ref)
+
+            u_left = v_left_ref
+            u_right = v_right_ref
+
+            # 6. Apply calibrated and shaped target velocity to corresponding joints
+            targets = np.zeros(len(car.dof_names))
+            targets[left_idx] = u_left * left_sign
+            targets[right_idx] = u_right * right_sign
+            car.set_joint_velocity_targets(targets)
+
             if tick % 100 == 0:
                 print(
                     f"[100Hz Odom Telemetry] Tick: {tick:<6} | "
-                    f"Repulsion: F_x={F_x:>6.3f}, F_y={F_y:>6.3f} | "
-                    f"DORA Cmd: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s | "
-                    f"Wheel Velocity Targets: L={v_left:>6.2f} rad/s, R={v_right:>6.2f} rad/s"
+                    f"ARS Tracking -> L_ref: {v_left_ref:>6.2f}, L_act: {v_left_actual:>6.2f} | "
+                    f"R_ref: {v_right_ref:>6.2f}, R_act: {v_right_actual:>6.2f} | "
+                    f"DORA Cmd: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s"
                 )
     except KeyboardInterrupt:
         print("Terminated by user keyboard interrupt.")
