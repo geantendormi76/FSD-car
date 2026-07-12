@@ -14,7 +14,6 @@ nodes:
       - obstacle_force
       - odometry
       - jpeg_image
-
   - id: optical_reflex_node
     path: uv
     args: run --cache-dir /home/zhz/.cache/uv_clean simulation-env/optical_reflex_node.py
@@ -22,7 +21,15 @@ nodes:
       jpeg_image: isaac_sim_env/jpeg_image
     outputs:
       - ttc
-
+  - id: perception_node
+    path: target/release/perception_node
+    build: cargo build -p core-perception --release --bin perception_node
+    env:
+      RUST_LOG: info
+    inputs:
+      jpeg_image: isaac_sim_env/jpeg_image
+    outputs:
+      - bev_grid
   - id: fast_brain_nmpc
     path: target/release/fast_brain_node
     build: cargo build -p core-control --release --bin fast_brain_node
@@ -35,9 +42,9 @@ nodes:
       odometry: isaac_sim_env/odometry
       human_prior: slow_brain_mapper/human_prior
       ttc: optical_reflex_node/ttc
+      bev_grid: perception_node/bev_grid
     outputs:
       - control_cmd
-
   - id: slow_brain_mapper
     path: target/release/slow_brain_node
     build: cargo build -p core-decision --release --bin slow_brain_node
@@ -48,7 +55,6 @@ nodes:
       odometry: isaac_sim_env/odometry
     outputs:
       - human_prior
-
   - id: telemetry_dashboard
     path: uv
     args: run --cache-dir /home/zhz/.cache/uv_clean showcase/src/bin/telemetry_dashboard.py
@@ -62,3 +68,4 @@ nodes:
       human_prior: slow_brain_mapper/human_prior
       control_cmd: fast_brain_nmpc/control_cmd
       jpeg_image: isaac_sim_env/jpeg_image
+      bev_grid: perception_node/bev_grid

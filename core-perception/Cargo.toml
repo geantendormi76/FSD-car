@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# 🛡️ 完美继承自根目录顶级声明，保持全栈版本一致性
 opencv = { workspace = true }
-# 🛡️ 架构师 2026 级自愈：显式开启 CUDA 编译特征，允许构建 GPU 级异构推理会话
 ort = { workspace = true, features = ["cuda"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray = { workspace = true }
+dora-node-api = "0.3.13"
+eyre = "0.6"
