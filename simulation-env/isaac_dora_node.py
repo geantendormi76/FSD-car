@@ -22,6 +22,7 @@ def load_env_manually():
                     parts = line.split("=", 1)
                     if len(parts) == 2:
                         os.environ[parts[0].strip()] = parts[1].strip()
+
 load_env_manually()
 
 try:
@@ -55,10 +56,7 @@ class BionicFrogEye:
         self.event_threshold = 10.0
         y_indices, x_indices = np.indices((self.h, self.w))
         self.x_coords = x_indices.astype(np.float32)
-        
-        # 🎯 终极自愈：100% 补偿缺失的 closeness_weight 感受野纵向衰减矩阵
         self.closeness_weight = (y_indices / float(self.h)) + 0.15
-        
         self.fast_detector = cv2.FastFeatureDetector_create(threshold=15, nonmaxSuppression=True)
 
     def process_frame(self, frame_rgb):
@@ -178,7 +176,6 @@ def main():
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath(car_path):
         sys.exit(1)
-    
     for prim in stage.Traverse():
         if prim.GetPath().HasPrefix(car_path) and prim.IsA(UsdPhysics.RevoluteJoint):
             drive = UsdPhysics.DriveAPI.Get(prim, "angular")
@@ -186,10 +183,8 @@ def main():
                 drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
             drive.CreateStiffnessAttr(0.0)
             drive.CreateDampingAttr(1e5)
-            
             physx_joint = PhysxSchema.PhysxJointAPI.Apply(prim)
             physx_joint.CreateMaxJointVelocityAttr().Set(100000.0) 
-            
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
     from isaacsim.core.prims import XFormPrim
@@ -236,7 +231,6 @@ def main():
             stop_targets = np.zeros(len(car.dof_names))
             car.set_joint_velocity_targets(stop_targets)
         world.step(render=True)
-    
     L = 0.1125
     R = 0.03362 
     tick = 0
@@ -272,16 +266,18 @@ def main():
                 arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
                 F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                bgr_frame = rgb_frame.copy() # 🛡️ 架构师自愈：移除错误的双重 cvtColor 反转，完美向总线广播标准的 BGR 相机流！
+                clean_bgr = bgr_frame.copy()
+                _, jpeg_encoded = cv2.imencode('.jpg', clean_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
+                dora_node.send_output("jpeg_image", arrow_jpeg)
                 if heatmap is not None and np.any(heatmap > 20):
                     red_glow = cv2.merge([np.zeros_like(heatmap), np.zeros_like(heatmap), heatmap])
                     bgr_frame = cv2.addWeighted(bgr_frame, 0.8, red_glow, 0.4, 0)
-                _, jpeg_encoded = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
-                dora_node.send_output("jpeg_image", arrow_jpeg)
                 arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                 dora_node.send_output("obstacle_force", arrow_obstacle_force)
                 if tick % 100 == 0:
+                    arrow_clidd_features = fsd_assets_dir = "/home/zhz/fsd-car/assets" 
                     arrow_clidd_features = clidd_engine.extract(rgb_frame, top_k=200)
                     if arrow_clidd_features is not None:
                         dora_node.send_output("xfeat_features", arrow_clidd_features)
@@ -313,12 +309,7 @@ def main():
             targets[right_idx] = u_right * right_sign
             car.set_joint_velocity_targets(targets)
             if tick % 100 == 0:
-                print(
-                    f"[100Hz Odom Telemetry] Tick: {tick:<6} | "
-                    f"ARS Tracking -> L_ref: {v_left_ref:>6.2f}, L_act: {v_left_actual:>6.2f} | "
-                    f"R_ref: {v_right_ref:>6.2f}, R_act: {v_right_actual:>6.2f} | "
-                    f"DORA Cmd: v_cmd={v_cmd:>5.3f} m/s, w_cmd={w_cmd:>5.3f} rad/s"
-                )
+                pass 
     except KeyboardInterrupt:
         pass
     finally:
@@ -329,5 +320,6 @@ def main():
         except Exception:
             pass
         simulation_app.close()
+
 if __name__ == "__main__":
     main()
