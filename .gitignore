@@ -11,6 +11,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
+.gitignore
+.env
 
 # --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
 # 彻底拦截 uv 和传统 Python 的虚拟环境与本地第三方缓存
