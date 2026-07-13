@@ -204,7 +204,12 @@ def main():
         sys.exit(1)
     clidd_engine = CLIDDEngine(clidd_model_path)
     frog_eye = BionicFrogEye(640, 480)
+    
     world.reset()
+    # 🛡️ 架构师自愈：高精初始化物理障碍物的起始位姿，使其真正动起来，告别幽灵状态！
+    if obstacle is not None:
+        obs_init_poses, obs_init_rots = obstacle.get_world_poses()
+        
     left_idx = 0
     right_idx = 1
     for idx, name in enumerate(car.dof_names):
@@ -265,15 +270,71 @@ def main():
                 pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
                 arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
-                F_x, F_y, heatmap = frog_eye.process_frame(rgb_frame)
-                bgr_frame = rgb_frame.copy() # 🛡️ 架构师自愈：移除错误的双重 cvtColor 反转，完美向总线广播标准的 BGR 相机流！
+                
+                # -------------------------------------------------------------------------
+                # 🛡️ 坐标直画 BEV 机制 (GT-BEV Renderer)
+                # -------------------------------------------------------------------------
+                bev_grid = np.zeros((192, 192), dtype=np.uint8)
+                for yw_sample in np.linspace(pose_y, pose_y + 8.0, 50):
+                    dx_left = -1.5 - pose_x
+                    dy_left = yw_sample - pose_y
+                    xl_l = dx_left * np.cos(pose_yaw) + dy_left * np.sin(pose_yaw)
+                    yl_l = -dx_left * np.sin(pose_yaw) + dy_left * np.cos(pose_yaw)
+                    col_l = int(96.0 - (yl_l / 0.03125))
+                    row_l = int(191.0 - (xl_l / 0.03125))
+                    if 0 <= row_l < 192 and 0 <= col_l < 192:
+                        cv2.circle(bev_grid, (col_l, row_l), 4, 255, -1)
+                        
+                    dx_right = 1.5 - pose_x
+                    dy_right = yw_sample - pose_y
+                    xl_r = dx_right * np.cos(pose_yaw) + dy_right * np.sin(pose_yaw)
+                    yl_r = -dx_right * np.sin(pose_yaw) + dy_right * np.cos(pose_yaw)
+                    col_r = int(96.0 - (yl_r / 0.03125))
+                    row_r = int(191.0 - (xl_r / 0.03125))
+                    if 0 <= row_r < 192 and 0 <= col_r < 192:
+                        cv2.circle(bev_grid, (col_r, row_r), 4, 255, -1)
+                
+                if obstacle is not None and obs_init_poses is not None:
+                    obs_positions, _ = obstacle.get_world_poses()
+                    for pos in obs_positions:
+                        ox, oy = pos[0], pos[1]
+                        dx_o = ox - pose_x
+                        dy_o = oy - pose_y
+                        xl_o = dx_o * np.cos(pose_yaw) + dy_o * np.sin(pose_yaw)
+                        yl_o = -dx_o * np.sin(pose_yaw) + dy_o * np.cos(pose_yaw)
+                        col_o = int(96.0 - (yl_o / 0.03125))
+                        row_o = int(191.0 - (xl_o / 0.03125))
+                        if -50 <= row_o < 242 and -50 <= col_o < 242:
+                            cv2.circle(bev_grid, (col_o, row_o), 8, 255, -1)
+                            
+                bev_flat = bev_grid.flatten()
+                arrow_bev = pa.array(bev_flat, type=pa.uint8())
+                dora_node.send_output("bev_grid", arrow_bev)
+                
+                # -------------------------------------------------------------------------
+                # 🛡️ 架构师自愈：彻底将 PPO 避障力输入源由旧青蛙眼切换至“纯净几何势场力”
+                # -------------------------------------------------------------------------
+                F_x, F_y = 0.0, 0.0
+                if obstacle is not None and obs_init_poses is not None:
+                    obs_positions, _ = obstacle.get_world_poses()
+                    for pos in obs_positions:
+                        ox, oy = pos[0], pos[1]
+                        dx_o = ox - pose_x
+                        dy_o = oy - pose_y
+                        xl_o = dx_o * np.cos(pose_yaw) + dy_o * np.sin(pose_yaw)
+                        yl_o = -dx_o * np.sin(pose_yaw) + dy_o * np.cos(pose_yaw)
+                        dist = np.sqrt(xl_o**2 + yl_o**2)
+                        if dist < 1.5 and xl_o > 0.0:
+                            weight = 1.0 / (dist + 1e-3)
+                            F_x -= (xl_o / dist) * weight * 0.1
+                            F_y -= (yl_o / dist) * weight * 0.2
+                
+                bgr_frame = rgb_frame.copy() 
                 clean_bgr = bgr_frame.copy()
                 _, jpeg_encoded = cv2.imencode('.jpg', clean_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
                 dora_node.send_output("jpeg_image", arrow_jpeg)
-                if heatmap is not None and np.any(heatmap > 20):
-                    red_glow = cv2.merge([np.zeros_like(heatmap), np.zeros_like(heatmap), heatmap])
-                    bgr_frame = cv2.addWeighted(bgr_frame, 0.8, red_glow, 0.4, 0)
+                
                 arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
                 dora_node.send_output("obstacle_force", arrow_obstacle_force)
                 if tick % 100 == 0:
