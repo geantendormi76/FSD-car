@@ -115,91 +115,6 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="core-control/src/bin/verify_nexus.rs">
-// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-/*
-=================================================================
-🔬 [NEXUS 验证中心] 具身自驾大一统重构集成验证台架 (打破极性锁死版)
-设计哲学: 数值化物理闭环 | 打破对称极性梯度 | PAM 限幅自洽
-=================================================================
-*/
-#![allow(non_snake_case)]
-use core_control::{车辆运动控制器, 预测控制求解器, decode_platform_agnostic_actions};
-use core_control::solver::动态障碍物;
-fn main() -> Result<(), String> {
-    println!("=================================================================");
-    println!("🔬  NEXUS - Rigid Verification & Kinematic Integration Bench");
-    print!("=================================================================\n");
-    // -------------------------------------------------------------------------
-    // 🧪 TEST 1: PAM 运动学限幅与死旋恢复数学验证
-    // -------------------------------------------------------------------------
-    println!("[+] TEST 1: Auditing Physics-Aware Action Mapping (PAM) Limits...");
-    let (v_f, _, w_f) = decode_platform_agnostic_actions(1.0, 1.0);
-    println!("    -> Forward Limit Command: v_cmd={:.4} m/s, w_cmd={:.4} rad/s", v_f, w_f);
-    assert!((v_f - 0.80).abs() < 1e-5, "[-] ERROR: Forward speed limit mapping failed!");
-    assert!((w_f - 1.0).abs() < 1e-5, "[-] ERROR: Forward yaw rate limit mapping failed!");
-    let (v_r, _, _) = decode_platform_agnostic_actions(-1.0, 0.0);
-    println!("    -> Reverse Limit Command: v_cmd={:.4} m/s", v_r);
-    assert!((v_r - (-0.30)).abs() < 1e-5, "[-] ERROR: Reverse speed limit mapping failed!");
-    let (v_s, _, w_s) = decode_platform_agnostic_actions(0.0, -1.0);
-    println!("    -> Pivot Turn Command   : v_cmd={:.4} m/s, w_cmd={:.4} rad/s", v_s, w_s);
-    assert!(v_s.abs() < 1e-5, "[-] ERROR: Stationary velocity check failed!");
-    assert!((w_s - (-1.0)).abs() < 1e-5, "[-] ERROR: Pivot turn singularity bypass failed!");
-    println!("    [✓] PAM kinematics and limits verified successfully.\n");
-    // -------------------------------------------------------------------------
-    // 🧪 TEST 2: MPC 求解器 Trait 契约抽象上转型验证
-    // -------------------------------------------------------------------------
-    println!("[+] TEST 2: Instantiating and Upcasting NMPC Solver via Trait...");
-    let mut brain: Box<dyn 车辆运动控制器<状态=(f64,f64,f64,f64), 轨迹=(f64,f64,f64,f64), 障碍=动态障碍物, 指令=(f64,f64)> + Send> = 
-        Box::new(预测控制求解器::new().map_err(|e| format!("Solver init failed: {}", e))?);
-    println!("    [✓] Upcasting succeeded. Trait dynamic dispatch is stable.");
-    // -------------------------------------------------------------------------
-    // 🧪 TEST 3: 无障直线轨迹跟踪物理验证
-    // -------------------------------------------------------------------------
-    println!("\n[+] TEST 3: Running Clear-Road Trajectory Tracking Simulation...");
-    let current_velocity = 0.0;
-    brain.设置当前状态(&(0.0, 0.0, 0.0, current_velocity))?;
-    let target_x = 1.0f64;
-    let target_y = 0.0f64;
-    let target_yaw = 0.0f64;
-    let target_velocity = 0.80f64;
-    for k in 0..=20 {
-        let t = (k as f64) / 20.0;
-        let ref_x = target_x * t;
-        let ref_y = target_y * t;
-        let ref_yaw = target_yaw * t;
-        brain.设置参考轨迹点(k, &(ref_x, ref_y, ref_yaw, target_velocity))?;
-    }
-    let (v_cmd, w_cmd) = brain.求解最优控制量(current_velocity)?;
-    println!("    -> Tracking Command: v_cmd={:.6} m/s, w_cmd={:.6} rad/s", v_cmd, w_cmd);
-    assert!(v_cmd > 0.0, "[-] ERROR: Vehicle failed to accelerate forward!");
-    assert!(w_cmd.abs() < 1e-4, "[-] ERROR: Clear road tracking generated unnecessary steering!");
-    println!("    [✓] Straight tracking simulation passed.\n");
-    // -------------------------------------------------------------------------
-    // 🧪 TEST 4: 突发障碍物主动安全逃逸物理验证 (打破极性锁死)
-    // -------------------------------------------------------------------------
-    println!("[+] TEST 4: Injecting Dynamic Obstacles & Auditing Active Escape...");
-    // 🛡️ 自愈动作：将障碍物置于车头偏右 10cm 处，打破极性零梯度死锁，激活偏航导向
-    let active_obstacles = vec![动态障碍物 {
-        x: 0.65, 
-        y: -0.10, // 稍微偏右，打破对称极性
-        a: 0.35, 
-        b: 0.25, 
-    }];
-    brain.设置动态障碍物硬约束(&active_obstacles)?;
-    let (v_avoid, w_avoid) = brain.求解最优控制量(current_velocity)?;
-    println!("    -> Avoidance Command: v_cmd={:.6} m/s, w_cmd={:.6} rad/s", v_avoid, w_avoid);
-    // 🛡️ 物理断言：面对偏右障碍，MPC 应当安全地向左（w_avoid > 0）打舵绕行
-    assert!(w_avoid.abs() > 0.01, "[-] ERROR: NMPC failed to dodge the off-center obstacle!");
-    assert!(w_avoid > 0.0, "[-] ERROR: NMPC steered in the wrong direction!");
-    println!("    [✓] Active obstacle dodging successfully resolved with broken symmetry.");
-    println!("\n=================================================================");
-    println!("🏆  NEXUS - All Rigorous Verification Tests Perfect Passed!");
-    println!("=================================================================");
-    Ok(())
-}
-</file>
-
 <file path="brain/spiced_rl_trainer/env/__init__.py">
 
 </file>
@@ -369,6 +284,91 @@ async fn main() -> eyre::Result<()> {
 }
 </file>
 
+<file path="core-control/src/bin/verify_nexus.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+/*
+=================================================================
+🔬 [NEXUS 验证中心] 具身自驾大一统重构集成验证台架 (打破极性锁死版)
+设计哲学: 数值化物理闭环 | 打破对称极性梯度 | PAM 限幅自洽
+=================================================================
+*/
+#![allow(non_snake_case)]
+use core_control::{车辆运动控制器, 预测控制求解器, decode_platform_agnostic_actions};
+use core_control::solver::动态障碍物;
+fn main() -> Result<(), String> {
+    println!("=================================================================");
+    println!("🔬  NEXUS - Rigid Verification & Kinematic Integration Bench");
+    print!("=================================================================\n");
+    // -------------------------------------------------------------------------
+    // 🧪 TEST 1: PAM 运动学限幅与死旋恢复数学验证
+    // -------------------------------------------------------------------------
+    println!("[+] TEST 1: Auditing Physics-Aware Action Mapping (PAM) Limits...");
+    let (v_f, _, w_f) = decode_platform_agnostic_actions(1.0, 1.0);
+    println!("    -> Forward Limit Command: v_cmd={:.4} m/s, w_cmd={:.4} rad/s", v_f, w_f);
+    assert!((v_f - 0.80).abs() < 1e-5, "[-] ERROR: Forward speed limit mapping failed!");
+    assert!((w_f - 1.0).abs() < 1e-5, "[-] ERROR: Forward yaw rate limit mapping failed!");
+    let (v_r, _, _) = decode_platform_agnostic_actions(-1.0, 0.0);
+    println!("    -> Reverse Limit Command: v_cmd={:.4} m/s", v_r);
+    assert!((v_r - (-0.30)).abs() < 1e-5, "[-] ERROR: Reverse speed limit mapping failed!");
+    let (v_s, _, w_s) = decode_platform_agnostic_actions(0.0, -1.0);
+    println!("    -> Pivot Turn Command   : v_cmd={:.4} m/s, w_cmd={:.4} rad/s", v_s, w_s);
+    assert!(v_s.abs() < 1e-5, "[-] ERROR: Stationary velocity check failed!");
+    assert!((w_s - (-1.0)).abs() < 1e-5, "[-] ERROR: Pivot turn singularity bypass failed!");
+    println!("    [✓] PAM kinematics and limits verified successfully.\n");
+    // -------------------------------------------------------------------------
+    // 🧪 TEST 2: MPC 求解器 Trait 契约抽象上转型验证
+    // -------------------------------------------------------------------------
+    println!("[+] TEST 2: Instantiating and Upcasting NMPC Solver via Trait...");
+    let mut brain: Box<dyn 车辆运动控制器<状态=(f64,f64,f64,f64), 轨迹=(f64,f64,f64,f64), 障碍=动态障碍物, 指令=(f64,f64)> + Send> = 
+        Box::new(预测控制求解器::new().map_err(|e| format!("Solver init failed: {}", e))?);
+    println!("    [✓] Upcasting succeeded. Trait dynamic dispatch is stable.");
+    // -------------------------------------------------------------------------
+    // 🧪 TEST 3: 无障直线轨迹跟踪物理验证
+    // -------------------------------------------------------------------------
+    println!("\n[+] TEST 3: Running Clear-Road Trajectory Tracking Simulation...");
+    let current_velocity = 0.0;
+    brain.设置当前状态(&(0.0, 0.0, 0.0, current_velocity))?;
+    let target_x = 1.0f64;
+    let target_y = 0.0f64;
+    let target_yaw = 0.0f64;
+    let target_velocity = 0.80f64;
+    for k in 0..=20 {
+        let t = (k as f64) / 20.0;
+        let ref_x = target_x * t;
+        let ref_y = target_y * t;
+        let ref_yaw = target_yaw * t;
+        brain.设置参考轨迹点(k, &(ref_x, ref_y, ref_yaw, target_velocity))?;
+    }
+    let (v_cmd, w_cmd) = brain.求解最优控制量(current_velocity)?;
+    println!("    -> Tracking Command: v_cmd={:.6} m/s, w_cmd={:.6} rad/s", v_cmd, w_cmd);
+    assert!(v_cmd > 0.0, "[-] ERROR: Vehicle failed to accelerate forward!");
+    assert!(w_cmd.abs() < 1e-4, "[-] ERROR: Clear road tracking generated unnecessary steering!");
+    println!("    [✓] Straight tracking simulation passed.\n");
+    // -------------------------------------------------------------------------
+    // 🧪 TEST 4: 突发障碍物主动安全逃逸物理验证 (打破极性锁死)
+    // -------------------------------------------------------------------------
+    println!("[+] TEST 4: Injecting Dynamic Obstacles & Auditing Active Escape...");
+    // 🛡️ 自愈动作：将障碍物置于车头偏右 10cm 处，打破极性零梯度死锁，激活偏航导向
+    let active_obstacles = vec![动态障碍物 {
+        x: 0.65, 
+        y: -0.10, // 稍微偏右，打破对称极性
+        a: 0.35, 
+        b: 0.25, 
+    }];
+    brain.设置动态障碍物硬约束(&active_obstacles)?;
+    let (v_avoid, w_avoid) = brain.求解最优控制量(current_velocity)?;
+    println!("    -> Avoidance Command: v_cmd={:.6} m/s, w_cmd={:.6} rad/s", v_avoid, w_avoid);
+    // 🛡️ 物理断言：面对偏右障碍，MPC 应当安全地向左（w_avoid > 0）打舵绕行
+    assert!(w_avoid.abs() > 0.01, "[-] ERROR: NMPC failed to dodge the off-center obstacle!");
+    assert!(w_avoid > 0.0, "[-] ERROR: NMPC steered in the wrong direction!");
+    println!("    [✓] Active obstacle dodging successfully resolved with broken symmetry.");
+    println!("\n=================================================================");
+    println!("🏆  NEXUS - All Rigorous Verification Tests Perfect Passed!");
+    println!("=================================================================");
+    Ok(())
+}
+</file>
+
 <file path="core-perception/src/perception/pidnet_engine.rs">
 use opencv::{
     prelude::*,
@@ -493,87 +493,6 @@ mod tests {
 }
 </file>
 
-<file path="simulation-env/ppo_brain_node.py">
-import os
-import sys
-import numpy as np
-import onnxruntime as ort
-import pyarrow as pa
-from collections import deque
-from dora import Node
-def main():
-    print("=========================================================================")
-    print("🧠  NEXUS - 15D Cleaned PPO Neural Brain Deployment Node (SOTA 2026)")
-    print("=========================================================================")
-    model_path = "/home/zhz/fsd-car/model/spiced_brain.onnx"
-    if not os.path.exists(model_path):
-        print(f"[-] Error: Target PPO model spiced_brain.onnx not found at {model_path}")
-        sys.exit(1)
-    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-    input_name = session.get_inputs()[0].name
-    dora_node = Node()
-    state_odom = [0.0, 0.0, 0.0]     
-    goal_pose = [0.52, 4.11]         
-    history_queue = deque(maxlen=5)
-    print("[+] 15D PPO Neural Brain successfully mounted. Entering 100Hz inference loop...")
-    print("-" * 73)
-    try:
-        while True:
-            event = dora_node.next(timeout=0.01)
-            if event is None:
-                continue
-            ev_type = event["type"]
-            if ev_type == "INPUT":
-                ev_id = event["id"]
-                if ev_id == "human_prior":
-                    prior_arr = event["value"].to_numpy()
-                    if len(prior_arr) >= 2:
-                        goal_pose = [float(prior_arr[0]), float(prior_arr[1])]
-                elif ev_id == "odometry":
-                    odom_arr = event["value"].to_numpy()
-                    if len(odom_arr) >= 3:
-                        state_odom = [float(odom_arr[0]), float(odom_arr[1]), float(odom_arr[2])]
-                    dx = goal_pose[0] - state_odom[0]
-                    dy = goal_pose[1] - state_odom[1]
-                    yaw = state_odom[2]
-                    local_goal_x = dx * np.cos(yaw) + dy * np.sin(yaw)
-                    local_goal_y = -dx * np.sin(yaw) + dy * np.cos(yaw)
-                    local_goal_dist = np.sqrt(local_goal_x**2 + local_goal_y**2)
-                    current_frame = [
-                        local_goal_x * 0.20,
-                        local_goal_y * 0.20,
-                        local_goal_dist * 0.20
-                    ]
-                    if len(history_queue) == 0:
-                        for _ in range(5):
-                            history_queue.append(current_frame)
-                    else:
-                        history_queue.append(current_frame)
-                    state_15 = np.array(list(history_queue), dtype=np.float32).flatten().reshape(1, 15)
-                    run_outs = session.run(None, {input_name: state_15})
-                    action = run_outs[0][0] 
-                    a_vel = float(action[0])
-                    a_kappa = float(action[1])
-                    v_max = 0.80
-                    kappa_max = 1.25
-                    w_max = 1.00
-                    v_des = np.clip(a_vel, 0.0, 1.0) * v_max
-                    kappa = np.clip(a_kappa, -1.0, 1.0) * kappa_max
-                    if abs(v_des) < 0.05:
-                        w_ref = np.clip(a_kappa, -1.0, 1.0) * w_max
-                    else:
-                        w_ref = kappa * v_des
-                    control_arrow = pa.array([v_des, w_ref], type=pa.float32())
-                    dora_node.send_output("control_cmd", control_arrow)
-            elif ev_type == "STOP":
-                print("\n🛑 [PPO Brain Node] Unmounted cleanly.")
-                break
-    except Exception as e:
-        print(f"[-] PPO Brain Node runtime error: {e}")
-if __name__ == "__main__":
-    main()
-</file>
-
 <file path="simulation-env/probe_isaac_dora.py">
 import sys
 import traceback
@@ -600,357 +519,6 @@ except Exception as e:
     traceback.print_exc(file=sys.stdout)
     print("========================================================", flush=True)
     sys.exit(1)
-</file>
-
-<file path="brain/spiced_rl_trainer/train_bc_anchor.py">
-import os
-import glob
-import csv
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-class SpicedDataset(Dataset):
-    def __init__(self, dataset_dir):
-        self.inputs = []
-        self.actions = []
-        csv_pattern = os.path.join(dataset_dir, "spice_run_*.csv")
-        csv_files = sorted(glob.glob(csv_pattern))
-        if not csv_files:
-            raise FileNotFoundError(f"No purified CSV files found in {dataset_dir}")
-        print(f"Loading and rebuilding {len(csv_files)} files with 15D sliding window...")
-        v_max = 0.8
-        kappa_max = 1.25 
-        for file_path in csv_files:
-            rows = []
-            with open(file_path, mode='r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    rows.append(row)
-            if len(rows) < 300:
-                continue
-            max_vel = max([float(r['current_v']) for r in rows])
-            if max_vel < 0.20:
-                continue
-            start_idx = 0
-            for idx, r in enumerate(rows):
-                if float(r['current_v']) > 0.05 or abs(float(r['cmd_v'])) > 0.01:
-                    start_idx = idx
-                    break
-            end_idx = len(rows) - 1
-            for idx in range(len(rows) - 1, -1, -1):
-                r = rows[idx]
-                if float(r['current_v']) > 0.05 or float(r['local_goal_dist']) > 0.20:
-                    end_idx = idx
-                    break
-            if end_idx - start_idx < 150:
-                continue
-            valid_rows = rows[start_idx:end_idx + 1]
-            for t in range(4, len(valid_rows)):
-                obs_15 = []
-                for d in range(5):
-                    r_hist = valid_rows[t - (4 - d)]
-                    l_goal_x = float(r_hist['local_goal_x']) * 0.20
-                    l_goal_y = float(r_hist['local_goal_y']) * 0.20
-                    l_goal_dist = float(r_hist['local_goal_dist']) * 0.20
-                    obs_15.extend([l_goal_x, l_goal_y, l_goal_dist])
-                cmd_v = float(valid_rows[t]['cmd_v'])
-                cmd_w = float(valid_rows[t]['cmd_w'])
-                norm_v = np.clip(cmd_v / v_max, 0.0, 1.0)
-                denom = max(cmd_v, 0.01)
-                raw_kappa = cmd_w / denom
-                norm_kappa = np.clip(raw_kappa / kappa_max, -1.0, 1.0)
-                act = np.array([norm_v, norm_kappa], dtype=np.float32)
-                self.inputs.append(np.array(obs_15, dtype=np.float32))
-                self.actions.append(act)
-        self.inputs = np.array(self.inputs)
-        self.actions = np.array(self.actions)
-        print(f"Sliding window dataset built. Total training samples: {len(self.inputs)}")
-    def __len__(self):
-        return len(self.inputs)
-    def __getitem__(self, idx):
-        return torch.from_numpy(self.inputs[idx]), torch.from_numpy(self.actions[idx])
-class GaussianPolicy(nn.Module):
-    def __init__(self, input_dim=15, action_dim=2):
-        super(GaussianPolicy, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh()
-        )
-        self.mean_head = nn.Linear(128, action_dim)
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
-    def forward(self, x):
-        features = self.fc(x)
-        raw_mean = self.mean_head(features)
-        mean_v = torch.sigmoid(raw_mean[:, 0:1])
-        mean_w = torch.tanh(raw_mean[:, 1:2])
-        mean = torch.cat([mean_v, mean_w], dim=1)
-        return mean, self.log_std.expand_as(mean)
-class SpicedBrainInference(nn.Module):
-    def __init__(self, policy):
-        super(SpicedBrainInference, self).__init__()
-        self.policy = policy
-    def forward(self, x):
-        mean, _ = self.policy(x)
-        return mean
-def train_bc():
-    dataset_dir = "/home/zhz/fsd-car/dataset/purified"
-    model_dir = "/home/zhz/fsd-car/model"
-    os.makedirs(model_dir, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on device: {device}")
-    full_dataset = SpicedDataset(dataset_dir)
-    train_size = int(0.9 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
-    train_loader = DataLoader(train_dataset, batch_size=2048, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=2048, shuffle=False)
-    policy = GaussianPolicy(input_dim=15).to(device)
-    optimizer = optim.Adam(policy.parameters(), lr=3e-4)
-    best_val_loss = float('inf')
-    epochs = 300
-    print("Beginning epoch-loop training (15D Sliding Window & Clean Decoupled)...")
-    for epoch in range(1, epochs + 1):
-        policy.train()
-        train_loss = 0.0
-        for obs, act in train_loader:
-            obs, act = obs.to(device), act.to(device)
-            optimizer.zero_grad()
-            mean, log_std = policy(obs)
-            steer_weight = torch.where(torch.abs(act[:, 1]) > 0.02, 5.0, 1.0)
-            var = torch.exp(2 * log_std)
-            nll_elementwise = 0.5 * (((act - mean) ** 2) / var + 2 * log_std + np.log(2 * np.pi)).sum(dim=1)
-            nll = (nll_elementwise * steer_weight).mean()
-            nll.backward()
-            optimizer.step()
-            train_loss += nll.item() * obs.size(0)
-        train_loss /= len(train_loader.dataset)
-        policy.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for obs, act in val_loader:
-                obs, act = obs.to(device), act.to(device)
-                mean, log_std = policy(obs)
-                steer_weight = torch.where(torch.abs(act[:, 1]) > 0.02, 5.0, 1.0)
-                var = torch.exp(2 * log_std)
-                nll_elementwise = 0.5 * (((act - mean) ** 2) / var + 2 * log_std + np.log(2 * np.pi)).sum(dim=1)
-                nll = (nll_elementwise * steer_weight).mean()
-                val_loss += nll.item() * obs.size(0)
-        val_loss /= len(val_loader.dataset)
-        if epoch % 30 == 0 or epoch == 1:
-            print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(policy.state_dict(), "bc_anchor.pth")
-    print("Optimization completed. Training 15D BC Anchor Coach succeeded.")
-    print("Compiling Spiced Brain model for ONNX export...")
-    policy.load_state_dict(torch.load("bc_anchor.pth"))
-    policy.eval()
-    inference_model = SpicedBrainInference(policy).to("cpu")
-    inference_model.eval()
-    dummy_input = torch.zeros(1, 15, dtype=torch.float32)
-    onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
-    torch.onnx.export(
-        inference_model,
-        dummy_input,
-        onnx_path,
-        export_params=True,
-        opset_version=15,
-        do_constant_folding=True,
-        input_names=['input_state'],
-        output_names=['action_output'],
-        dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
-    )
-    print(f"SUCCESS: 15D Spiced Brain exported to {onnx_path}")
-if __name__ == "__main__":
-    train_bc()
-</file>
-
-<file path="brain/spiced_rl_trainer/train_ppo_self_play.py">
-import os
-import sys
-import math
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.distributions.normal import Normal
-sys.path.append("/home/zhz/fsd-car/brain/spiced_rl_trainer")
-from env.fsd_env import FSDCarGymEnv
-from train_bc_anchor import GaussianPolicy, SpicedBrainInference
-class ActorCritic(nn.Module):
-    def __init__(self, policy, input_dim=15):
-        super(ActorCritic, self).__init__()
-        self.actor = policy
-        self.critic = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 1)
-        )
-    def get_value(self, x):
-        return self.critic(x)
-    def get_action_and_value(self, x, action=None):
-        mean, log_std = self.actor(x)
-        std = torch.exp(log_std)
-        probs = Normal(mean, std)
-        if action is None:
-            action = probs.sample()
-            action[:, 0:1] = torch.clamp(action[:, 0:1], 0.0, 1.0)
-            action[:, 1:2] = torch.clamp(action[:, 1:2], -1.0, 1.0)
-        log_prob = probs.log_prob(action).sum(dim=1)
-        entropy = probs.entropy().sum(dim=1)
-        value = self.critic(x)
-        return action, log_prob, entropy, value
-def train_ppo():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"PPO training starting on device: {device}")
-    env = FSDCarGymEnv()
-    anchor = GaussianPolicy(input_dim=15).to(device)
-    anchor_path = "/home/zhz/fsd-car/bc_anchor.pth"
-    if not os.path.exists(anchor_path):
-        anchor_path = "/home/zhz/fsd-car/brain/spiced_rl_trainer/bc_anchor.pth"
-    if os.path.exists(anchor_path):
-        anchor.load_state_dict(torch.load(anchor_path, map_location=device))
-        print(f"✓ Frozen 15D BC Anchor Coach successfully loaded from: {anchor_path}")
-    else:
-        print("Warning: BC Anchor weights missing. Training from scratch without prior.")
-    anchor.eval()
-    for param in anchor.parameters():
-        param.requires_grad = False
-    ppo_policy = GaussianPolicy(input_dim=15).to(device)
-    if os.path.exists(anchor_path):
-        ppo_policy.load_state_dict(torch.load(anchor_path, map_location=device))
-    ac_model = ActorCritic(ppo_policy, input_dim=15).to(device)
-    optimizer = optim.Adam(ac_model.parameters(), lr=1e-4)
-    num_iterations = 200
-    num_steps = 128
-    batch_size = num_steps
-    minibatch_size = 32
-    update_epochs = 10
-    gamma = 0.99
-    gae_lambda = 0.95
-    clip_coef = 0.2
-    entropy_coef = 0.001
-    vf_coef = 2.0
-    kl_lambda = 0.075
-    obs_buffer = torch.zeros((num_steps, 15)).to(device)
-    action_buffer = torch.zeros((num_steps, 2)).to(device)
-    logprob_buffer = torch.zeros(num_steps).to(device)
-    reward_buffer = torch.zeros(num_steps).to(device)
-    done_buffer = torch.zeros(num_steps).to(device)
-    value_buffer = torch.zeros(num_steps).to(device)
-    next_obs, _ = env.reset()
-    next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
-    next_done = 0.0
-    print("Beginning Spiced PPO 15D self-play exploration loop...")
-    print("-" * 80)
-    for iteration in range(1, num_iterations + 1):
-        episode_reward = 0.0
-        step_reward_sum = 0.0
-        for step in range(num_steps):
-            obs_buffer[step] = next_obs_t
-            done_buffer[step] = next_done
-            with torch.no_grad():
-                action, logprob, _, value = ac_model.get_action_and_value(next_obs_t.unsqueeze(0))
-                value_buffer[step] = value.flatten()
-            action_buffer[step] = action.flatten()
-            logprob_buffer[step] = logprob.flatten()
-            act_np = action.cpu().numpy().flatten()
-            next_obs, reward, terminated, truncated, _ = env.step(act_np)
-            step_reward_sum += reward
-            done = float(terminated or truncated)
-            reward_buffer[step] = done
-            next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
-            next_done = done
-            if done:
-                next_obs, _ = env.reset()
-                next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
-                episode_reward = step_reward_sum
-                step_reward_sum = 0.0
-        b_obs = obs_buffer
-        b_actions = action_buffer
-        b_logprobs = logprob_buffer
-        with torch.no_grad():
-            next_value = ac_model.get_value(next_obs_t.unsqueeze(0)).flatten()
-            advantages = torch.zeros_like(reward_buffer).to(device)
-            lastgaelam = 0
-            for t in reversed(range(num_steps)):
-                if t == num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - done_buffer[t + 1]
-                    nextvalues = value_buffer[t + 1]
-                delta = reward_buffer[t] + gamma * nextvalues * nextnonterminal - value_buffer[t]
-                advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-            returns = advantages + value_buffer
-        b_advantages = advantages
-        b_returns = returns
-        for epoch in range(update_epochs):
-            b_inds = np.arange(batch_size)
-            np.random.shuffle(b_inds)
-            for start in range(0, batch_size, minibatch_size):
-                end = start + minibatch_size
-                mb_inds = b_inds[start:end]
-                _, newlogprob, entropy, newvalue = ac_model.get_action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
-                )
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
-                mb_advantages = b_advantages[mb_inds]
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-                v_loss = 0.5 * ((newvalue.flatten() - b_returns[mb_inds]) ** 2).mean()
-                with torch.no_grad():
-                    mean_anchor, log_std_anchor = anchor(b_obs[mb_inds])
-                mean_pi, log_std_pi = ac_model.actor(b_obs[mb_inds])
-                std_anchor = torch.exp(log_std_anchor)
-                std_pi = torch.exp(log_std_pi)
-                kl_div = torch.sum(
-                    log_std_pi - log_std_anchor + 
-                    (std_anchor**2 + (mean_anchor - mean_pi)**2) / (2.0 * std_pi**2) - 0.5,
-                    dim=1
-                ).mean()
-                loss = pg_loss - entropy_coef * entropy.mean() + v_loss * vf_coef + kl_div * kl_lambda
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(ac_model.parameters(), 1.0)
-                optimizer.step()
-        if iteration % 20 == 0 or iteration == 1:
-            print(f"Iter: {iteration:03d} | Pg Loss: {pg_loss.item():.4f} | Val Loss: {v_loss.item():.4f} | KL Div: {kl_div.item():.4f} | Ep Reward: {episode_reward:.2f}")
-    print("-------------------------------------------------------------------------------------")
-    print("Spiced PPO self-play 15D optimization completed successfully.")
-    print("Compiling final 15D PPO Brain for ONNX deployment...")
-    ac_model.eval()
-    inference_model = SpicedBrainInference(ac_model.actor).to("cpu")
-    inference_model.eval()
-    dummy_input = torch.zeros(1, 15, dtype=torch.float32)
-    model_dir = "/home/zhz/fsd-car/model"
-    onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
-    torch.onnx.export(
-        inference_model,
-        dummy_input,
-        onnx_path,
-        export_params=True,
-        opset_version=15,
-        do_constant_folding=True,
-        input_names=['input_state'],
-        output_names=['action_output'],
-        dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
-    )
-    print(f"🏆 SUCCESS: Final 15D Spiced PPO Brain exported to {onnx_path}")
-    env.close()
-if __name__ == "__main__":
-    train_ppo()
 </file>
 
 <file path="core-control/src/sensor_fusion.rs">
@@ -1232,154 +800,10 @@ mod tests {
 }
 </file>
 
-<file path="core-decision/src/topo_graph/graph.rs">
-use super::node::TopologicalNode;
-use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, BinaryHeap};
-use std::fs::File;
-use std::io::{Write, Read};
-use std::cmp::Ordering;
-/// 🛡️ 拓扑有向边：规定了地标站牌之间的通行物理开销
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Edge {
-    pub target_id: u32,      // 目标地标节点 ID
-    pub weight: f32,         // 两点之间的物理距离 (作为 A* 算法的 G 权重值) [cite: 21]
-    pub relative_yaw: f32,   // 驶向目标节点所期望的相对偏航角 (单位: 度)
-}
-/// 🛡️ 拓扑地图：管理所有的度量-拓扑混合地标
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct TopologicalGraph {
-    pub nodes: HashMap<u32, TopologicalNode>,
-    pub adjacency_list: HashMap<u32, Vec<Edge>>, // 邻接表：节点ID -> 相连的有向边
-}
-/// 🛡️ 用于 A* 优先队列的辅助状态结构体 [cite: 9]
-#[derive(Copy, Clone, PartialEq)]
-struct State {
-    cost: f32,
-    position: u32,
-}
-impl Eq for State {}
-// 实现 Ord，使 BinaryHeap 表现为最小堆（每次弹回代价最小的路径点） [cite: 9]
-impl Ord for State {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal)
-    }
-}
-impl PartialOrd for State {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl TopologicalGraph {
-    pub fn new() -> Self {
-        Self {
-            nodes: HashMap::new(),
-            adjacency_list: HashMap::new(),
-        }
-    }
-    /// 往地图中注册全新的空间地标
-    pub fn add_node(&mut self, node: TopologicalNode) {
-        self.nodes.insert(node.id, node);
-    }
-    /// 往地图中铺设一条有向道路
-    pub fn add_edge(&mut self, from: u32, to: u32, weight: f32, relative_yaw: f32) {
-        self.adjacency_list
-            .entry(from)
-            .or_insert_with(Vec::new)
-            .push(Edge {
-                target_id: to,
-                weight,
-                relative_yaw,
-            });
-    }
-    /// 🧠 A* 全局路径寻路引擎：结合启发式几何距离，秒级规划最优站牌路径
-    pub fn find_path_astar(&self, start: u32, goal: u32) -> Option<Vec<u32>> {
-        let mut dist: HashMap<u32, f32> = HashMap::new();
-        let mut parent: HashMap<u32, u32> = HashMap::new();
-        let mut heap = BinaryHeap::new();
-        dist.insert(start, 0.0);
-        heap.push(State { cost: 0.0, position: start });
-        let goal_node = self.nodes.get(&goal)?;
-        while let Some(State { cost: current_cost, position }) = heap.pop() {
-            if position == goal {
-                let mut path = Vec::new();
-                let mut curr = goal;
-                while curr != start {
-                    path.push(curr);
-                    curr = *parent.get(&curr)?;
-                }
-                path.push(start);
-                path.reverse();
-                return Some(path);
-            }
-            if let Some(&d) = dist.get(&position) {
-                if current_cost > d {
-                    continue;
-                }
-            }
-            if let Some(edges) = self.adjacency_list.get(&position) {
-                for edge in edges {
-                    let next = edge.target_id;
-                    let next_node = self.nodes.get(&next)?;
-                    let new_dist = dist.get(&position).copied().unwrap_or(f32::INFINITY) + edge.weight;
-                    if new_dist < dist.get(&next).copied().unwrap_or(f32::INFINITY) {
-                        dist.insert(next, new_dist);
-                        parent.insert(next, position);
-                        // A* 核心：计算度量空间下的几何欧氏距离作为启发式估算 (H 值) [cite: 21]
-                        let h = ((next_node.pose.x - goal_node.pose.x).powi(2) + 
-                                 (next_node.pose.y - goal_node.pose.y).powi(2)).sqrt();
-                        heap.push(State { cost: new_dist + h, position: next });
-                    }
-                }
-            }
-        }
-        None 
-    }
-    /// 💾 将带有视觉描述子和北斗坐标的混合拓扑地图持久化写入硬盘
-    pub fn save_to_file(&self, path: &str) -> Result<(), String> {
-        let serialized = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let mut file = File::create(path).map_err(|e| e.to_string())?;
-        file.write_all(serialized.as_bytes()).map_err(|e| e.to_string())?;
-        Ok(())
-    }
-    /// 📥 从硬盘恢复混合拓扑地图记忆
-    pub fn load_from_file(path: &str) -> Result<Self, String> {
-        let mut file = File::open(path).map_err(|e| e.to_string())?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).map_err(|e| e.to_string())?;
-        let graph: Self = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
-        Ok(graph)
-    }
-}
-</file>
-
 <file path="core-decision/src/topo_graph/mod.rs">
 // 🛡️ 统筹拓扑节点与图路径规划逻辑，向外公开 API
 pub mod node;
 pub mod graph;
-</file>
-
-<file path="core-decision/src/topo_graph/node.rs">
-use serde::{Serialize, Deserialize};
-/// 🛡️ 物理姿态量：兼容局部相对里程计和北斗全局坐标系
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
-pub struct Pose {
-    pub x: f32,   // 绝对 UTM Northing 或局部相对坐标 X
-    pub y: f32,   // 绝对 UTM Easting 或局部相对坐标 Y
-    pub yaw: f32, // 车头偏航角 (弧度)
-}
-/// 🛡️ 拓扑空间地标节点 (Topometric Node)
-/// 完美融合度量坐标与视觉稀疏特征指纹
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct TopologicalNode {
-    pub id: u32,                     // 唯一的节点站牌 ID
-    pub name: String,                // 节点语义语义名称 (如 "5栋楼下", "地下室B1拐角")
-    pub pose: Pose,                  // 拍照时的绝对坐标（北斗经纬度投射值或里程计）
-    /// XFeat 描述子集合：扁平化的描述子特征向量 [N_features * 64 维]
-    pub descriptors: Vec<f32>,
-    /// 每个特征点的 (x, y) 像素物理坐标：扁平化的坐标矩阵 [N_features * 2]
-    pub keypoints: Vec<f32>,
-}
 </file>
 
 <file path="core-decision/src/lib.rs">
@@ -1755,6 +1179,582 @@ if __name__ == "__main__":
     main()
 </file>
 
+<file path="simulation-env/ppo_brain_node.py">
+import os
+import sys
+import numpy as np
+import onnxruntime as ort
+import pyarrow as pa
+from collections import deque
+from dora import Node
+def main():
+    print("=========================================================================")
+    print("🧠  NEXUS - 15D Cleaned PPO Neural Brain Deployment Node (SOTA 2026)")
+    print("=========================================================================")
+    model_path = "/home/zhz/fsd-car/model/spiced_brain.onnx"
+    if not os.path.exists(model_path):
+        print(f"[-] Error: Target PPO model spiced_brain.onnx not found at {model_path}")
+        sys.exit(1)
+    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+    dora_node = Node()
+    state_odom = [0.0, 0.0, 0.0]     
+    goal_pose = [0.52, 4.11]         
+    history_queue = deque(maxlen=5)
+    print("[+] 15D PPO Neural Brain successfully mounted. Entering 100Hz inference loop...")
+    print("-" * 73)
+    try:
+        while True:
+            event = dora_node.next(timeout=0.01)
+            if event is None:
+                continue
+            ev_type = event["type"]
+            if ev_type == "INPUT":
+                ev_id = event["id"]
+                if ev_id == "human_prior":
+                    prior_arr = event["value"].to_numpy()
+                    if len(prior_arr) >= 2:
+                        goal_pose = [float(prior_arr[0]), float(prior_arr[1])]
+                elif ev_id == "odometry":
+                    odom_arr = event["value"].to_numpy()
+                    if len(odom_arr) >= 3:
+                        state_odom = [float(odom_arr[0]), float(odom_arr[1]), float(odom_arr[2])]
+                    dx = goal_pose[0] - state_odom[0]
+                    dy = goal_pose[1] - state_odom[1]
+                    yaw = state_odom[2]
+                    local_goal_x = dx * np.cos(yaw) + dy * np.sin(yaw)
+                    local_goal_y = -dx * np.sin(yaw) + dy * np.cos(yaw)
+                    local_goal_dist = np.sqrt(local_goal_x**2 + local_goal_y**2)
+                    current_frame = [
+                        local_goal_x * 0.20,
+                        local_goal_y * 0.20,
+                        local_goal_dist * 0.20
+                    ]
+                    if len(history_queue) == 0:
+                        for _ in range(5):
+                            history_queue.append(current_frame)
+                    else:
+                        history_queue.append(current_frame)
+                    state_15 = np.array(list(history_queue), dtype=np.float32).flatten().reshape(1, 15)
+                    run_outs = session.run(None, {input_name: state_15})
+                    action = run_outs[0][0] 
+                    a_vel = float(action[0])
+                    a_kappa = float(action[1])
+                    v_max = 0.80
+                    kappa_max = 1.25
+                    w_max = 1.00
+                    v_des = np.clip(a_vel, 0.0, 1.0) * v_max
+                    kappa = np.clip(a_kappa, -1.0, 1.0) * kappa_max
+                    if abs(v_des) < 0.05:
+                        w_ref = np.clip(a_kappa, -1.0, 1.0) * w_max
+                    else:
+                        w_ref = kappa * v_des
+                    control_arrow = pa.array([v_des, w_ref], type=pa.float32())
+                    dora_node.send_output("control_cmd", control_arrow)
+            elif ev_type == "STOP":
+                print("\n🛑 [PPO Brain Node] Unmounted cleanly.")
+                break
+    except Exception as e:
+        print(f"[-] PPO Brain Node runtime error: {e}")
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="brain/spiced_rl_trainer/train_bc_anchor.py">
+import os
+import glob
+import csv
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+class SpicedDataset(Dataset):
+    def __init__(self, dataset_dir):
+        self.inputs = []
+        self.actions = []
+        csv_pattern = os.path.join(dataset_dir, "spice_run_*.csv")
+        csv_files = sorted(glob.glob(csv_pattern))
+        if not csv_files:
+            raise FileNotFoundError(f"No purified CSV files found in {dataset_dir}")
+        print(f"Loading and rebuilding {len(csv_files)} files with 15D sliding window...")
+        v_max = 0.8
+        kappa_max = 1.25 
+        for file_path in csv_files:
+            rows = []
+            with open(file_path, mode='r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    rows.append(row)
+            if len(rows) < 300:
+                continue
+            max_vel = max([float(r['current_v']) for r in rows])
+            if max_vel < 0.20:
+                continue
+            start_idx = 0
+            for idx, r in enumerate(rows):
+                if float(r['current_v']) > 0.05 or abs(float(r['cmd_v'])) > 0.01:
+                    start_idx = idx
+                    break
+            end_idx = len(rows) - 1
+            for idx in range(len(rows) - 1, -1, -1):
+                r = rows[idx]
+                if float(r['current_v']) > 0.05 or float(r['local_goal_dist']) > 0.20:
+                    end_idx = idx
+                    break
+            if end_idx - start_idx < 150:
+                continue
+            valid_rows = rows[start_idx:end_idx + 1]
+            for t in range(4, len(valid_rows)):
+                obs_15 = []
+                for d in range(5):
+                    r_hist = valid_rows[t - (4 - d)]
+                    l_goal_x = float(r_hist['local_goal_x']) * 0.20
+                    l_goal_y = float(r_hist['local_goal_y']) * 0.20
+                    l_goal_dist = float(r_hist['local_goal_dist']) * 0.20
+                    obs_15.extend([l_goal_x, l_goal_y, l_goal_dist])
+                cmd_v = float(valid_rows[t]['cmd_v'])
+                cmd_w = float(valid_rows[t]['cmd_w'])
+                norm_v = np.clip(cmd_v / v_max, 0.0, 1.0)
+                denom = max(cmd_v, 0.01)
+                raw_kappa = cmd_w / denom
+                norm_kappa = np.clip(raw_kappa / kappa_max, -1.0, 1.0)
+                act = np.array([norm_v, norm_kappa], dtype=np.float32)
+                self.inputs.append(np.array(obs_15, dtype=np.float32))
+                self.actions.append(act)
+        self.inputs = np.array(self.inputs)
+        self.actions = np.array(self.actions)
+        print(f"Sliding window dataset built. Total training samples: {len(self.inputs)}")
+    def __len__(self):
+        return len(self.inputs)
+    def __getitem__(self, idx):
+        return torch.from_numpy(self.inputs[idx]), torch.from_numpy(self.actions[idx])
+class GaussianPolicy(nn.Module):
+    def __init__(self, input_dim=15, action_dim=2):
+        super(GaussianPolicy, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh()
+        )
+        self.mean_head = nn.Linear(128, action_dim)
+        self.log_std = nn.Parameter(torch.zeros(action_dim))
+    def forward(self, x):
+        features = self.fc(x)
+        raw_mean = self.mean_head(features)
+        mean_v = torch.sigmoid(raw_mean[:, 0:1])
+        mean_w = torch.tanh(raw_mean[:, 1:2])
+        mean = torch.cat([mean_v, mean_w], dim=1)
+        return mean, self.log_std.expand_as(mean)
+class SpicedBrainInference(nn.Module):
+    def __init__(self, policy):
+        super(SpicedBrainInference, self).__init__()
+        self.policy = policy
+    def forward(self, x):
+        mean, _ = self.policy(x)
+        return mean
+def train_bc():
+    dataset_dir = "/home/zhz/fsd-car/dataset/purified"
+    model_dir = "/home/zhz/fsd-car/model"
+    os.makedirs(model_dir, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on device: {device}")
+    full_dataset = SpicedDataset(dataset_dir)
+    train_size = int(0.9 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    train_loader = DataLoader(train_dataset, batch_size=2048, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=2048, shuffle=False)
+    policy = GaussianPolicy(input_dim=15).to(device)
+    optimizer = optim.Adam(policy.parameters(), lr=3e-4)
+    best_val_loss = float('inf')
+    epochs = 300
+    print("Beginning epoch-loop training (15D Sliding Window & Clean Decoupled)...")
+    for epoch in range(1, epochs + 1):
+        policy.train()
+        train_loss = 0.0
+        for obs, act in train_loader:
+            obs, act = obs.to(device), act.to(device)
+            optimizer.zero_grad()
+            mean, log_std = policy(obs)
+            steer_weight = torch.where(torch.abs(act[:, 1]) > 0.02, 5.0, 1.0)
+            var = torch.exp(2 * log_std)
+            nll_elementwise = 0.5 * (((act - mean) ** 2) / var + 2 * log_std + np.log(2 * np.pi)).sum(dim=1)
+            nll = (nll_elementwise * steer_weight).mean()
+            nll.backward()
+            optimizer.step()
+            train_loss += nll.item() * obs.size(0)
+        train_loss /= len(train_loader.dataset)
+        policy.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for obs, act in val_loader:
+                obs, act = obs.to(device), act.to(device)
+                mean, log_std = policy(obs)
+                steer_weight = torch.where(torch.abs(act[:, 1]) > 0.02, 5.0, 1.0)
+                var = torch.exp(2 * log_std)
+                nll_elementwise = 0.5 * (((act - mean) ** 2) / var + 2 * log_std + np.log(2 * np.pi)).sum(dim=1)
+                nll = (nll_elementwise * steer_weight).mean()
+                val_loss += nll.item() * obs.size(0)
+        val_loss /= len(val_loader.dataset)
+        if epoch % 30 == 0 or epoch == 1:
+            print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(policy.state_dict(), "bc_anchor.pth")
+    print("Optimization completed. Training 15D BC Anchor Coach succeeded.")
+    print("Compiling Spiced Brain model for ONNX export...")
+    policy.load_state_dict(torch.load("bc_anchor.pth"))
+    policy.eval()
+    inference_model = SpicedBrainInference(policy).to("cpu")
+    inference_model.eval()
+    dummy_input = torch.zeros(1, 15, dtype=torch.float32)
+    onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
+    torch.onnx.export(
+        inference_model,
+        dummy_input,
+        onnx_path,
+        export_params=True,
+        opset_version=15,
+        do_constant_folding=True,
+        input_names=['input_state'],
+        output_names=['action_output'],
+        dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
+    )
+    print(f"SUCCESS: 15D Spiced Brain exported to {onnx_path}")
+if __name__ == "__main__":
+    train_bc()
+</file>
+
+<file path="brain/spiced_rl_trainer/train_ppo_self_play.py">
+import os
+import sys
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.distributions.normal import Normal
+sys.path.append("/home/zhz/fsd-car/brain/spiced_rl_trainer")
+from env.fsd_env import FSDCarGymEnv
+from train_bc_anchor import GaussianPolicy, SpicedBrainInference
+class ActorCritic(nn.Module):
+    def __init__(self, policy, input_dim=15):
+        super(ActorCritic, self).__init__()
+        self.actor = policy
+        self.critic = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 1)
+        )
+    def get_value(self, x):
+        return self.critic(x)
+    def get_action_and_value(self, x, action=None):
+        mean, log_std = self.actor(x)
+        std = torch.exp(log_std)
+        probs = Normal(mean, std)
+        if action is None:
+            action = probs.sample()
+            action[:, 0:1] = torch.clamp(action[:, 0:1], 0.0, 1.0)
+            action[:, 1:2] = torch.clamp(action[:, 1:2], -1.0, 1.0)
+        log_prob = probs.log_prob(action).sum(dim=1)
+        entropy = probs.entropy().sum(dim=1)
+        value = self.critic(x)
+        return action, log_prob, entropy, value
+def train_ppo():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"PPO training starting on device: {device}")
+    env = FSDCarGymEnv()
+    anchor = GaussianPolicy(input_dim=15).to(device)
+    anchor_path = "/home/zhz/fsd-car/bc_anchor.pth"
+    if not os.path.exists(anchor_path):
+        anchor_path = "/home/zhz/fsd-car/brain/spiced_rl_trainer/bc_anchor.pth"
+    if os.path.exists(anchor_path):
+        anchor.load_state_dict(torch.load(anchor_path, map_location=device))
+        print(f"✓ Frozen 15D BC Anchor Coach successfully loaded from: {anchor_path}")
+    else:
+        print("Warning: BC Anchor weights missing. Training from scratch without prior.")
+    anchor.eval()
+    for param in anchor.parameters():
+        param.requires_grad = False
+    ppo_policy = GaussianPolicy(input_dim=15).to(device)
+    if os.path.exists(anchor_path):
+        ppo_policy.load_state_dict(torch.load(anchor_path, map_location=device))
+    ac_model = ActorCritic(ppo_policy, input_dim=15).to(device)
+    optimizer = optim.Adam(ac_model.parameters(), lr=1e-4)
+    num_iterations = 200
+    num_steps = 128
+    batch_size = num_steps
+    minibatch_size = 32
+    update_epochs = 10
+    gamma = 0.99
+    gae_lambda = 0.95
+    clip_coef = 0.2
+    entropy_coef = 0.001
+    vf_coef = 2.0
+    kl_lambda = 0.075
+    obs_buffer = torch.zeros((num_steps, 15)).to(device)
+    action_buffer = torch.zeros((num_steps, 2)).to(device)
+    logprob_buffer = torch.zeros(num_steps).to(device)
+    reward_buffer = torch.zeros(num_steps).to(device)
+    done_buffer = torch.zeros(num_steps).to(device)
+    value_buffer = torch.zeros(num_steps).to(device)
+    next_obs, _ = env.reset()
+    next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
+    next_done = 0.0
+    print("Beginning Spiced PPO 15D self-play exploration loop...")
+    print("-" * 80)
+    for iteration in range(1, num_iterations + 1):
+        episode_reward = 0.0
+        step_reward_sum = 0.0
+        for step in range(num_steps):
+            obs_buffer[step] = next_obs_t
+            done_buffer[step] = next_done
+            with torch.no_grad():
+                action, logprob, _, value = ac_model.get_action_and_value(next_obs_t.unsqueeze(0))
+                value_buffer[step] = value.flatten()
+            action_buffer[step] = action.flatten()
+            logprob_buffer[step] = logprob.flatten()
+            act_np = action.cpu().numpy().flatten()
+            next_obs, reward, terminated, truncated, _ = env.step(act_np)
+            step_reward_sum += reward
+            done = float(terminated or truncated)
+            reward_buffer[step] = done
+            next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
+            next_done = done
+            if done:
+                next_obs, _ = env.reset()
+                next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
+                episode_reward = step_reward_sum
+                step_reward_sum = 0.0
+        b_obs = obs_buffer
+        b_actions = action_buffer
+        b_logprobs = logprob_buffer
+        with torch.no_grad():
+            next_value = ac_model.get_value(next_obs_t.unsqueeze(0)).flatten()
+            advantages = torch.zeros_like(reward_buffer).to(device)
+            lastgaelam = 0
+            for t in reversed(range(num_steps)):
+                if t == num_steps - 1:
+                    nextnonterminal = 1.0 - next_done
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - done_buffer[t + 1]
+                    nextvalues = value_buffer[t + 1]
+                delta = reward_buffer[t] + gamma * nextvalues * nextnonterminal - value_buffer[t]
+                advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + value_buffer
+        b_advantages = advantages
+        b_returns = returns
+        for epoch in range(update_epochs):
+            b_inds = np.arange(batch_size)
+            np.random.shuffle(b_inds)
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
+                mb_inds = b_inds[start:end]
+                _, newlogprob, entropy, newvalue = ac_model.get_action_and_value(
+                    b_obs[mb_inds], b_actions[mb_inds]
+                )
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+                mb_advantages = b_advantages[mb_inds]
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                v_loss = 0.5 * ((newvalue.flatten() - b_returns[mb_inds]) ** 2).mean()
+                with torch.no_grad():
+                    mean_anchor, log_std_anchor = anchor(b_obs[mb_inds])
+                mean_pi, log_std_pi = ac_model.actor(b_obs[mb_inds])
+                std_anchor = torch.exp(log_std_anchor)
+                std_pi = torch.exp(log_std_pi)
+                kl_div = torch.sum(
+                    log_std_pi - log_std_anchor + 
+                    (std_anchor**2 + (mean_anchor - mean_pi)**2) / (2.0 * std_pi**2) - 0.5,
+                    dim=1
+                ).mean()
+                loss = pg_loss - entropy_coef * entropy.mean() + v_loss * vf_coef + kl_div * kl_lambda
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(ac_model.parameters(), 1.0)
+                optimizer.step()
+        if iteration % 20 == 0 or iteration == 1:
+            print(f"Iter: {iteration:03d} | Pg Loss: {pg_loss.item():.4f} | Val Loss: {v_loss.item():.4f} | KL Div: {kl_div.item():.4f} | Ep Reward: {episode_reward:.2f}")
+    print("-------------------------------------------------------------------------------------")
+    print("Spiced PPO self-play 15D optimization completed successfully.")
+    print("Compiling final 15D PPO Brain for ONNX deployment...")
+    ac_model.eval()
+    inference_model = SpicedBrainInference(ac_model.actor).to("cpu")
+    inference_model.eval()
+    dummy_input = torch.zeros(1, 15, dtype=torch.float32)
+    model_dir = "/home/zhz/fsd-car/model"
+    onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
+    torch.onnx.export(
+        inference_model,
+        dummy_input,
+        onnx_path,
+        export_params=True,
+        opset_version=15,
+        do_constant_folding=True,
+        input_names=['input_state'],
+        output_names=['action_output'],
+        dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
+    )
+    print(f"🏆 SUCCESS: Final 15D Spiced PPO Brain exported to {onnx_path}")
+    env.close()
+if __name__ == "__main__":
+    train_ppo()
+</file>
+
+<file path="core-decision/src/topo_graph/graph.rs">
+use super::node::TopologicalNode;
+use serde::{Serialize, Deserialize};
+use std::collections::{HashMap, BinaryHeap};
+use std::fs::File;
+use std::io::{Write, Read};
+use std::cmp::Ordering;
+/// 🛡️ 拓扑有向边：规定了地标站牌之间的通行物理开销
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Edge {
+    pub target_id: u32,      // 目标地标节点 ID
+    pub weight: f32,         // 两点之间的物理距离 (作为 A* 算法的 G 权重值) [cite: 21]
+    pub relative_yaw: f32,   // 驶向目标节点所期望的相对偏航角 (单位: 度)
+}
+/// 🛡️ 拓扑地图：管理所有的度量-拓扑混合地标
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct TopologicalGraph {
+    pub nodes: HashMap<u32, TopologicalNode>,
+    pub adjacency_list: HashMap<u32, Vec<Edge>>, // 邻接表：节点ID -> 相连的有向边
+}
+/// 🛡️ 用于 A* 优先队列的辅助状态结构体 [cite: 9]
+#[derive(Copy, Clone, PartialEq)]
+struct State {
+    cost: f32,
+    position: u32,
+}
+impl Eq for State {}
+// 实现 Ord，使 BinaryHeap 表现为最小堆（每次弹回代价最小的路径点） [cite: 9]
+impl Ord for State {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal)
+    }
+}
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl TopologicalGraph {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            adjacency_list: HashMap::new(),
+        }
+    }
+    /// 往地图中注册全新的空间地标
+    pub fn add_node(&mut self, node: TopologicalNode) {
+        self.nodes.insert(node.id, node);
+    }
+    /// 往地图中铺设一条有向道路
+    pub fn add_edge(&mut self, from: u32, to: u32, weight: f32, relative_yaw: f32) {
+        self.adjacency_list
+            .entry(from)
+            .or_insert_with(Vec::new)
+            .push(Edge {
+                target_id: to,
+                weight,
+                relative_yaw,
+            });
+    }
+    /// 🧠 A* 全局路径寻路引擎：结合启发式几何距离，秒级规划最优站牌路径
+    pub fn find_path_astar(&self, start: u32, goal: u32) -> Option<Vec<u32>> {
+        let mut dist: HashMap<u32, f32> = HashMap::new();
+        let mut parent: HashMap<u32, u32> = HashMap::new();
+        let mut heap = BinaryHeap::new();
+        dist.insert(start, 0.0);
+        heap.push(State { cost: 0.0, position: start });
+        let goal_node = self.nodes.get(&goal)?;
+        while let Some(State { cost: current_cost, position }) = heap.pop() {
+            if position == goal {
+                let mut path = Vec::new();
+                let mut curr = goal;
+                while curr != start {
+                    path.push(curr);
+                    curr = *parent.get(&curr)?;
+                }
+                path.push(start);
+                path.reverse();
+                return Some(path);
+            }
+            if let Some(&d) = dist.get(&position) {
+                if current_cost > d {
+                    continue;
+                }
+            }
+            if let Some(edges) = self.adjacency_list.get(&position) {
+                for edge in edges {
+                    let next = edge.target_id;
+                    let next_node = self.nodes.get(&next)?;
+                    let new_dist = dist.get(&position).copied().unwrap_or(f32::INFINITY) + edge.weight;
+                    if new_dist < dist.get(&next).copied().unwrap_or(f32::INFINITY) {
+                        dist.insert(next, new_dist);
+                        parent.insert(next, position);
+                        // A* 核心：计算度量空间下的几何欧氏距离作为启发式估算 (H 值) [cite: 21]
+                        let h = ((next_node.pose.x - goal_node.pose.x).powi(2) + 
+                                 (next_node.pose.y - goal_node.pose.y).powi(2)).sqrt();
+                        heap.push(State { cost: new_dist + h, position: next });
+                    }
+                }
+            }
+        }
+        None 
+    }
+    /// 💾 将带有视觉描述子和北斗坐标的混合拓扑地图持久化写入硬盘
+    pub fn save_to_file(&self, path: &str) -> Result<(), String> {
+        let serialized = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let mut file = File::create(path).map_err(|e| e.to_string())?;
+        file.write_all(serialized.as_bytes()).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    /// 📥 从硬盘恢复混合拓扑地图记忆
+    pub fn load_from_file(path: &str) -> Result<Self, String> {
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).map_err(|e| e.to_string())?;
+        let graph: Self = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+        Ok(graph)
+    }
+}
+</file>
+
+<file path="core-decision/src/topo_graph/node.rs">
+use serde::{Serialize, Deserialize};
+/// 🛡️ 物理姿态量：兼容局部相对里程计和北斗全局坐标系
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
+pub struct Pose {
+    pub x: f32,   // 绝对 UTM Northing 或局部相对坐标 X
+    pub y: f32,   // 绝对 UTM Easting 或局部相对坐标 Y
+    pub yaw: f32, // 车头偏航角 (弧度)
+}
+/// 🛡️ 拓扑空间地标节点 (Topometric Node)
+/// 完美融合度量坐标与视觉稀疏特征指纹
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct TopologicalNode {
+    pub id: u32,                     // 唯一的节点站牌 ID
+    pub name: String,                // 节点语义语义名称 (如 "5栋楼下", "地下室B1拐角")
+    pub pose: Pose,                  // 拍照时的绝对坐标（北斗经纬度投射值或里程计）
+    /// XFeat 描述子集合：扁平化的描述子特征向量 [N_features * 64 维]
+    pub descriptors: Vec<f32>,
+    /// 每个特征点的 (x, y) 像素物理坐标：扁平化的坐标矩阵 [N_features * 2]
+    pub keypoints: Vec<f32>,
+}
+</file>
+
 <file path="brain/spiced_rl_trainer/env/fsd_env.py">
 import sys
 import os
@@ -2025,6 +2025,25 @@ fn main() {
     println!("  3. C-FFI 内存胶囊在 1000 次高频调用后未发生泄漏或段错误。");
     println!("========================================================");
 }
+</file>
+
+<file path="core-decision/Cargo.toml">
+[package]
+name = "core-decision"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 🛡️ 新增：并网所需的视觉与通信底座
+opencv = { workspace = true }
+dora-node-api = "0.3.13"
+eyre = "0.6"
+core-perception = { path = "../core-perception" }
 </file>
 
 <file path="core-perception/src/perception/matcher.rs">
@@ -2431,6 +2450,23 @@ pub fn self_heal_load_onnx_dylib() {
 }
 </file>
 
+<file path="core-perception/Cargo.toml">
+[package]
+name = "core-perception"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+opencv = { workspace = true }
+ort = { workspace = true, features = ["cuda"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ndarray = { workspace = true }
+dora-node-api = "0.3.13"
+eyre = "0.6"
+</file>
+
 <file path="simulation-env/expert_logger_node.py">
 # /// script
 # requires-python = ">=3.12"
@@ -2555,42 +2591,6 @@ if __name__ == "__main__":
     main()
 </file>
 
-<file path="core-decision/Cargo.toml">
-[package]
-name = "core-decision"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# 🛡️ 完备继承自根目录顶级声明，保持全栈版本一致性
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-
-# 🛡️ 新增：并网所需的视觉与通信底座
-opencv = { workspace = true }
-dora-node-api = "0.3.13"
-eyre = "0.6"
-core-perception = { path = "../core-perception" }
-</file>
-
-<file path="core-perception/Cargo.toml">
-[package]
-name = "core-perception"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-opencv = { workspace = true }
-ort = { workspace = true, features = ["cuda"] }
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-ndarray = { workspace = true }
-dora-node-api = "0.3.13"
-eyre = "0.6"
-</file>
-
 <file path="simulation-env/nmpc_model.py">
 from acados_template import AcadosModel
 import casadi as ca
@@ -2637,103 +2637,6 @@ def setup_car_model():
     model.con_h_expr = con_h_expr
     model.name = model_name
     return model
-</file>
-
-<file path="simulation-env/teleop_sender.py">
-import sys
-import select
-import termios
-import tty
-import time
-import socket
-import struct
-def get_key(settings):
-    tty.setraw(sys.stdin.fileno())
-    rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
-    if rlist:
-        key = sys.stdin.read(1)
-    else:
-        key = ''
-    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-    return key
-def main():
-    settings = termios.tcgetattr(sys.stdin)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    dest_addr = ("127.0.0.1", 5005)
-    target_v = 0.0  
-    target_w = 0.0  
-    current_v = 0.0  
-    current_w = 0.0  
-    # 🏎️ Spiced 2026 级全包线极限标定参数
-    max_v = 1.00  
-    min_v = -0.30 
-    max_w = 1.00  
-    acc_step = 0.08 
-    brake_step = 0.15 
-    coast_decay = 0.03 
-    alpha_v = 0.25  
-    alpha_w = 0.40  
-    print("========================================================")
-    print("🏎️  NEXUS - Platform-Agnostic Human Teleop Terminal")
-    print("设计哲学: 赛车级踏板阻尼 | 自动低通滤波 | 实时曲率映射")
-    print("========================================================")
-    print("控制指令 (请长按以激活连续指令流):")
-    print("  [ W / S ] : 踩油门加速 / 踩刹车倒退")
-    print("  [ A / D ] : 向左 / 向右打舵")
-    print("  [Space]   : 紧急抱闸锁死")
-    print("  [ Q ]     : 安全退出")
-    print("========================================================")
-    try:
-        while True:
-            key = get_key(settings)
-            if key == 'w' or key == 'W':
-                target_v = min(max_v, target_v + acc_step)
-            elif key == 's' or key == 'S':
-                target_v = max(min_v, target_v - brake_step)
-            else:
-                if target_v > 0:
-                    target_v = max(0.0, target_v - coast_decay)
-                elif target_v < 0:
-                    target_v = min(0.0, target_v + coast_decay)
-            if key == 'a' or key == 'A':
-                target_w = max_w
-            elif key == 'd' or key == 'D':
-                target_w = -max_w
-            else:
-                target_w = 0.0
-            if key == ' ':
-                target_v = 0.0
-                target_w = 0.0
-                current_v = 0.0
-                current_w = 0.0
-            elif key == 'q' or key == 'Q':
-                print("\n🛑 Safe Teleop Session Terminated.")
-                break
-            current_v += alpha_v * (target_v - current_v)
-            current_w += alpha_w * (target_w - current_w)
-            if abs(current_v) < 0.005: current_v = 0.0
-            if abs(current_w) < 0.005: current_w = 0.0
-            # 计算符合 Sim2Real-AD 标准的实时期望路径曲率 kappa = w / v
-            kappa = current_w / max(abs(current_v), 0.01)
-            print(
-                f"\r[NEXUS 遥测] 目标设定 -> v: {target_v:.2f} m/s | "
-                f"实际输出 -> v_cmd: {current_v:.2f} m/s, w_cmd: {current_w:.2f} rad/s | "
-                f"期望曲率 kappa: {kappa:+.3f} rad/m    ", 
-                end="", flush=True
-            )
-            packed_data = struct.pack('ff', current_v, current_w)
-            sock.sendto(packed_data, dest_addr)
-            time.sleep(0.02) # 50Hz 物理控制周期
-    except Exception as e:
-        print(f"\n❌ ERROR in Teleop: {e}")
-    finally:
-        packed_data = struct.pack('ff', 0.0, 0.0)
-        sock.sendto(packed_data, dest_addr)
-        sock.close()
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-        print("\n🔌 Socket cleanly closed. Exit.")
-if __name__ == "__main__":
-    main()
 </file>
 
 <file path="core-control/src/ffi.rs">
@@ -2792,161 +2695,6 @@ extern "C" {
         field: *const c_char,
         value: *mut c_void,
     ); 
-}
-</file>
-
-<file path="core-control/src/lib.rs">
-// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
-/*
-=================================================================
-🧠 [NEXUS 控制抽象层] 运动控制器契约与神经解耦路由器中心 (v3.6 - 自愈版)
-设计哲学: 补齐 Sync 线程防线 | 路由器强类型分流 | 掐断原始 Arrow 侵入
-=================================================================
-*/
-pub mod ffi;
-pub mod solver;
-pub mod sensor_fusion;
-pub use solver::预测控制求解器;
-pub use sensor_fusion::层级传感器融合中心;
-use dora_node_api::Event;
-use dora_node_api::arrow::array::{Float32Array, UInt8Array};
-// 🛡️ 极速自愈：为底层包装了 raw 指针的 C-FFI 求解器手动实现 Sync，解除多线程安全屏障
-unsafe impl Sync for solver::预测控制求解器 {}
-/// 🛡️ 统称车辆运动控制器 Trait（控制器的生命周期只需要 Send 契约进行线程转移，无需 Sync 共享）
-pub trait 车辆运动控制器: Send {
-    type 状态;      // (x, y, yaw, v)
-    type 轨迹;      // (ref_x, ref_y, ref_yaw, ref_v)
-    type 障碍;      // 动态障碍物
-    type 指令;      // (v_cmd, w_cmd)
-    fn 设置当前状态(&mut self, state: &Self::状态) -> Result<(), String>;
-    fn 设置参考轨迹点(&mut self, stage: i32, ref_point: &Self::轨迹) -> Result<(), String>;
-    fn 设置动态障碍物硬约束(&mut self, obstacles: &[Self::障碍]) -> Result<(), String>;
-    fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<Self::指令, String>;
-}
-// -------------------------------------------------------------------------
-// 🛰️ MPC 求解器 Trait 契约并网实现
-// -------------------------------------------------------------------------
-impl 车辆运动控制器 for solver::预测控制求解器 {
-    type 状态 = (f64, f64, f64, f64);
-    type 轨迹 = (f64, f64, f64, f64);
-    type 障碍 = solver::动态障碍物;
-    type 指令 = (f64, f64);
-    fn 设置当前状态(&mut self, state: &Self::状态) -> Result<(), String> {
-        self.设置当前状态(state.0, state.1, state.2, state.3)
-    }
-    fn 设置参考轨迹点(&mut self, stage: i32, ref_point: &Self::轨迹) -> Result<(), String> {
-        self.设置参考轨迹点(stage, ref_point.0, ref_point.1, ref_point.2, ref_point.3)
-    }
-    fn 设置动态障碍物硬约束(&mut self, obstacles: &[Self::障碍]) -> Result<(), String> {
-        self.设置动态障碍物硬约束(obstacles)
-    }
-    fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<Self::指令, String> {
-        self.求解最优控制量(当前线速度)
-    }
-}
-// -------------------------------------------------------------------------
-// 🛰️ 神经事件路由器：将原始异步 Dora 事件安全翻译并路由为自驾强类型信号枚举
-// -------------------------------------------------------------------------
-pub enum 智能自驾信号载荷 {
-    物理里程计 { x: f64, y: f64, yaw: f64 },
-    避障斥力场 { fx: f64, fy: f64 },
-    慢脑自引力领航 { goal_x: f64, goal_y: f64, goal_yaw: f64 },
-    实相鸟瞰图(Vec<u8>),
-    神经反射时间(f32),
-    系统下线信号,
-    未校准信号,
-}
-pub struct 神经事件路由器;
-impl 神经事件路由器 {
-    /// 统一网关：阻断 Arrow 原始解包，强类型保护高层规控业务
-    pub fn 分流路由事件(event: Event) -> Result<智能自驾信号载荷, String> {
-        match event {
-            Event::Input { id, data, .. } => {
-                let id_str = id.as_str();
-                match id_str {
-                    "odometry" => {
-                        let odom_array = data.as_any()
-                            .downcast_ref::<Float32Array>()
-                            .ok_or_else(|| "Failed to cast odometry to Float32Array".to_string())?;
-                        if odom_array.len() >= 3 {
-                            Ok(智能自驾信号载荷::物理里程计 {
-                                x: odom_array.value(0) as f64,
-                                y: odom_array.value(1) as f64,
-                                yaw: odom_array.value(2) as f64,
-                            })
-                        } else {
-                            Err("Odometry array size mismatch".to_string())
-                        }
-                    },
-                    "obstacle_force" => {
-                        let force_array = data.as_any()
-                            .downcast_ref::<Float32Array>()
-                            .ok_or_else(|| "Failed to cast obstacle_force to Float32Array".to_string())?;
-                        if force_array.len() >= 2 {
-                            Ok(智能自驾信号载荷::避障斥力场 {
-                                fx: force_array.value(0) as f64,
-                                fy: force_array.value(1) as f64,
-                            })
-                        } else {
-                            Err("Obstacle force array size mismatch".to_string())
-                        }
-                    },
-                    "human_prior" => {
-                        let prior_array = data.as_any()
-                            .downcast_ref::<Float32Array>()
-                            .ok_or_else(|| "Failed to cast human_prior to Float32Array".to_string())?;
-                        if prior_array.len() >= 3 {
-                            Ok(智能自驾信号载荷::慢脑自引力领航 {
-                                goal_x: prior_array.value(0) as f64,
-                                goal_y: prior_array.value(1) as f64,
-                                goal_yaw: prior_array.value(2) as f64,
-                            })
-                        } else {
-                            Err("Human prior array size mismatch".to_string())
-                        }
-                    },
-                    "bev_grid" => {
-                        let grid_array = data.as_any()
-                            .downcast_ref::<UInt8Array>()
-                            .ok_or_else(|| "Failed to cast bev_grid to UInt8Array".to_string())?;
-                        Ok(智能自驾信号载荷::实相鸟瞰图(grid_array.values().to_vec()))
-                    },
-                    "ttc" => {
-                        let ttc_array = data.as_any()
-                            .downcast_ref::<Float32Array>()
-                            .ok_or_else(|| "Failed to cast ttc to Float32Array".to_string())?;
-                        if ttc_array.len() >= 1 {
-                            Ok(智能自驾信号载荷::神经反射时间(ttc_array.value(0)))
-                        } else {
-                            Err("TTC array empty".to_string())
-                        }
-                    },
-                    _ => Ok(智能自驾信号载荷::未校准信号),
-                }
-            },
-            Event::Stop(_) => Ok(智能自驾信号载荷::系统下线信号),
-            _ => Ok(智能自驾信号载荷::未校准信号),
-        }
-    }
-}
-/// 🧠 SOTA: Physics-Aware Action Mapping decoder
-pub fn decode_platform_agnostic_actions(a_vel: f64, a_kappa: f64) -> (f64, f64, f64) {
-    let v_min: f64 = -0.30; 
-    let v_max: f64 = 0.80;  
-    let kappa_max: f64 = 1.25;
-    let w_max: f64 = 1.00;  
-    let v_des = if a_vel >= 0.0 {
-        a_vel.clamp(0.0, 1.0) * v_max
-    } else {
-        a_vel.clamp(-1.0, 0.0) * v_min.abs()
-    };
-    let kappa = a_kappa.clamp(-1.0, 1.0) * kappa_max;
-    let w_ref = if v_des.abs() < 0.05 {
-        a_kappa.clamp(-1.0, 1.0) * w_max
-    } else {
-        kappa * v_des
-    };
-    (v_des, kappa, w_ref)
 }
 </file>
 
@@ -3352,6 +3100,258 @@ impl 仿生特征提取器 {
 }
 </file>
 
+<file path="simulation-env/teleop_sender.py">
+import sys
+import select
+import termios
+import tty
+import time
+import socket
+import struct
+def get_key(settings):
+    tty.setraw(sys.stdin.fileno())
+    rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
+    if rlist:
+        key = sys.stdin.read(1)
+    else:
+        key = ''
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    return key
+def main():
+    settings = termios.tcgetattr(sys.stdin)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    dest_addr = ("127.0.0.1", 5005)
+    target_v = 0.0  
+    target_w = 0.0  
+    current_v = 0.0  
+    current_w = 0.0  
+    # 🏎️ Spiced 2026 级全包线极限标定参数
+    max_v = 1.00  
+    min_v = -0.30 
+    max_w = 1.00  
+    acc_step = 0.08 
+    brake_step = 0.15 
+    coast_decay = 0.03 
+    alpha_v = 0.25  
+    alpha_w = 0.40  
+    print("========================================================")
+    print("🏎️  NEXUS - Platform-Agnostic Human Teleop Terminal")
+    print("设计哲学: 赛车级踏板阻尼 | 自动低通滤波 | 实时曲率映射")
+    print("========================================================")
+    print("控制指令 (请长按以激活连续指令流):")
+    print("  [ W / S ] : 踩油门加速 / 踩刹车倒退")
+    print("  [ A / D ] : 向左 / 向右打舵")
+    print("  [Space]   : 紧急抱闸锁死")
+    print("  [ Q ]     : 安全退出")
+    print("========================================================")
+    try:
+        while True:
+            key = get_key(settings)
+            if key == 'w' or key == 'W':
+                target_v = min(max_v, target_v + acc_step)
+            elif key == 's' or key == 'S':
+                target_v = max(min_v, target_v - brake_step)
+            else:
+                if target_v > 0:
+                    target_v = max(0.0, target_v - coast_decay)
+                elif target_v < 0:
+                    target_v = min(0.0, target_v + coast_decay)
+            if key == 'a' or key == 'A':
+                target_w = max_w
+            elif key == 'd' or key == 'D':
+                target_w = -max_w
+            else:
+                target_w = 0.0
+            if key == ' ':
+                target_v = 0.0
+                target_w = 0.0
+                current_v = 0.0
+                current_w = 0.0
+            elif key == 'q' or key == 'Q':
+                print("\n🛑 Safe Teleop Session Terminated.")
+                break
+            current_v += alpha_v * (target_v - current_v)
+            current_w += alpha_w * (target_w - current_w)
+            if abs(current_v) < 0.005: current_v = 0.0
+            if abs(current_w) < 0.005: current_w = 0.0
+            # 计算符合 Sim2Real-AD 标准的实时期望路径曲率 kappa = w / v
+            kappa = current_w / max(abs(current_v), 0.01)
+            print(
+                f"\r[NEXUS 遥测] 目标设定 -> v: {target_v:.2f} m/s | "
+                f"实际输出 -> v_cmd: {current_v:.2f} m/s, w_cmd: {current_w:.2f} rad/s | "
+                f"期望曲率 kappa: {kappa:+.3f} rad/m    ", 
+                end="", flush=True
+            )
+            packed_data = struct.pack('ff', current_v, current_w)
+            sock.sendto(packed_data, dest_addr)
+            time.sleep(0.02) # 50Hz 物理控制周期
+    except Exception as e:
+        print(f"\n❌ ERROR in Teleop: {e}")
+    finally:
+        packed_data = struct.pack('ff', 0.0, 0.0)
+        sock.sendto(packed_data, dest_addr)
+        sock.close()
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        print("\n🔌 Socket cleanly closed. Exit.")
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="core-control/src/lib.rs">
+// 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
+/*
+=================================================================
+🧠 [NEXUS 控制抽象层] 运动控制器契约与神经解耦路由器中心 (v3.6 - 自愈版)
+设计哲学: 补齐 Sync 线程防线 | 路由器强类型分流 | 掐断原始 Arrow 侵入
+=================================================================
+*/
+pub mod ffi;
+pub mod solver;
+pub mod sensor_fusion;
+pub use solver::预测控制求解器;
+pub use sensor_fusion::层级传感器融合中心;
+use dora_node_api::Event;
+use dora_node_api::arrow::array::{Float32Array, UInt8Array};
+// 🛡️ 极速自愈：为底层包装了 raw 指针的 C-FFI 求解器手动实现 Sync，解除多线程安全屏障
+unsafe impl Sync for solver::预测控制求解器 {}
+/// 🛡️ 统称车辆运动控制器 Trait（控制器的生命周期只需要 Send 契约进行线程转移，无需 Sync 共享）
+pub trait 车辆运动控制器: Send {
+    type 状态;      // (x, y, yaw, v)
+    type 轨迹;      // (ref_x, ref_y, ref_yaw, ref_v)
+    type 障碍;      // 动态障碍物
+    type 指令;      // (v_cmd, w_cmd)
+    fn 设置当前状态(&mut self, state: &Self::状态) -> Result<(), String>;
+    fn 设置参考轨迹点(&mut self, stage: i32, ref_point: &Self::轨迹) -> Result<(), String>;
+    fn 设置动态障碍物硬约束(&mut self, obstacles: &[Self::障碍]) -> Result<(), String>;
+    fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<Self::指令, String>;
+}
+// -------------------------------------------------------------------------
+// 🛰️ MPC 求解器 Trait 契约并网实现
+// -------------------------------------------------------------------------
+impl 车辆运动控制器 for solver::预测控制求解器 {
+    type 状态 = (f64, f64, f64, f64);
+    type 轨迹 = (f64, f64, f64, f64);
+    type 障碍 = solver::动态障碍物;
+    type 指令 = (f64, f64);
+    fn 设置当前状态(&mut self, state: &Self::状态) -> Result<(), String> {
+        self.设置当前状态(state.0, state.1, state.2, state.3)
+    }
+    fn 设置参考轨迹点(&mut self, stage: i32, ref_point: &Self::轨迹) -> Result<(), String> {
+        self.设置参考轨迹点(stage, ref_point.0, ref_point.1, ref_point.2, ref_point.3)
+    }
+    fn 设置动态障碍物硬约束(&mut self, obstacles: &[Self::障碍]) -> Result<(), String> {
+        self.设置动态障碍物硬约束(obstacles)
+    }
+    fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<Self::指令, String> {
+        self.求解最优控制量(当前线速度)
+    }
+}
+// -------------------------------------------------------------------------
+// 🛰️ 神经事件路由器：将原始异步 Dora 事件安全翻译并路由为自驾强类型信号枚举
+// -------------------------------------------------------------------------
+pub enum 智能自驾信号载荷 {
+    物理里程计 { x: f64, y: f64, yaw: f64 },
+    避障斥力场 { fx: f64, fy: f64 },
+    慢脑自引力领航 { goal_x: f64, goal_y: f64, goal_yaw: f64 },
+    实相鸟瞰图(Vec<u8>),
+    神经反射时间(f32),
+    系统下线信号,
+    未校准信号,
+}
+pub struct 神经事件路由器;
+impl 神经事件路由器 {
+    /// 统一网关：阻断 Arrow 原始解包，强类型保护高层规控业务
+    pub fn 分流路由事件(event: Event) -> Result<智能自驾信号载荷, String> {
+        match event {
+            Event::Input { id, data, .. } => {
+                let id_str = id.as_str();
+                match id_str {
+                    "odometry" => {
+                        let odom_array = data.as_any()
+                            .downcast_ref::<Float32Array>()
+                            .ok_or_else(|| "Failed to cast odometry to Float32Array".to_string())?;
+                        if odom_array.len() >= 3 {
+                            Ok(智能自驾信号载荷::物理里程计 {
+                                x: odom_array.value(0) as f64,
+                                y: odom_array.value(1) as f64,
+                                yaw: odom_array.value(2) as f64,
+                            })
+                        } else {
+                            Err("Odometry array size mismatch".to_string())
+                        }
+                    },
+                    "obstacle_force" => {
+                        let force_array = data.as_any()
+                            .downcast_ref::<Float32Array>()
+                            .ok_or_else(|| "Failed to cast obstacle_force to Float32Array".to_string())?;
+                        if force_array.len() >= 2 {
+                            Ok(智能自驾信号载荷::避障斥力场 {
+                                fx: force_array.value(0) as f64,
+                                fy: force_array.value(1) as f64,
+                            })
+                        } else {
+                            Err("Obstacle force array size mismatch".to_string())
+                        }
+                    },
+                    "human_prior" => {
+                        let prior_array = data.as_any()
+                            .downcast_ref::<Float32Array>()
+                            .ok_or_else(|| "Failed to cast human_prior to Float32Array".to_string())?;
+                        if prior_array.len() >= 3 {
+                            Ok(智能自驾信号载荷::慢脑自引力领航 {
+                                goal_x: prior_array.value(0) as f64,
+                                goal_y: prior_array.value(1) as f64,
+                                goal_yaw: prior_array.value(2) as f64,
+                            })
+                        } else {
+                            Err("Human prior array size mismatch".to_string())
+                        }
+                    },
+                    "bev_grid" => {
+                        let grid_array = data.as_any()
+                            .downcast_ref::<UInt8Array>()
+                            .ok_or_else(|| "Failed to cast bev_grid to UInt8Array".to_string())?;
+                        Ok(智能自驾信号载荷::实相鸟瞰图(grid_array.values().to_vec()))
+                    },
+                    "ttc" => {
+                        let ttc_array = data.as_any()
+                            .downcast_ref::<Float32Array>()
+                            .ok_or_else(|| "Failed to cast ttc to Float32Array".to_string())?;
+                        if ttc_array.len() >= 1 {
+                            Ok(智能自驾信号载荷::神经反射时间(ttc_array.value(0)))
+                        } else {
+                            Err("TTC array empty".to_string())
+                        }
+                    },
+                    _ => Ok(智能自驾信号载荷::未校准信号),
+                }
+            },
+            Event::Stop(_) => Ok(智能自驾信号载荷::系统下线信号),
+            _ => Ok(智能自驾信号载荷::未校准信号),
+        }
+    }
+}
+/// 🧠 SOTA: Physics-Aware Action Mapping decoder
+pub fn decode_platform_agnostic_actions(a_vel: f64, a_kappa: f64) -> (f64, f64, f64) {
+    let v_min: f64 = -0.30; 
+    let v_max: f64 = 0.80;  
+    let kappa_max: f64 = 1.25;
+    let w_max: f64 = 1.00;  
+    let v_des = if a_vel >= 0.0 {
+        a_vel.clamp(0.0, 1.0) * v_max
+    } else {
+        a_vel.clamp(-1.0, 0.0) * v_min.abs()
+    };
+    let kappa = a_kappa.clamp(-1.0, 1.0) * kappa_max;
+    let w_ref = if v_des.abs() < 0.05 {
+        a_kappa.clamp(-1.0, 1.0) * w_max
+    } else {
+        kappa * v_des
+    };
+    (v_des, kappa, w_ref)
+}
+</file>
+
 <file path="Cargo.toml">
 [workspace]
 resolver = "2"
@@ -3738,6 +3738,86 @@ impl Drop for 预测控制求解器 {
 }
 </file>
 
+<file path=".gitignore">
+# =================================================================
+# 🛡️ FSD-car V4.5 统一主干仓库 Git 忽略契约 (2026 Ubuntu 极致防腐版)
+# 设计哲学: 保护10维黄金数据集 | 隔离高能模型权重 | 拦截 C-FFI 编译缓存
+# =================================================================
+
+# --- 1. 系统、IDE 与终端临时垃圾文件 ---
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+.vscode/
+.idea/
+*.user
+
+# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
+# 彻底拦截 uv 和传统 Python 的虚拟环境与本地第三方缓存
+.venv/
+.uv/
+.python-version
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
+# 强制忽略 DORA 产生的后台日志和协调器挂盘日志
+/out/
+out/
+dora-coordinator.txt
+dora-daemon.txt
+
+# --- 4. Rust 工作空间全局编译缓存 ---
+# 强制忽略整个多包工作空间下的 release/debug 编译产物，防止数十G的缓存挤爆仓库
+/target/
+
+# --- 5. 跨系统动态链接库与大资产模型 (商业级知识产权防御墙) ---
+# A. 拦截系统级编译库，防止 Git 历史体积爆炸，强行拉高无良商家的编译时间成本
+*.so
+*.so.*
+*.tgz
+*.a
+*.lib
+*.dll
+*.dylib
+
+# B. 🛡️ 【核心资产保护】: 强制拦截所有的 ONNX 模型文件！
+# 个人爱好者可以通过 download_models.sh 脚本下载公开的基础模型。
+# 但你自己未来在 3.3.3 阶段训练出来的 Spiced RL 老司机“经验脑”模型权重（*.onnx），
+# 将被本契约死死锁在本地，绝对不允许误上传到 GitHub 公网，达成完美的商业博弈闭环！
+*.onnx
+
+# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
+# 拦截 acados C 语言求解器自动生成的矩阵 C 源码，防止伸手党“一键白嫖”
+simulation-env/c_generated_code/
+simulation-env/acados_ocp.json
+simulation-env/acados/
+simulation-env/*.log
+simulation-env/MUJOCO_LOG.TXT
+simulation-env/nmpc_telemetry.log
+nmpc_telemetry.csv
+
+# 🛡️ 战役二/三重大重塑：彻底废除旧版 0.2m/s “提线木偶式”物理拓扑地图
+topo_memory.json
+
+# --- 7. 🛡️ 【核心资产隔离】: 10维黄金老司机避障数据集防线 (The Spice Barrier) ---
+# 强力隔离你录制的所有 spice_run_*.csv 黄金自驾数据！
+# 这是你人机合一、冒着撞车风险辛辛苦苦狂飙出来的核心数字资产。
+# 它是训练模型经验脑（BC Anchor）唯一的“香料”，必须 100% 物理闭源！
+/dataset/
+dataset/
+*.csv
+
+# --- 8. 🛡️ AI 临时上下文与打包分析残留隔离 ---
+repomix-output.xml
+repomix-output.json
+repomix-output.txt
+repomix-output.md
+.claude/
+</file>
+
 <file path="core-decision/src/bin/slow_brain_node.rs">
 // 🛡️ 协议确认：已开启后端全量代码输出模式，拒绝任何逻辑省略。
 /*
@@ -3978,86 +4058,6 @@ async fn main() -> eyre::Result<()> {
     }
     Ok(())
 }
-</file>
-
-<file path=".gitignore">
-# =================================================================
-# 🛡️ FSD-car V4.5 统一主干仓库 Git 忽略契约 (2026 Ubuntu 极致防腐版)
-# 设计哲学: 保护10维黄金数据集 | 隔离高能模型权重 | 拦截 C-FFI 编译缓存
-# =================================================================
-
-# --- 1. 系统、IDE 与终端临时垃圾文件 ---
-.DS_Store
-Thumbs.db
-*.tmp
-*.bak
-.vscode/
-.idea/
-*.user
-
-# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
-# 彻底拦截 uv 和传统 Python 的虚拟环境与本地第三方缓存
-.venv/
-.uv/
-.python-version
-__pycache__/
-*.py[cod]
-*$py.class
-
-# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
-# 强制忽略 DORA 产生的后台日志和协调器挂盘日志
-/out/
-out/
-dora-coordinator.txt
-dora-daemon.txt
-
-# --- 4. Rust 工作空间全局编译缓存 ---
-# 强制忽略整个多包工作空间下的 release/debug 编译产物，防止数十G的缓存挤爆仓库
-/target/
-
-# --- 5. 跨系统动态链接库与大资产模型 (商业级知识产权防御墙) ---
-# A. 拦截系统级编译库，防止 Git 历史体积爆炸，强行拉高无良商家的编译时间成本
-*.so
-*.so.*
-*.tgz
-*.a
-*.lib
-*.dll
-*.dylib
-
-# B. 🛡️ 【核心资产保护】: 强制拦截所有的 ONNX 模型文件！
-# 个人爱好者可以通过 download_models.sh 脚本下载公开的基础模型。
-# 但你自己未来在 3.3.3 阶段训练出来的 Spiced RL 老司机“经验脑”模型权重（*.onnx），
-# 将被本契约死死锁在本地，绝对不允许误上传到 GitHub 公网，达成完美的商业博弈闭环！
-*.onnx
-
-# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
-# 拦截 acados C 语言求解器自动生成的矩阵 C 源码，防止伸手党“一键白嫖”
-simulation-env/c_generated_code/
-simulation-env/acados_ocp.json
-simulation-env/acados/
-simulation-env/*.log
-simulation-env/MUJOCO_LOG.TXT
-simulation-env/nmpc_telemetry.log
-nmpc_telemetry.csv
-
-# 🛡️ 战役二/三重大重塑：彻底废除旧版 0.2m/s “提线木偶式”物理拓扑地图
-topo_memory.json
-
-# --- 7. 🛡️ 【核心资产隔离】: 10维黄金老司机避障数据集防线 (The Spice Barrier) ---
-# 强力隔离你录制的所有 spice_run_*.csv 黄金自驾数据！
-# 这是你人机合一、冒着撞车风险辛辛苦苦狂飙出来的核心数字资产。
-# 它是训练模型经验脑（BC Anchor）唯一的“香料”，必须 100% 物理闭源！
-/dataset/
-dataset/
-*.csv
-
-# --- 8. 🛡️ AI 临时上下文与打包分析残留隔离 ---
-repomix-output.xml
-repomix-output.json
-repomix-output.txt
-repomix-output.md
-.claude/
 </file>
 
 <file path="dora_dataflow.yaml">
