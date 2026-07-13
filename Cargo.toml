@@ -5,7 +5,6 @@ members = [
     "core-perception",
     "core-control",
     "core-decision",
-    "showcase",
 ]
 
 [workspace.dependencies]

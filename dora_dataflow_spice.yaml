@@ -1,6 +1,6 @@
 # =================================================================
-# 🏎️ FSD-car V4.5: 3.3阶段专属 - 人类黄金数据(Spice)采集拓扑网
-# 架构哲学: 剥夺 NMPC 规控权 | 人类直接接管底盘 | 黑匣子旁路高频监听
+# 🏎️ FSD-car V4.5: 3.3阶段专属 - 人类黄金数据(Spice)采集拓扑网 (自愈重塑版)
+# 架构哲学: 剥夺 NMPC 规控权 | 人类直接接管底盘 | 随机领航 + 自动传送重置闭环
 # =================================================================
 nodes:
   # ---------------------------------------------------------------
@@ -15,12 +15,15 @@ nodes:
       XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
       LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
     inputs:
-      # 🎯 核心变更：底盘控制权直接移交给键盘遥控器！
+      # 底盘控制权直接移交给键盘遥控器！
       control_cmd: keyboard_teleop/control_cmd
+      # 接收慢脑广播的新站牌目标，实现全自动原地传送！
+      human_prior: slow_brain_mapper/human_prior
     outputs:
       - obstacle_force
       - odometry
       - jpeg_image
+      - bev_grid
 
   # ---------------------------------------------------------------
   # 🎮 2. 人类意志桥接器 (Keyboard Teleop Receiver)
@@ -28,14 +31,26 @@ nodes:
   - id: keyboard_teleop
     path: uv
     args: run --cache-dir /home/zhz/.cache/uv_clean simulation-env/keyboard_teleop.py
-    # 🎯 3.3.1 终极自愈：挂载系统内置 10Hz 脉冲，保持 DORA 底层通道活跃，杜绝秒退
     inputs:
       tick: dora/timer/millis/100
     outputs:
       - control_cmd
 
   # ---------------------------------------------------------------
-  # 🗃️ 3. 黑匣子数据记录仪 (Expert Data Logger)
+  # 🧠 3. 动态路点领航脑 (Dynamic Waypoint Goal Provider)
+  # ---------------------------------------------------------------
+  - id: slow_brain_mapper
+    path: target/release/slow_brain_node
+    build: cargo build -p core-decision --release --bin slow_brain_node
+    env:
+      RUST_LOG: info
+    inputs:
+      odometry: isaac_sim_env/odometry
+    outputs:
+      - human_prior
+
+  # ---------------------------------------------------------------
+  # 🗃️ 4. 黑匣子数据记录仪 (Expert Data Logger)
   # ---------------------------------------------------------------
   - id: expert_data_logger
     path: uv
@@ -43,12 +58,13 @@ nodes:
     inputs:
       # 监听物理世界状态
       odometry: isaac_sim_env/odometry
-      obstacle_force: isaac_sim_env/obstacle_force
-      # 监听人类下发的动作指令 (作为未来 RL 训练的 Label)
+      # 🎯 SOTA 级并网重構：动态订阅慢脑 Goal，彻底掐断记录仪硬编码，实现 100% 数据空间自洽！
+      human_prior: slow_brain_mapper/human_prior
+      # 监听人类下发的动作指令 (作为未来目标 Label)
       control_cmd: keyboard_teleop/control_cmd
 
   # ---------------------------------------------------------------
-  # 📊 4. 旁路探针：NEXUS 可视化遥测大屏 (让你看着大屏开车)
+  # 📊 5. 旁路探针：NEXUS 可视化遥测大屏 (让你看着大屏开车)
   # ---------------------------------------------------------------
   - id: telemetry_dashboard
     path: uv
@@ -61,3 +77,4 @@ nodes:
       obstacle_force: isaac_sim_env/obstacle_force
       control_cmd: keyboard_teleop/control_cmd
       jpeg_image: isaac_sim_env/jpeg_image
+      bev_grid: isaac_sim_env/bev_grid

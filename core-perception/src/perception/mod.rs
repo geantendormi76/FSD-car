@@ -1,4 +1,3 @@
-pub mod frog_eye;
 pub mod matcher;
 pub mod xfeat_engine;
 pub mod pidnet_engine;

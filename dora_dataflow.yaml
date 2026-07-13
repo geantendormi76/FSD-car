@@ -11,7 +11,6 @@ nodes:
       control_cmd: fast_brain_nmpc/control_cmd
     outputs:
       - xfeat_features
-      - obstacle_force
       - odometry
       - jpeg_image
       - bev_grid
@@ -30,7 +29,6 @@ nodes:
       DORA_RUNTIME_TYPE_CHECK: warn
       LD_LIBRARY_PATH: /home/zhz/fsd-car/simulation-env/acados/lib:/home/zhz/fsd-car/simulation-env/c_generated_code
     inputs:
-      obstacle_force: isaac_sim_env/obstacle_force
       odometry: isaac_sim_env/odometry
       human_prior: slow_brain_mapper/human_prior
       ttc: optical_reflex_node/ttc
@@ -55,7 +53,6 @@ nodes:
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
     inputs:
       odometry: isaac_sim_env/odometry
-      obstacle_force: isaac_sim_env/obstacle_force
       xfeat_features: isaac_sim_env/xfeat_features
       human_prior: slow_brain_mapper/human_prior
       control_cmd: fast_brain_nmpc/control_cmd

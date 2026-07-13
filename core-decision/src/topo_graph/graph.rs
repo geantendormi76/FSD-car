@@ -13,7 +13,7 @@ pub struct Edge {
     pub relative_yaw: f32,   // 驶向目标节点所期望的相对偏航角 (单位: 度)
 }
 
-/// 🛡️ 拓扑地图：管理所有的地标和道路网
+/// 🛡️ 拓扑地图：管理所有的度量-拓扑混合地标
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct TopologicalGraph {
     pub nodes: HashMap<u32, TopologicalNode>,
@@ -72,15 +72,14 @@ impl TopologicalGraph {
         let mut dist: HashMap<u32, f32> = HashMap::new();
         let mut parent: HashMap<u32, u32> = HashMap::new();
         let mut heap = BinaryHeap::new();
-
+        
         dist.insert(start, 0.0);
         heap.push(State { cost: 0.0, position: start });
-
+        
         let goal_node = self.nodes.get(&goal)?;
-
+        
         while let Some(State { cost: current_cost, position }) = heap.pop() {
             if position == goal {
-                // 递归反转重构出最平滑的路径节点序列
                 let mut path = Vec::new();
                 let mut curr = goal;
                 while curr != start {
@@ -91,27 +90,25 @@ impl TopologicalGraph {
                 path.reverse();
                 return Some(path);
             }
-
+            
             if let Some(&d) = dist.get(&position) {
                 if current_cost > d {
                     continue;
                 }
             }
-
+            
             if let Some(edges) = self.adjacency_list.get(&position) {
                 for edge in edges {
                     let next = edge.target_id;
                     let next_node = self.nodes.get(&next)?;
                     let new_dist = dist.get(&position).copied().unwrap_or(f32::INFINITY) + edge.weight;
-
+                    
                     if new_dist < dist.get(&next).copied().unwrap_or(f32::INFINITY) {
                         dist.insert(next, new_dist);
                         parent.insert(next, position);
-
-                        // A* 核心：计算当前探索点到终点地标的欧氏几何距离作为启发式估算 (H 值) [cite: 21]
+                        // A* 核心：计算度量空间下的几何欧氏距离作为启发式估算 (H 值) [cite: 21]
                         let h = ((next_node.pose.x - goal_node.pose.x).powi(2) + 
                                  (next_node.pose.y - goal_node.pose.y).powi(2)).sqrt();
-
                         heap.push(State { cost: new_dist + h, position: next });
                     }
                 }
@@ -120,7 +117,7 @@ impl TopologicalGraph {
         None 
     }
 
-    /// 💾 将整个拓扑地图持久化写入硬盘文件 (小车保存其脑海中的小区地图记忆)
+    /// 💾 将带有视觉描述子和北斗坐标的混合拓扑地图持久化写入硬盘
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {
         let serialized = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         let mut file = File::create(path).map_err(|e| e.to_string())?;
@@ -128,7 +125,7 @@ impl TopologicalGraph {
         Ok(())
     }
 
-    /// 📥 从硬盘加载小区地图记忆 (开机自检自动恢复地图)
+    /// 📥 从硬盘恢复混合拓扑地图记忆
     pub fn load_from_file(path: &str) -> Result<Self, String> {
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut contents = String::new();

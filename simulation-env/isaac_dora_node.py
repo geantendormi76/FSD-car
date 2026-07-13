@@ -8,10 +8,8 @@ import torch.nn.functional as F
 import onnxruntime as ort
 import pyarrow as pa
 from dora import Node
-
 os.environ["ENABLE_CAMERAS"] = "1"
 os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
-
 def load_env_manually():
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     if os.path.exists(env_path):
@@ -22,9 +20,7 @@ def load_env_manually():
                     parts = line.split("=", 1)
                     if len(parts) == 2:
                         os.environ[parts[0].strip()] = parts[1].strip()
-
 load_env_manually()
-
 try:
     sys.argv.extend(["--/log/level=error", "--/log/fileLogLevel=error"])
     from isaacsim import SimulationApp
@@ -32,7 +28,7 @@ try:
         "headless": False,  
     })
     import omni
-    from pxr import Usd, UsdPhysics, PhysxSchema
+    from pxr import Usd, UsdPhysics, PhysxSchema, UsdGeom
     from isaacsim.core.api import World
     from isaacsim.core.prims import Articulation
     from isaacsim.core.utils.stage import open_stage
@@ -41,61 +37,12 @@ try:
 except ImportError as e:
     print(f"ImportError: {e}")
     sys.exit(1)
-
-class BionicFrogEye:
-    def __init__(self, width=640, height=480):
-        self.w = width
-        self.h = height
-        self.frame_buffer = []
-        self.buffer_size = 5
-        self.erf = np.zeros((height, width), dtype=np.float32)
-        self.irf = np.zeros((height, width), dtype=np.float32)
-        self.beta = 0.5
-        self.alpha_erf = 0.4
-        self.alpha_irf = 0.85
-        self.event_threshold = 10.0
-        y_indices, x_indices = np.indices((self.h, self.w))
-        self.x_coords = x_indices.astype(np.float32)
-        self.closeness_weight = (y_indices / float(self.h)) + 0.15
-        self.fast_detector = cv2.FastFeatureDetector_create(threshold=15, nonmaxSuppression=True)
-
-    def process_frame(self, frame_rgb):
-        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        self.frame_buffer.append(gray)
-        if len(self.frame_buffer) < self.buffer_size:
-            return 0.0, 0.0, np.zeros((self.h, self.w), dtype=np.uint8)
-        history_frame = self.frame_buffer.pop(0)
-        diff = cv2.absdiff(history_frame, gray)
-        keypoints = self.fast_detector.detect(gray, None)
-        mask_radius = 25
-        for kp in keypoints:
-            u, v = int(kp.pt[0]), int(kp.pt[1])
-            cv2.circle(diff, (u, v), mask_radius, 0, -1)
-        _, events = cv2.threshold(diff, self.event_threshold, 1.0, cv2.THRESH_BINARY)
-        events_rf = cv2.GaussianBlur(events, (21, 21), 0)
-        self.erf = self.erf * self.alpha_erf + events_rf
-        self.irf = self.irf * self.alpha_irf + events_rf
-        net_energy = np.maximum(0.0, self.erf - self.beta * self.irf)
-        weighted_energy = net_energy * self.closeness_weight
-        total_energy = np.sum(weighted_energy)
-        if total_energy > 15.0:
-            x_c = np.sum(self.x_coords * weighted_energy) / total_energy
-            dx = (x_c - self.w / 2.0) / (self.w / 2.0)
-            F_y = dx * 1.5
-            F_x = - (total_energy / (self.w * self.h)) * 5.0
-        else:
-            F_x, F_y = 0.0, 0.0
-        heatmap = np.clip(net_energy * 255.0, 0, 255).astype(np.uint8)
-        return F_x, F_y, heatmap
-
 class CLIDDEngine:
     def __init__(self, model_path):
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
         print("CLIDD Local Neural Localization Engine successfully loaded.")
-
     def extract(self, frame_rgb, top_k=200):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         pad_y = (640 - 480) // 2
@@ -145,7 +92,6 @@ class CLIDDEngine:
             names=['x', 'y', 'score', 'descriptor']
         )
         return struct_arr
-
 def main():
     if "DORA_NODE_CONFIG" not in os.environ:
         print("Standalone simulation testing is bypassed.")
@@ -158,10 +104,7 @@ def main():
     default_usd_name = "fsd_car_racetrack.usd"
     clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)
     default_usd_path = os.path.join(fsd_assets_dir, default_usd_name)
-    if os.path.exists(clean_usd_path):
-        usd_path = clean_usd_path
-    else:
-        usd_path = default_usd_path
+    usd_path = clean_usd_path if os.path.exists(clean_usd_path) else default_usd_path
     if not os.path.exists(usd_path):
         sys.exit(1)
     open_stage(usd_path=usd_path)
@@ -187,6 +130,18 @@ def main():
             physx_joint.CreateMaxJointVelocityAttr().Set(100000.0) 
     car = Articulation(prim_paths_expr=car_path, name="jetbot")
     world.scene.add(car)
+    world.reset()
+    init_positions, init_orientations = car.get_world_poses()
+    print(f"✓ SOTA Spatial Anchoring: Saved init start pose: {init_positions[0]}")
+    obstacle_paths = []
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        if "jetbot" in prim_path.lower() or "groundplane" in prim_path.lower() or "camera" in prim_path.lower() or "light" in prim_path.lower() or prim_path == "/Root":
+            continue
+        name = prim.GetName().lower()
+        if any(kw in name for kw in ["obstacle", "pallet", "box", "can", "bottle", "sphere", "cone", "table", "chair", "cube", "cylinder"]):
+            if prim.IsA(UsdGeom.Xform) or prim.IsA(UsdGeom.Mesh):
+                obstacle_paths.append(prim_path)
     from isaacsim.core.prims import XFormPrim
     obstacle_path = "/Root/dynamic_obstacles*/box_obstacle_*"
     obstacle = None
@@ -203,13 +158,8 @@ def main():
     if not os.path.exists(clidd_model_path):
         sys.exit(1)
     clidd_engine = CLIDDEngine(clidd_model_path)
-    frog_eye = BionicFrogEye(640, 480)
-    
-    world.reset()
-    # 🛡️ 架构师自愈：高精初始化物理障碍物的起始位姿，使其真正动起来，告别幽灵状态！
     if obstacle is not None:
         obs_init_poses, obs_init_rots = obstacle.get_world_poses()
-        
     left_idx = 0
     right_idx = 1
     for idx, name in enumerate(car.dof_names):
@@ -245,6 +195,7 @@ def main():
     alpha_ars = 30.0 
     v_left_ref = 0.0
     v_right_ref = 0.0
+    current_goal_pose = [0.52, 4.11]
     try:
         while simulation_app.is_running():
             world.step(render=True)
@@ -268,12 +219,16 @@ def main():
                 pose_x, pose_y = float(positions[0][0]), float(positions[0][1])
                 qw, qx, qy, qz = orientations[0]
                 pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
+                dx_goal = current_goal_pose[0] - pose_x
+                dy_goal = current_goal_pose[1] - pose_y
+                dist_to_goal = np.sqrt(dx_goal**2 + dy_goal**2)
+                if dist_to_goal < 0.25:
+                    print(f"\n🚀 [仿真自愈] 车端自动重定位重置点...")
+                    car.set_world_poses(positions=init_positions, orientations=init_orientations)
+                    car.set_joint_velocity_targets(np.zeros(len(car.dof_names)))
+                    pose_x, pose_y, pose_yaw = float(init_positions[0][0]), float(init_positions[0][1]), 0.0
                 arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
-                
-                # -------------------------------------------------------------------------
-                # 🛡️ 坐标直画 BEV 机制 (GT-BEV Renderer)
-                # -------------------------------------------------------------------------
                 bev_grid = np.zeros((192, 192), dtype=np.uint8)
                 for yw_sample in np.linspace(pose_y, pose_y + 8.0, 50):
                     dx_left = -1.5 - pose_x
@@ -284,7 +239,6 @@ def main():
                     row_l = int(191.0 - (xl_l / 0.03125))
                     if 0 <= row_l < 192 and 0 <= col_l < 192:
                         cv2.circle(bev_grid, (col_l, row_l), 4, 255, -1)
-                        
                     dx_right = 1.5 - pose_x
                     dy_right = yw_sample - pose_y
                     xl_r = dx_right * np.cos(pose_yaw) + dy_right * np.sin(pose_yaw)
@@ -293,52 +247,32 @@ def main():
                     row_r = int(191.0 - (xl_r / 0.03125))
                     if 0 <= row_r < 192 and 0 <= col_r < 192:
                         cv2.circle(bev_grid, (col_r, row_r), 4, 255, -1)
-                
-                if obstacle is not None and obs_init_poses is not None:
-                    obs_positions, _ = obstacle.get_world_poses()
-                    for pos in obs_positions:
-                        ox, oy = pos[0], pos[1]
-                        dx_o = ox - pose_x
-                        dy_o = oy - pose_y
-                        xl_o = dx_o * np.cos(pose_yaw) + dy_o * np.sin(pose_yaw)
-                        yl_o = -dx_o * np.sin(pose_yaw) + dy_o * np.cos(pose_yaw)
-                        col_o = int(96.0 - (yl_o / 0.03125))
-                        row_o = int(191.0 - (xl_o / 0.03125))
-                        if -50 <= row_o < 242 and -50 <= col_o < 242:
-                            cv2.circle(bev_grid, (col_o, row_o), 8, 255, -1)
-                            
+                for prim_path in obstacle_paths:
+                    prim = stage.GetPrimAtPath(prim_path)
+                    if not prim.IsValid():
+                        continue
+                    xform = UsdGeom.Xformable(prim)
+                    time_code = Usd.TimeCode.Default()
+                    matrix = xform.ComputeLocalToWorldTransform(time_code)
+                    translation = matrix.ExtractTranslation()
+                    ox, oy = float(translation[0]), float(translation[1])
+                    dx_o = ox - pose_x
+                    dy_o = oy - pose_y
+                    xl_o = dx_o * np.cos(pose_yaw) + dy_o * np.sin(pose_yaw)
+                    yl_o = -dx_o * np.sin(pose_yaw) + dy_o * np.cos(pose_yaw)
+                    col_o = int(96.0 - (yl_o / 0.03125))
+                    row_o = int(191.0 - (xl_o / 0.03125))
+                    if -50 <= row_o < 242 and -50 <= col_o < 242:
+                        cv2.circle(bev_grid, (col_o, row_o), 8, 255, -1)
                 bev_flat = bev_grid.flatten()
                 arrow_bev = pa.array(bev_flat, type=pa.uint8())
                 dora_node.send_output("bev_grid", arrow_bev)
-                
-                # -------------------------------------------------------------------------
-                # 🛡️ 架构师自愈：彻底将 PPO 避障力输入源由旧青蛙眼切换至“纯净几何势场力”
-                # -------------------------------------------------------------------------
-                F_x, F_y = 0.0, 0.0
-                if obstacle is not None and obs_init_poses is not None:
-                    obs_positions, _ = obstacle.get_world_poses()
-                    for pos in obs_positions:
-                        ox, oy = pos[0], pos[1]
-                        dx_o = ox - pose_x
-                        dy_o = oy - pose_y
-                        xl_o = dx_o * np.cos(pose_yaw) + dy_o * np.sin(pose_yaw)
-                        yl_o = -dx_o * np.sin(pose_yaw) + dy_o * np.cos(pose_yaw)
-                        dist = np.sqrt(xl_o**2 + yl_o**2)
-                        if dist < 1.5 and xl_o > 0.0:
-                            weight = 1.0 / (dist + 1e-3)
-                            F_x -= (xl_o / dist) * weight * 0.1
-                            F_y -= (yl_o / dist) * weight * 0.2
-                
                 bgr_frame = rgb_frame.copy() 
                 clean_bgr = bgr_frame.copy()
                 _, jpeg_encoded = cv2.imencode('.jpg', clean_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 arrow_jpeg = pa.array(jpeg_encoded.flatten(), type=pa.uint8())
                 dora_node.send_output("jpeg_image", arrow_jpeg)
-                
-                arrow_obstacle_force = pa.array([F_x, F_y], type=pa.float32())
-                dora_node.send_output("obstacle_force", arrow_obstacle_force)
                 if tick % 100 == 0:
-                    arrow_clidd_features = fsd_assets_dir = "/home/zhz/fsd-car/assets" 
                     arrow_clidd_features = clidd_engine.extract(rgb_frame, top_k=200)
                     if arrow_clidd_features is not None:
                         dora_node.send_output("xfeat_features", arrow_clidd_features)
@@ -346,10 +280,15 @@ def main():
             if event is not None:
                 ev_type = event["type"]
                 if ev_type == "INPUT":
-                    if event["id"] == "control_cmd":
+                    ev_id = event["id"]
+                    if ev_id == "control_cmd":
                         cmd_arr = event["value"].to_numpy()
                         if len(cmd_arr) == 2:
                             v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
+                    elif ev_id == "human_prior":
+                        prior_arr = event["value"].to_numpy()
+                        if len(prior_arr) >= 2:
+                            current_goal_pose = [float(prior_arr[0]), float(prior_arr[1])]
                 elif ev_type == "STOP":
                     break
             v_left_cmd = (v_cmd - w_cmd * L / 2.0) / R
@@ -369,8 +308,6 @@ def main():
             targets[left_idx] = u_left * left_sign
             targets[right_idx] = u_right * right_sign
             car.set_joint_velocity_targets(targets)
-            if tick % 100 == 0:
-                pass 
     except KeyboardInterrupt:
         pass
     finally:
@@ -381,6 +318,5 @@ def main():
         except Exception:
             pass
         simulation_app.close()
-
 if __name__ == "__main__":
     main()

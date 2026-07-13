@@ -3,9 +3,11 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 
 #[derive(Debug, Clone, Copy)]
-pub struct 凸包走廊 {
-    pub a_mat: [[f64; 2]; 4], 
-    pub b_vec: [f64; 4],      
+pub struct 动态障碍物 {
+    pub x: f64,
+    pub y: f64,
+    pub a: f64,
+    pub b: f64,
 }
 
 pub struct 预测控制求解器 {
@@ -66,31 +68,35 @@ impl 预测控制求解器 {
         Ok(())
     }
 
-    pub fn 设置安全走廊硬约束(&mut self, 走廊: &凸包走廊) -> Result<(), String> {
-        let mut p = [0.0f64; 12];
-        for i in 0..4 {
-            p[i * 3 + 0] = 走廊.a_mat[i][0];
-            p[i * 3 + 1] = 走廊.a_mat[i][1];
-            p[i * 3 + 2] = 走廊.b_vec[i];
+    // 🛡️ 架构师自愈：恢复标准的 3 圆参数硬约束，完美对齐已编译的 C 求解器模型！
+    pub fn 设置动态障碍物硬约束(&mut self, 障碍物列表: &[动态障碍物]) -> Result<(), String> {
+        let mut p = [1000.0f64; 12]; // Default to far away (1000m)
+        for i in 0..3 {
+            p[4 * i + 2] = 0.1;
+            p[4 * i + 3] = 0.1;
+        }
+        for (i, obs) in 障碍物列表.iter().take(3).enumerate() {
+            p[4 * i + 0] = obs.x;
+            p[4 * i + 1] = obs.y;
+            p[4 * i + 2] = obs.a;
+            p[4 * i + 3] = obs.b;
         }
         unsafe {
             for stage in 0..=20 {
                 let status = diff_drive_car_acados_update_params(self.capsule, stage, p.as_ptr(), 12);
                 if status != 0 {
-                    return Err(format!("Failed to inject convex corridor constraints at stage {}", stage));
+                    return Err(format!("Failed to inject obstacles parameters at stage {}", stage));
                 }
             }
         }
         Ok(())
     }
 
-    // 🛡️ 架构师自愈：修改返回值，向外解包输出 i32 求解状态码，不强行崩溃
-    pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64, i32), String> {
+    pub fn 求解最优控制量(&mut self, 当前线速度: f64) -> Result<(f64, f64), String> {
         unsafe {
             let status = diff_drive_car_acados_solve(self.capsule);
             if status != 0 {
-                // 若求解失败（如状态码 1, 2, 3），将状态码返回给决策节点，避免硬崩溃，提供降级避障
-                return Ok((0.0, 0.0, status as i32));
+                return Err(format!("NMPC solve failed, status: {}", status));
             }
             let config = diff_drive_car_acados_get_nlp_config(self.capsule);
             let dims = diff_drive_car_acados_get_nlp_dims(self.capsule);
@@ -100,12 +106,11 @@ impl 预测控制求解器 {
             ocp_nlp_out_get(config, dims, nlp_out, 0, field_u.as_ptr(), u_opt.as_mut_ptr() as *mut c_void);
             let a_opt = u_opt[0];
             let w_cmd_raw = u_opt[1];
-            
             let mut v_cmd = 当前线速度 + a_opt * 0.01;
             if v_cmd > 0.80 { v_cmd = 0.80; }
             if v_cmd < 0.0 { v_cmd = 0.0; }
             let w_cmd = w_cmd_raw.clamp(-1.0, 1.0);
-            Ok((v_cmd, w_cmd, 0))
+            Ok((v_cmd, w_cmd))
         }
     }
 }
