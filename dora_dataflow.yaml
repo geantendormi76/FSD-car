@@ -14,11 +14,45 @@ nodes:
       - odometry
       - jpeg_image
       - bev_grid
+  - id: core_perception
+    path: target/release/perception_node
+    build: cargo build -p core-perception --release --bin perception_node
+    env:
+      ORT_DYLIB_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/onnxruntime/capi/libonnxruntime.so.1.27.0
+      PIDNET_MODEL_PATH: model/pidnet_s.onnx
+      XFEAT_MODEL_PATH: model/xfeat_640x640.onnx
+      XFEAT_FRAME_INTERVAL: "10"
+      CAMERA_IMAGE_WIDTH: "640"
+      CAMERA_IMAGE_HEIGHT: "480"
+      CAMERA_FX: "204.25533"
+      CAMERA_FY: "153.19150"
+      CAMERA_CX: "319.5"
+      CAMERA_CY: "239.5"
+      CAMERA_FORWARD_OFFSET_M: "0.06935859"
+      CAMERA_LEFT_OFFSET_M: "-0.00000002"
+      CAMERA_HEIGHT_M: "0.13328385"
+      CAMERA_YAW_RAD: "0.076109"
+      CAMERA_PITCH_RAD: "0.168662"
+      CAMERA_ROLL_RAD: "0.0"
+      BEV_METERS_PER_CELL: "0.1041666667"
+      BEV_MIN_FORWARD_M: "0.20"
+      BEV_EGO_ROW: "95.5"
+      BEV_EGO_COL: "95.5"
+    inputs:
+      jpeg_image:
+        source: isaac_sim_env/jpeg_image
+        queue_size: 1
+    outputs:
+      - bev_grid
+      - bev_semantic
+      - xfeat_features
   - id: optical_reflex_node
     path: uv
     args: run --cache-dir /home/zhz/.cache/uv_clean simulation-env/optical_reflex_node.py
     inputs:
       jpeg_image: isaac_sim_env/jpeg_image
+      odometry: isaac_sim_env/odometry
+      bev_grid: core_perception/bev_grid
     outputs:
       - ttc
   - id: fast_brain_nmpc
@@ -32,7 +66,7 @@ nodes:
       odometry: isaac_sim_env/odometry
       human_prior: slow_brain_mapper/human_prior
       ttc: optical_reflex_node/ttc
-      bev_grid: isaac_sim_env/bev_grid
+      bev_grid: core_perception/bev_grid
     outputs:
       - control_cmd
   - id: slow_brain_mapper
@@ -41,7 +75,7 @@ nodes:
     env:
       RUST_LOG: info
     inputs:
-      xfeat_features: isaac_sim_env/xfeat_features
+      xfeat_features: core_perception/xfeat_features
       odometry: isaac_sim_env/odometry
     outputs:
       - human_prior
@@ -53,8 +87,8 @@ nodes:
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
     inputs:
       odometry: isaac_sim_env/odometry
-      xfeat_features: isaac_sim_env/xfeat_features
+      xfeat_features: core_perception/xfeat_features
       human_prior: slow_brain_mapper/human_prior
       control_cmd: fast_brain_nmpc/control_cmd
       jpeg_image: isaac_sim_env/jpeg_image
-      bev_grid: isaac_sim_env/bev_grid
+      bev_grid: core_perception/bev_grid

@@ -5,11 +5,17 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from collections import deque
-sys.path.append("/home/zhz/fsd-car/simulation-env")
-sys.path.append("/home/zhz/fsd-car/simulation-env/c_generated_code")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+SIM_ENV_DIR = os.path.join(REPO_ROOT, "simulation-env")
+ACADOS_CODE_DIR = os.path.join(SIM_ENV_DIR, "c_generated_code")
+sys.path.append(SIM_ENV_DIR)
+sys.path.append(ACADOS_CODE_DIR)
+V_MAX = 0.8
+KAPPA_MAX = 1.25
 try:
     from acados_template import AcadosOcpSolver
 except ImportError:
+    AcadosOcpSolver = None
     print("Warning: acados_template could not be loaded. Please ensure acados path is configured.")
 class FSDCarGymEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 10}
@@ -19,7 +25,11 @@ class FSDCarGymEnv(gym.Env):
         self.goal_y = goal_y
         self.max_steps = max_steps
         self.current_step = 0
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        self.action_space = spaces.Box(
+            low=np.array([0.0, -1.0], dtype=np.float32),
+            high=np.array([1.0, 1.0], dtype=np.float32),
+            dtype=np.float32
+        )
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(15,), dtype=np.float32)
         self.state_x = 0.0
         self.state_y = 0.0
@@ -36,9 +46,12 @@ class FSDCarGymEnv(gym.Env):
         self.obs_history = deque(maxlen=5)
         self.prev_dist_to_goal = 0.0
         self.solver = None
-        json_path = "/home/zhz/fsd-car/simulation-env/acados_ocp.json"
-        if os.path.exists(json_path):
-            self.solver = AcadosOcpSolver(None, json_file=json_path, generate=False, build=False)
+        json_path = os.path.join(SIM_ENV_DIR, "acados_ocp.json")
+        if os.path.exists(json_path) and AcadosOcpSolver is not None:
+            try:
+                self.solver = AcadosOcpSolver(None, json_file=json_path, generate=False, build=False)
+            except Exception as exc:
+                print(f"Warning: acados solver could not be initialized ({exc}). Mock solver fallback active.")
         else:
             print(f"Warning: acados solver config not found at: {json_path}. Mock solver fallback active.")
     def reset(self, seed=None, options=None):
@@ -79,10 +92,8 @@ class FSDCarGymEnv(gym.Env):
         self.current_step += 1
         a_vel = float(action[0])
         a_kappa = float(action[1])
-        v_max = 0.8
-        kappa_max = 1.25 
-        target_velocity = np.clip(a_vel, 0.0, 1.0) * v_max
-        kappa = np.clip(a_kappa, -1.0, 1.0) * kappa_max
+        target_velocity = np.clip(a_vel, 0.0, 1.0) * V_MAX
+        kappa = np.clip(a_kappa, -1.0, 1.0) * KAPPA_MAX
         w_ref = kappa * target_velocity
         axis_a = 0.35
         axis_b = 0.25
@@ -151,7 +162,8 @@ class FSDCarGymEnv(gym.Env):
                     acc, omega = -1.0, 0.0
             else:
                 acc = -0.5 * (self.state_v - target_velocity)
-                omega = (local_target_y / (local_target_x**2 + 1e-3)) * 0.6
+                heading_feedback = (local_target_y / (local_target_x**2 + 1e-3)) * 0.3
+                omega = np.clip(w_ref + heading_feedback, -1.0, 1.0)
             self.state_x += self.state_v * math.cos(self.state_yaw) * dt_sub
             self.state_y += self.state_v * math.sin(self.state_yaw) * dt_sub
             self.state_yaw += omega * dt_sub

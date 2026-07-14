@@ -10,6 +10,14 @@ import pyarrow as pa
 from dora import Node
 os.environ["ENABLE_CAMERAS"] = "1"
 os.environ["ISAAC_ASSET_ROOT"] = "/run/media/zhz/数据/isaac_assets"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BEV_WIDTH = 192
+BEV_HEIGHT = 192
+BEV_METERS_PER_CELL = 20.0 / BEV_WIDTH
+BEV_EGO_ROW = (BEV_HEIGHT - 1) * 0.5
+BEV_EGO_COL = (BEV_WIDTH - 1) * 0.5
+CONTROL_STALE_TICKS = 20
+
 def load_env_manually():
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     if os.path.exists(env_path):
@@ -37,6 +45,13 @@ try:
 except ImportError as e:
     print(f"ImportError: {e}")
     sys.exit(1)
+def ego_to_bev(forward_m, left_m):
+    row = int(round(BEV_EGO_ROW - forward_m / BEV_METERS_PER_CELL))
+    col = int(round(BEV_EGO_COL - left_m / BEV_METERS_PER_CELL))
+    if 0 <= row < BEV_HEIGHT and 0 <= col < BEV_WIDTH:
+        return row, col
+    return None
+
 class CLIDDEngine:
     def __init__(self, model_path):
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -99,7 +114,7 @@ def main():
         sys.exit(0)
     print("Launching FSD local zero-copy integration pipeline with ARS...")
     dora_node = Node()
-    fsd_assets_dir = "/home/zhz/fsd-car/assets"
+    fsd_assets_dir = os.path.join(REPO_ROOT, "assets")
     clean_usd_name = "fsd_car_clean1.usd"
     default_usd_name = "fsd_car_racetrack.usd"
     clean_usd_path = os.path.join(fsd_assets_dir, clean_usd_name)
@@ -154,7 +169,7 @@ def main():
     render_product = rep.create.render_product(camera_path, (640, 480))
     rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
     rgb_annotator.attach([render_product])
-    clidd_model_path = "/home/zhz/fsd-car/model/xfeat_640x640.onnx"
+    clidd_model_path = os.path.join(REPO_ROOT, "model", "xfeat_640x640.onnx")
     if not os.path.exists(clidd_model_path):
         sys.exit(1)
     clidd_engine = CLIDDEngine(clidd_model_path)
@@ -196,6 +211,7 @@ def main():
     v_left_ref = 0.0
     v_right_ref = 0.0
     current_goal_pose = [0.52, 4.11]
+    last_control_tick = 0
     try:
         while simulation_app.is_running():
             world.step(render=True)
@@ -219,6 +235,7 @@ def main():
                 pose_x, pose_y = float(positions[0][0]), float(positions[0][1])
                 qw, qx, qy, qz = orientations[0]
                 pose_yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
+                reset_this_tick = False
                 dx_goal = current_goal_pose[0] - pose_x
                 dy_goal = current_goal_pose[1] - pose_y
                 dist_to_goal = np.sqrt(dx_goal**2 + dy_goal**2)
@@ -227,25 +244,33 @@ def main():
                     car.set_world_poses(positions=init_positions, orientations=init_orientations)
                     car.set_joint_velocity_targets(np.zeros(len(car.dof_names)))
                     pose_x, pose_y, pose_yaw = float(init_positions[0][0]), float(init_positions[0][1]), 0.0
-                arrow_odom = pa.array([pose_x, pose_y, pose_yaw], type=pa.float32())
+                    reset_this_tick = True
+                measured_v = 0.0
+                if not reset_this_tick:
+                    joint_vels = car.get_joint_velocities()
+                    if joint_vels is not None and len(joint_vels) > 0:
+                        v_left_actual = float(joint_vels[0][left_idx]) * left_sign
+                        v_right_actual = float(joint_vels[0][right_idx]) * right_sign
+                        measured_v = 0.5 * R * (v_left_actual + v_right_actual)
+                arrow_odom = pa.array([pose_x, pose_y, pose_yaw, measured_v], type=pa.float32())
                 dora_node.send_output("odometry", arrow_odom)
-                bev_grid = np.zeros((192, 192), dtype=np.uint8)
+                bev_grid = np.zeros((BEV_HEIGHT, BEV_WIDTH), dtype=np.uint8)
                 for yw_sample in np.linspace(pose_y, pose_y + 8.0, 50):
                     dx_left = -1.5 - pose_x
                     dy_left = yw_sample - pose_y
                     xl_l = dx_left * np.cos(pose_yaw) + dy_left * np.sin(pose_yaw)
                     yl_l = -dx_left * np.sin(pose_yaw) + dy_left * np.cos(pose_yaw)
-                    col_l = int(96.0 - (yl_l / 0.03125))
-                    row_l = int(191.0 - (xl_l / 0.03125))
-                    if 0 <= row_l < 192 and 0 <= col_l < 192:
+                    left_cell = ego_to_bev(xl_l, yl_l)
+                    if left_cell is not None:
+                        row_l, col_l = left_cell
                         cv2.circle(bev_grid, (col_l, row_l), 4, 255, -1)
                     dx_right = 1.5 - pose_x
                     dy_right = yw_sample - pose_y
                     xl_r = dx_right * np.cos(pose_yaw) + dy_right * np.sin(pose_yaw)
                     yl_r = -dx_right * np.sin(pose_yaw) + dy_right * np.cos(pose_yaw)
-                    col_r = int(96.0 - (yl_r / 0.03125))
-                    row_r = int(191.0 - (xl_r / 0.03125))
-                    if 0 <= row_r < 192 and 0 <= col_r < 192:
+                    right_cell = ego_to_bev(xl_r, yl_r)
+                    if right_cell is not None:
+                        row_r, col_r = right_cell
                         cv2.circle(bev_grid, (col_r, row_r), 4, 255, -1)
                 for prim_path in obstacle_paths:
                     prim = stage.GetPrimAtPath(prim_path)
@@ -260,9 +285,9 @@ def main():
                     dy_o = oy - pose_y
                     xl_o = dx_o * np.cos(pose_yaw) + dy_o * np.sin(pose_yaw)
                     yl_o = -dx_o * np.sin(pose_yaw) + dy_o * np.cos(pose_yaw)
-                    col_o = int(96.0 - (yl_o / 0.03125))
-                    row_o = int(191.0 - (xl_o / 0.03125))
-                    if -50 <= row_o < 242 and -50 <= col_o < 242:
+                    obstacle_cell = ego_to_bev(xl_o, yl_o)
+                    if obstacle_cell is not None:
+                        row_o, col_o = obstacle_cell
                         cv2.circle(bev_grid, (col_o, row_o), 8, 255, -1)
                 bev_flat = bev_grid.flatten()
                 arrow_bev = pa.array(bev_flat, type=pa.uint8())
@@ -285,12 +310,15 @@ def main():
                         cmd_arr = event["value"].to_numpy()
                         if len(cmd_arr) == 2:
                             v_cmd, w_cmd = float(cmd_arr[0]), float(cmd_arr[1])
+                            last_control_tick = tick
                     elif ev_id == "human_prior":
                         prior_arr = event["value"].to_numpy()
                         if len(prior_arr) >= 2:
                             current_goal_pose = [float(prior_arr[0]), float(prior_arr[1])]
                 elif ev_type == "STOP":
                     break
+            if tick - last_control_tick > CONTROL_STALE_TICKS:
+                v_cmd, w_cmd = 0.0, 0.0
             v_left_cmd = (v_cmd - w_cmd * L / 2.0) / R
             v_right_cmd = (v_cmd + w_cmd * L / 2.0) / R
             joint_vels = car.get_joint_velocities()
@@ -312,7 +340,7 @@ def main():
         pass
     finally:
         try:
-            car.set_joint_velocity_targets(np.array([[0.0, 0.0]]))
+            car.set_joint_velocity_targets(np.zeros(len(car.dof_names)))
             world.step(render=True)
             world.stop()
         except Exception:

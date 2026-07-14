@@ -6,7 +6,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.normal import Normal
-sys.path.append("/home/zhz/fsd-car/brain/spiced_rl_trainer")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
 from env.fsd_env import FSDCarGymEnv
 from train_bc_anchor import GaussianPolicy, SpicedBrainInference
 class ActorCritic(nn.Module):
@@ -39,9 +42,12 @@ def train_ppo():
     print(f"PPO training starting on device: {device}")
     env = FSDCarGymEnv()
     anchor = GaussianPolicy(input_dim=15).to(device)
-    anchor_path = "/home/zhz/fsd-car/bc_anchor.pth"
-    if not os.path.exists(anchor_path):
-        anchor_path = "/home/zhz/fsd-car/brain/spiced_rl_trainer/bc_anchor.pth"
+    anchor_candidates = [
+        os.path.join(REPO_ROOT, "bc_anchor.pth"),
+        os.path.join(REPO_ROOT, "model", "bc_anchor.pth"),
+        os.path.join(SCRIPT_DIR, "bc_anchor.pth"),
+    ]
+    anchor_path = next((path for path in anchor_candidates if os.path.exists(path)), anchor_candidates[0])
     if os.path.exists(anchor_path):
         anchor.load_state_dict(torch.load(anchor_path, map_location=device))
         print(f"✓ Frozen 15D BC Anchor Coach successfully loaded from: {anchor_path}")
@@ -92,7 +98,7 @@ def train_ppo():
             next_obs, reward, terminated, truncated, _ = env.step(act_np)
             step_reward_sum += reward
             done = float(terminated or truncated)
-            reward_buffer[step] = done
+            reward_buffer[step] = reward
             next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
             next_done = done
             if done:
@@ -160,7 +166,8 @@ def train_ppo():
     inference_model = SpicedBrainInference(ac_model.actor).to("cpu")
     inference_model.eval()
     dummy_input = torch.zeros(1, 15, dtype=torch.float32)
-    model_dir = "/home/zhz/fsd-car/model"
+    model_dir = os.path.join(REPO_ROOT, "model")
+    os.makedirs(model_dir, exist_ok=True)
     onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
     torch.onnx.export(
         inference_model,

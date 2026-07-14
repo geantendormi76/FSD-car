@@ -13,6 +13,52 @@ import pyarrow as pa
 import time
 from dora import Node
 
+TTC_SAFE_SECONDS = 10.0
+TTC_EMERGENCY_SECONDS = 0.1
+TTC_PUBLISH_PERIOD_SECONDS = 0.05
+VISUAL_FRAME_STALE_SECONDS = 0.20
+CAMERA_FX = 204.25533
+CAMERA_FY = 153.19150
+CAMERA_CX = 319.5
+CAMERA_CY = 239.5
+CAMERA_FORWARD_OFFSET_M = 0.06935859
+CAMERA_LEFT_OFFSET_M = -0.00000002
+CAMERA_HEIGHT_M = 0.13328385
+CAMERA_YAW_RAD = 0.076109
+CAMERA_PITCH_RAD = 0.168662
+CAMERA_ROLL_RAD = 0.0
+BEV_METERS_PER_CELL = 20.0 / 192.0
+BEV_WIDTH = 192
+BEV_HEIGHT = 192
+BEV_EGO_ROW = 95.5
+BEV_EGO_COL = 95.5
+
+def pixel_to_bev(u, v):
+    normalized_x = (u - CAMERA_CX) / CAMERA_FX
+    normalized_y = (v - CAMERA_CY) / CAMERA_FY
+    sin_roll, cos_roll = np.sin(CAMERA_ROLL_RAD), np.cos(CAMERA_ROLL_RAD)
+    sin_pitch, cos_pitch = np.sin(CAMERA_PITCH_RAD), np.cos(CAMERA_PITCH_RAD)
+    pitched_y = sin_roll * normalized_x + cos_roll * normalized_y
+    denominator = cos_pitch * pitched_y + sin_pitch
+    if not np.isfinite(denominator) or denominator <= 1e-6:
+        return None
+    ray_scale = CAMERA_HEIGHT_M / denominator
+    heading_forward = ray_scale * (-sin_pitch * pitched_y + cos_pitch)
+    heading_left = -ray_scale * (cos_roll * normalized_x - sin_roll * normalized_y)
+    sin_yaw, cos_yaw = np.sin(CAMERA_YAW_RAD), np.cos(CAMERA_YAW_RAD)
+    forward_m = cos_yaw * heading_forward - sin_yaw * heading_left + CAMERA_FORWARD_OFFSET_M
+    left_m = sin_yaw * heading_forward + cos_yaw * heading_left + CAMERA_LEFT_OFFSET_M
+    row = int(round(BEV_EGO_ROW - forward_m / BEV_METERS_PER_CELL))
+    col = int(round(BEV_EGO_COL - left_m / BEV_METERS_PER_CELL))
+    if 0 <= row < BEV_HEIGHT and 0 <= col < BEV_WIDTH:
+        return row, col
+    return None
+
+def publish_ttc(dora_node, ttc):
+    ttc = float(np.clip(ttc, TTC_EMERGENCY_SECONDS, TTC_SAFE_SECONDS))
+    ttc_arrow = pa.array([ttc], type=pa.float32())
+    dora_node.send_output("ttc", ttc_arrow)
+
 def main():
     print("========================================================")
     print("👁️  NEXUS - Optical Flow Reflex Node Activated")
@@ -28,29 +74,17 @@ def main():
     prev_yaw = None
     prev_time = None
     omega_z = 0.0 # Instantaneous yaw rate
+    last_ttc = TTC_EMERGENCY_SECONDS
+    last_ttc_publish_time = 0.0
+    last_visual_frame_time = 0.0
     
-    # Initialize IPM homography matrix (aligned with Rust's IpmProjector)
-    src_pts = np.float32([
-        [0, 479],
-        [639, 479],
-        [224, 264],
-        [416, 264]
-    ])
-    dst_pts = np.float32([
-        [28.8, 191],
-        [163.2, 191],
-        [28.8, 0],
-        [163.2, 0]
-    ])
-    H = cv2.getPerspectiveTransform(src_pts, dst_pts)
-    
-    # 192x192 occupancy grid initialized as all-zero (free space)
-    bev_grid = np.zeros((192, 192), dtype=np.uint8)
+    # Unknown space is treated as occupied until a fresh BEV grid arrives.
+    bev_grid = np.full((BEV_HEIGHT, BEV_WIDTH), 255, dtype=np.uint8)
     
     # Camera intrinsic properties (VGA resolution)
-    fx = 500.0
-    cx = 320.0
-    cy = 240.0
+    fx = CAMERA_FX
+    cx = CAMERA_CX
+    cy = CAMERA_CY
     
     lk_params = dict(winSize=(15, 15), maxLevel=2,
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
@@ -60,6 +94,11 @@ def main():
         while True:
             event = dora_node.next(timeout=0.01)
             if event is None:
+                now = time.time()
+                if now - last_ttc_publish_time >= TTC_PUBLISH_PERIOD_SECONDS:
+                    heartbeat_ttc = last_ttc if now - last_visual_frame_time <= VISUAL_FRAME_STALE_SECONDS else TTC_EMERGENCY_SECONDS
+                    publish_ttc(dora_node, heartbeat_ttc)
+                    last_ttc_publish_time = now
                 continue
                 
             ev_type = event["type"]
@@ -92,19 +131,30 @@ def main():
                         
                 # 3. Main processing loop triggered by new visual frames
                 elif ev_id == "jpeg_image":
+                    last_visual_frame_time = time.time()
                     jpeg_bytes = event["value"].to_numpy()
                     frame = cv2.imdecode(jpeg_bytes, cv2.IMREAD_GRAYSCALE)
                     if frame is None:
+                        last_ttc = TTC_EMERGENCY_SECONDS
+                        now = time.time()
+                        if now - last_ttc_publish_time >= TTC_PUBLISH_PERIOD_SECONDS:
+                            publish_ttc(dora_node, last_ttc)
+                            last_ttc_publish_time = now
                         continue
                         
                     h, w = frame.shape
-                    ttc = 10.0 # default safe TTC
+                    ttc = TTC_SAFE_SECONDS
                     
                     if prev_gray is None or prev_pts is None or len(prev_pts) < 15:
                         prev_gray = frame
                         prev_pts = cv2.goodFeaturesToTrack(frame, mask=None, **feature_params)
                     else:
                         next_pts, status, _ = cv2.calcOpticalFlowPyrLK(prev_gray, frame, prev_pts, None, **lk_params)
+                        if next_pts is None or status is None:
+                            prev_gray = frame
+                            prev_pts = cv2.goodFeaturesToTrack(frame, mask=None, **feature_params)
+                            last_ttc = TTC_EMERGENCY_SECONDS
+                            continue
                         
                         good_new = next_pts[status == 1]
                         good_old = prev_pts[status == 1]
@@ -131,13 +181,10 @@ def main():
                                 dy_comp = dy - v_rot
                                 
                                 # B. Semantic Masking (Verify if point is on road via inverse-homography projection)
-                                pt_homo = np.array([u_old, v_old, 1.0]).reshape((3, 1))
-                                projected = np.dot(H, pt_homo)
-                                col = int(projected[0, 0] / projected[2, 0])
-                                row = int(projected[1, 0] / projected[2, 0])
-                                
                                 is_obstacle = True
-                                if 0 <= col < 192 and 0 <= row < 192:
+                                bev_cell = pixel_to_bev(u_old, v_old)
+                                if bev_cell is not None:
+                                    row, col = bev_cell
                                     if bev_grid[row, col] == 0: # 0 means Road (Free Space)
                                         is_obstacle = False
                                         
@@ -157,10 +204,13 @@ def main():
                         prev_gray = frame
                         prev_pts = cv2.goodFeaturesToTrack(frame, mask=None, **feature_params)
                         
-                    # Smooth clamp safety zone
-                    ttc = max(0.1, min(10.0, ttc))
-                    ttc_arrow = pa.array([ttc], type=pa.float32())
-                    dora_node.send_output("ttc", ttc_arrow)
+                    last_ttc = float(np.clip(ttc, TTC_EMERGENCY_SECONDS, TTC_SAFE_SECONDS))
+
+                now = time.time()
+                if now - last_ttc_publish_time >= TTC_PUBLISH_PERIOD_SECONDS:
+                    heartbeat_ttc = last_ttc if now - last_visual_frame_time <= VISUAL_FRAME_STALE_SECONDS else TTC_EMERGENCY_SECONDS
+                    publish_ttc(dora_node, heartbeat_ttc)
+                    last_ttc_publish_time = now
                     
             elif ev_type == "STOP":
                 print("\n🛑 Optical reflex node unmounted cleanly.")

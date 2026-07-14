@@ -2,6 +2,7 @@ import os
 import numpy as np
 from acados_template import AcadosOcp, AcadosOcpSolver
 from nmpc_model import setup_car_model
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def generate_nmpc_solver():
     ocp = AcadosOcp()
@@ -68,7 +69,7 @@ def generate_nmpc_solver():
     ocp.solver_options.integrator_type = "ERK"
     ocp.solver_options.nlp_solver_type = "SQP_RTI"
     
-    json_file = os.path.join("./", "acados_ocp.json")
+    json_file = os.path.join(SCRIPT_DIR, "acados_ocp.json")
     solver = AcadosOcpSolver(ocp, json_file=json_file)
     return solver
 

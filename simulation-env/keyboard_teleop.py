@@ -13,6 +13,8 @@ import struct
 import time
 import pyarrow as pa
 from dora import Node
+CONTROL_STALE_SECONDS = 0.20
+ZERO_CMD = (0.0, 0.0)
 
 def main():
     # 1. 接入 DORA 拓扑网关
@@ -23,6 +25,8 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 5005))
     sock.setblocking(False)  # 🛡️ 架构师自愈：设为完全非阻塞，避免 socket 锁死 DORA 主线程
+    last_packet_time = time.monotonic()
+    zero_sent_after_stale = True
     
     print("========================================================")
     print("🛰️  NEXUS - 键盘遥控桥接接收节点 (DORA Node) 已启动")
@@ -40,8 +44,13 @@ def main():
                     # 严格按照 FSD 运动指令契约打包为 Arrow Float32 数组广播
                     arrow_cmd = pa.array([v, w], type=pa.float32())
                     dora_node.send_output("control_cmd", arrow_cmd)
+                    last_packet_time = time.monotonic()
+                    zero_sent_after_stale = False
             except BlockingIOError:
                 pass  # 缓冲区无数据，平滑过渡
+            if not zero_sent_after_stale and time.monotonic() - last_packet_time > CONTROL_STALE_SECONDS:
+                dora_node.send_output("control_cmd", pa.array(ZERO_CMD, type=pa.float32()))
+                zero_sent_after_stale = True
             
             # B. 🛡️ 架构师自愈：使用 DORA 官方标准的非阻塞 try_recv 轮询系统生命周期事件
             event = dora_node.next(0.002)

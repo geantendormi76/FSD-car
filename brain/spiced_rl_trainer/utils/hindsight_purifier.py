@@ -4,8 +4,32 @@ import csv
 import math
 import numpy as np
 
-def purify_and_hindsight():
-    raw_dir = "/home/zhz/fsd-car/dataset"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+REQUIRED_GOAL_FIELDS = ["local_goal_x", "local_goal_y", "local_goal_dist"]
+def row_has_value(row, key):
+    return row.get(key) not in (None, "")
+def row_float(row, key, default=None):
+    value = row.get(key)
+    if value in (None, ""):
+        if default is None:
+            raise KeyError(key)
+        return default
+    return float(value)
+def row_speed(row):
+    if row_has_value(row, "current_v"):
+        return abs(row_float(row, "current_v"))
+    if row_has_value(row, "cmd_v"):
+        return abs(row_float(row, "cmd_v"))
+    return abs(row_float(row, "action_v_norm", 0.0) * 0.8)
+def row_command_speed(row):
+    if row_has_value(row, "cmd_v"):
+        return abs(row_float(row, "cmd_v"))
+    if row_has_value(row, "current_v"):
+        return abs(row_float(row, "current_v"))
+    return abs(row_float(row, "action_v_norm", 0.0) * 0.8)
+def purify_and_hindsight(raw_dir=None):
+    if raw_dir is None:
+        raw_dir = os.path.join(REPO_ROOT, "dataset")
     purified_dir = os.path.join(raw_dir, "purified")
     os.makedirs(purified_dir, exist_ok=True)
     
@@ -29,7 +53,10 @@ def purify_and_hindsight():
         rows = []
         with open(file_path, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames
+            fieldnames = list(reader.fieldnames or [])
+            for name in REQUIRED_GOAL_FIELDS:
+                if name not in fieldnames:
+                    fieldnames.append(name)
             for row in reader:
                 rows.append(row)
                 
@@ -40,8 +67,8 @@ def purify_and_hindsight():
             
         # 1. Hindsight: Extract the absolute last frame as the Dynamic Goal
         last_row = rows[-1]
-        goal_x = float(last_row['odom_x'])
-        goal_y = float(last_row['odom_y'])
+        goal_x = row_float(last_row, 'odom_x')
+        goal_y = row_float(last_row, 'odom_y')
         
         purified_rows = []
         pause_count = 0
@@ -49,11 +76,11 @@ def purify_and_hindsight():
         
         # 2. Recalculate homogeneous relative goals for every frame
         for row in rows:
-            v = float(row['current_v'])
-            cmd_v = float(row['cmd_v'])
-            odom_x = float(row['odom_x'])
-            odom_y = float(row['odom_y'])
-            odom_yaw = float(row['odom_yaw'])
+            v = row_speed(row)
+            cmd_v = row_command_speed(row)
+            odom_x = row_float(row, 'odom_x')
+            odom_y = row_float(row, 'odom_y')
+            odom_yaw = row_float(row, 'odom_yaw')
             
             dx = goal_x - odom_x
             dy = goal_y - odom_y
@@ -84,7 +111,7 @@ def purify_and_hindsight():
         # 3. Write purified, hindsight-aligned file back to disk
         out_path = os.path.join(purified_dir, file_name)
         with open(out_path, mode='w', encoding='utf-8', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(purified_rows)
             

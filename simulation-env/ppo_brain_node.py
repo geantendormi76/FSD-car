@@ -5,11 +5,14 @@ import onnxruntime as ort
 import pyarrow as pa
 from collections import deque
 from dora import Node
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+V_MAX = 0.80
+KAPPA_MAX = 1.25
 def main():
     print("=========================================================================")
     print("🧠  NEXUS - 15D Cleaned PPO Neural Brain Deployment Node (SOTA 2026)")
     print("=========================================================================")
-    model_path = "/home/zhz/fsd-car/model/spiced_brain.onnx"
+    model_path = os.path.join(REPO_ROOT, "model", "spiced_brain.onnx")
     if not os.path.exists(model_path):
         print(f"[-] Error: Target PPO model spiced_brain.onnx not found at {model_path}")
         sys.exit(1)
@@ -58,15 +61,9 @@ def main():
                     action = run_outs[0][0] 
                     a_vel = float(action[0])
                     a_kappa = float(action[1])
-                    v_max = 0.80
-                    kappa_max = 1.25
-                    w_max = 1.00
-                    v_des = np.clip(a_vel, 0.0, 1.0) * v_max
-                    kappa = np.clip(a_kappa, -1.0, 1.0) * kappa_max
-                    if abs(v_des) < 0.05:
-                        w_ref = np.clip(a_kappa, -1.0, 1.0) * w_max
-                    else:
-                        w_ref = kappa * v_des
+                    v_des = np.clip(a_vel, 0.0, 1.0) * V_MAX
+                    kappa = np.clip(a_kappa, -1.0, 1.0) * KAPPA_MAX
+                    w_ref = kappa * v_des
                     control_arrow = pa.array([v_des, w_ref], type=pa.float32())
                     dora_node.send_output("control_cmd", control_arrow)
             elif ev_type == "STOP":

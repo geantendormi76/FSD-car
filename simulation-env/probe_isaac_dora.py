@@ -1,7 +1,10 @@
 import sys
 import traceback
+import os
 
-sys.path.append("/home/zhz/fsd-car/simulation-env")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.append(SCRIPT_DIR)
 
 print("🛰️ NEXUS - Starting Rigorous Diagnostic Probe...", flush=True)
 
@@ -11,14 +14,10 @@ try:
     print("✓ Import succeeded!", flush=True)
     
     print("2. Testing CLIDDEngine instantiation with ONNX...", flush=True)
-    engine = isaac_dora_node.CLIDDEngine("/home/zhz/fsd-car/model/xfeat_640x640.onnx")
+    engine = isaac_dora_node.CLIDDEngine(os.path.join(REPO_ROOT, "model", "xfeat_640x640.onnx"))
     print("✓ CLIDDEngine instantiation succeeded!", flush=True)
-    
-    print("3. Testing BionicFrogEye instantiation...", flush=True)
-    frog = isaac_dora_node.BionicFrogEye(640, 480)
-    print("✓ BionicFrogEye instantiation succeeded!", flush=True)
 
-    print("4. Executing main() inside guarded try-except block...", flush=True)
+    print("3. Executing main() inside guarded try-except block...", flush=True)
     isaac_dora_node.main()
     
 except Exception as e:

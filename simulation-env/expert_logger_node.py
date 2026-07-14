@@ -21,6 +21,8 @@ from dora import Node
 # 📐 SOTA 标定物理包线限幅 (PAM Limits - 强约束契约，全栈统一)
 V_MAX = 0.80       # 最大巡航车速
 KAPPA_MAX = 1.25   # 最大期望曲率 rad/m
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATASET_DIR = os.path.join(REPO_ROOT, "dataset")
 
 def main():
     print("========================================================")
@@ -29,7 +31,7 @@ def main():
     print("========================================================")
     
     dora_node = Node()
-    os.makedirs("dataset", exist_ok=True)
+    os.makedirs(DATASET_DIR, exist_ok=True)
     
     state_odom = [0.0, 0.0, 0.0]  # x, y, yaw
     last_odom = None
@@ -46,7 +48,7 @@ def main():
         if csv_file is not None:
             csv_file.close()
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"dataset/spice_run_{run_num:03d}_{timestamp_str}.csv"
+        filename = os.path.join(DATASET_DIR, f"spice_run_{run_num:03d}_{timestamp_str}.csv")
         csv_file = open(filename, "w", encoding="utf-8")
         
         # 写入大一统 10 维自洽状态动作舱表头
