@@ -335,6 +335,11 @@ fn bev_metadata(
         );
     }
     metadata.insert("sequence".into(), Parameter::Integer(sequence as i64));
+    for key in ["source_frame_id", "sim_time_s", "source_kind"] {
+        if let Some(value) = source.parameters.get(key) {
+            metadata.insert(key.into(), value.clone());
+        }
+    }
     metadata.insert(
         "shape".into(),
         Parameter::ListInt(vec![config.height as i64, config.width as i64]),

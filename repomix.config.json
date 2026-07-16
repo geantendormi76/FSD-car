@@ -49,6 +49,10 @@
       "**/c_generated_code/**",
       "**/Cargo.lock",
       "**/repomix-output.xml",
+      "fsd-car.xml",
+      "artifacts/**",
+      "assets/**",
+      "simulation-env/acados_ocp.json",
       "4.py",
       "showcase/src/main.rs",
       "simulation-env/isaac_purity_node.py"

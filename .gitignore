@@ -1,79 +1,58 @@
-# =================================================================
-# 🛡️ FSD-car V4.5 统一主干仓库 Git 忽略契约 (2026 Ubuntu 极致防腐版)
-# 设计哲学: 保护10维黄金数据集 | 隔离高能模型权重 | 拦截 C-FFI 编译缓存
-# =================================================================
-
-# --- 1. 系统、IDE 与终端临时垃圾文件 ---
+# Operating system and editor files
 .DS_Store
 Thumbs.db
-*.tmp
-*.bak
 .vscode/
 .idea/
-*.user
-.gitignore
-.env
+*.tmp
+*.bak
 
-# --- 2. Python 虚拟环境与 uv 依赖缓冲 ---
-# 彻底拦截 uv 和传统 Python 的虚拟环境与本地第三方缓存
+# Local configuration and Python environments
+.env
 .venv/
 .uv/
 .python-version
 __pycache__/
 *.py[cod]
-*$py.class
 
-# --- 3. DORA 分布式大总管运行时临时日志 (生产级防爆) ---
-# 强制忽略 DORA 产生的后台日志和协调器挂盘日志
-/out/
-out/
+# Rust, Dora and generated native code
+**/target/
+**/out/
 dora-coordinator.txt
 dora-daemon.txt
+simulation-env/acados/
+simulation-env/c_generated_code/
+simulation-env/acados_ocp.json
+simulation-env/*.log
+simulation-env/MUJOCO_LOG.TXT
+nmpc_telemetry.csv
+topo_memory.json
 
-# --- 4. Rust 工作空间全局编译缓存 ---
-# 强制忽略整个多包工作空间下的 release/debug 编译产物，防止数十G的缓存挤爆仓库
-/target/
+# Private datasets and reproducible raw evidence
+/dataset/
+**/artifacts/
+*.csv
 
-# --- 5. 跨系统动态链接库与大资产模型 (商业级知识产权防御墙) ---
-# A. 拦截系统级编译库，防止 Git 历史体积爆炸，强行拉高无良商家的编译时间成本
+# Generated reports
+fsd-car.xml
+repomix-output.*
+dora_dataflow_phase5i_control-graph.html
+.claude/
+
+# Model policy: publish only the two active deployment models.
+*.onnx
+*.onnx.data
+*.pth
+/model/*
+!/model/warehouse_nav14_candidate.onnx
+!/model/warehouse_nav14_candidate.json
+!/model/xfeat_640x640.onnx
+!/model/DELIVERY.json
+
+# Native binaries and archives
 *.so
 *.so.*
-*.tgz
 *.a
 *.lib
 *.dll
 *.dylib
-
-# B. 🛡️ 【核心资产保护】: 强制拦截所有的 ONNX 模型文件！
-# 个人爱好者可以通过 download_models.sh 脚本下载公开的基础模型。
-# 但你自己未来在 3.3.3 阶段训练出来的 Spiced RL 老司机“经验脑”模型权重（*.onnx），
-# 将被本契约死死锁在本地，绝对不允许误上传到 GitHub 公网，达成完美的商业博弈闭环！
-*.onnx
-
-# --- 6. 仿真环境产生的物理日志、C 代码缓存与车端动态记忆 ---
-# 拦截 acados C 语言求解器自动生成的矩阵 C 源码，防止伸手党“一键白嫖”
-simulation-env/c_generated_code/
-simulation-env/acados_ocp.json
-simulation-env/acados/
-simulation-env/*.log
-simulation-env/MUJOCO_LOG.TXT
-simulation-env/nmpc_telemetry.log
-nmpc_telemetry.csv
-
-# 🛡️ 战役二/三重大重塑：彻底废除旧版 0.2m/s “提线木偶式”物理拓扑地图
-topo_memory.json
-
-# --- 7. 🛡️ 【核心资产隔离】: 10维黄金老司机避障数据集防线 (The Spice Barrier) ---
-# 强力隔离你录制的所有 spice_run_*.csv 黄金自驾数据！
-# 这是你人机合一、冒着撞车风险辛辛苦苦狂飙出来的核心数字资产。
-# 它是训练模型经验脑（BC Anchor）唯一的“香料”，必须 100% 物理闭源！
-/dataset/
-dataset/
-*.csv
-
-# --- 8. 🛡️ AI 临时上下文与打包分析残留隔离 ---
-repomix-output.xml
-repomix-output.json
-repomix-output.txt
-repomix-output.md
-.claude/
+*.tgz

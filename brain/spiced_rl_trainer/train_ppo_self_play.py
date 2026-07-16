@@ -37,6 +37,36 @@ class ActorCritic(nn.Module):
         entropy = probs.entropy().sum(dim=1)
         value = self.critic(x)
         return action, log_prob, entropy, value
+
+def evaluate_actor(actor, env, device, episodes=3):
+    actor.eval()
+    rewards = []
+    action_v_values = []
+    with torch.no_grad():
+        for _ in range(episodes):
+            obs, _ = env.reset()
+            done = False
+            total_reward = 0.0
+            steps = 0
+            while not done and steps < env.max_steps:
+                obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+                action, _ = actor(obs_t)
+                action = torch.cat([
+                    torch.clamp(action[:, 0:1], 0.0, 1.0),
+                    torch.clamp(action[:, 1:2], -1.0, 1.0),
+                ], dim=1)
+                act_np = action.cpu().numpy().flatten()
+                action_v_values.append(float(act_np[0]))
+                obs, reward, terminated, truncated, _ = env.step(act_np)
+                total_reward += reward
+                done = bool(terminated or truncated)
+                steps += 1
+            rewards.append(total_reward)
+    actor.train()
+    mean_reward = float(np.mean(rewards)) if rewards else float("-inf")
+    mean_action_v = float(np.mean(action_v_values)) if action_v_values else 0.0
+    return mean_reward, mean_action_v
+
 def train_ppo():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"PPO training starting on device: {device}")
@@ -61,6 +91,9 @@ def train_ppo():
         ppo_policy.load_state_dict(torch.load(anchor_path, map_location=device))
     ac_model = ActorCritic(ppo_policy, input_dim=15).to(device)
     optimizer = optim.Adam(ac_model.parameters(), lr=1e-4)
+    model_dir = os.path.join(REPO_ROOT, "model")
+    os.makedirs(model_dir, exist_ok=True)
+    best_actor_path = os.path.join(model_dir, "ppo_best_actor.pth")
     num_iterations = 200
     num_steps = 128
     batch_size = num_steps
@@ -72,6 +105,8 @@ def train_ppo():
     entropy_coef = 0.001
     vf_coef = 2.0
     kl_lambda = 0.075
+    eval_interval = 20
+    min_eval_action_v = 0.08
     obs_buffer = torch.zeros((num_steps, 15)).to(device)
     action_buffer = torch.zeros((num_steps, 2)).to(device)
     logprob_buffer = torch.zeros(num_steps).to(device)
@@ -81,6 +116,13 @@ def train_ppo():
     next_obs, _ = env.reset()
     next_obs_t = torch.tensor(next_obs, dtype=torch.float32).to(device)
     next_done = 0.0
+    eval_env = FSDCarGymEnv()
+    best_eval_reward, best_eval_action_v = evaluate_actor(ac_model.actor, eval_env, device)
+    torch.save(ac_model.actor.state_dict(), best_actor_path)
+    print(
+        f"Initial BC anchor eval | Reward: {best_eval_reward:.2f} | "
+        f"Mean action_v: {best_eval_action_v:.3f} | saved as baseline best"
+    )
     print("Beginning Spiced PPO 15D self-play exploration loop...")
     print("-" * 80)
     for iteration in range(1, num_iterations + 1):
@@ -157,17 +199,35 @@ def train_ppo():
                 loss.backward()
                 nn.utils.clip_grad_norm_(ac_model.parameters(), 1.0)
                 optimizer.step()
-        if iteration % 20 == 0 or iteration == 1:
-            print(f"Iter: {iteration:03d} | Pg Loss: {pg_loss.item():.4f} | Val Loss: {v_loss.item():.4f} | KL Div: {kl_div.item():.4f} | Ep Reward: {episode_reward:.2f}")
+        if iteration % eval_interval == 0 or iteration == 1:
+            eval_reward, eval_action_v = evaluate_actor(ac_model.actor, eval_env, device)
+            if eval_action_v >= min_eval_action_v and eval_reward > best_eval_reward:
+                best_eval_reward = eval_reward
+                best_eval_action_v = eval_action_v
+                torch.save(ac_model.actor.state_dict(), best_actor_path)
+                checkpoint_status = "saved_best"
+            elif eval_action_v < min_eval_action_v:
+                checkpoint_status = "rejected_velocity_collapse"
+            else:
+                checkpoint_status = "kept_previous_best"
+            print(
+                f"Iter: {iteration:03d} | Pg Loss: {pg_loss.item():.4f} | "
+                f"Val Loss: {v_loss.item():.4f} | KL Div: {kl_div.item():.4f} | "
+                f"Ep Reward: {episode_reward:.2f} | Eval Reward: {eval_reward:.2f} | "
+                f"Eval action_v: {eval_action_v:.3f} | {checkpoint_status}"
+            )
     print("-------------------------------------------------------------------------------------")
     print("Spiced PPO self-play 15D optimization completed successfully.")
     print("Compiling final 15D PPO Brain for ONNX deployment...")
+    ac_model.actor.load_state_dict(torch.load(best_actor_path, map_location=device))
+    print(
+        f"Exporting guarded best actor from {best_actor_path} "
+        f"(reward={best_eval_reward:.2f}, mean_action_v={best_eval_action_v:.3f})"
+    )
     ac_model.eval()
     inference_model = SpicedBrainInference(ac_model.actor).to("cpu")
     inference_model.eval()
     dummy_input = torch.zeros(1, 15, dtype=torch.float32)
-    model_dir = os.path.join(REPO_ROOT, "model")
-    os.makedirs(model_dir, exist_ok=True)
     onnx_path = os.path.join(model_dir, "spiced_brain.onnx")
     torch.onnx.export(
         inference_model,
@@ -181,6 +241,7 @@ def train_ppo():
         dynamic_axes={'input_state': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}}
     )
     print(f"🏆 SUCCESS: Final 15D Spiced PPO Brain exported to {onnx_path}")
+    eval_env.close()
     env.close()
 if __name__ == "__main__":
     train_ppo()

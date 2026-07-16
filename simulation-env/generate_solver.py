@@ -44,6 +44,13 @@ def generate_nmpc_solver():
     ocp.constraints.lbu = np.array([-1.0, -0.6])
     ocp.constraints.ubu = np.array([1.0, 0.6])
     ocp.constraints.idxbu = np.array([0, 1])
+
+    ocp.constraints.idxbx = np.array([3])
+    ocp.constraints.lbx = np.array([0.0])
+    ocp.constraints.ubx = np.array([0.8])
+    ocp.constraints.idxbx_e = np.array([3])
+    ocp.constraints.lbx_e = np.array([0.0])
+    ocp.constraints.ubx_e = np.array([0.8])
     
     ocp.constraints.x0 = np.array([0.0, 0.0, 0.0, 0.0])
     

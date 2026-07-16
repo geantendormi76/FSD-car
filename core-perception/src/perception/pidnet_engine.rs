@@ -266,7 +266,10 @@ mod tests {
         let model: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "model", "pidnet_s.onnx"]
             .iter()
             .collect();
-        assert!(model.exists(), "测试模型不存在：{}", model.display());
+        if !model.exists() {
+            eprintln!("跳过 inactive PIDNet 集成测试：{}", model.display());
+            return;
+        }
         let engine = PidnetEngine::new(model).unwrap();
         let image =
             Mat::new_rows_cols_with_default(480, 640, core::CV_8UC3, Scalar::all(0.0)).unwrap();

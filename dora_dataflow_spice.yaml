@@ -1,6 +1,6 @@
 # =================================================================
 # 🏎️ FSD-car V4.5: 3.3阶段专属 - 人类黄金数据(Spice)采集拓扑网 (自愈重塑版)
-# 架构哲学: 剥夺 NMPC 规控权 | 人类直接接管底盘 | 随机领航 + 自动传送重置闭环
+# 架构哲学: 剥夺 NMPC 规控权 | 人类直接接管底盘 | 西向补采领航 + 人工换起点闭环
 # =================================================================
 nodes:
   # ---------------------------------------------------------------
@@ -17,10 +17,9 @@ nodes:
     inputs:
       # 底盘控制权直接移交给键盘遥控器！
       control_cmd: keyboard_teleop/control_cmd
-      # 接收慢脑广播的新站牌目标，实现全自动原地传送！
-      human_prior: slow_brain_mapper/human_prior
     outputs:
-      - obstacle_force
+      - human_prior
+      - xfeat_features
       - odometry
       - jpeg_image
       - bev_grid
@@ -37,19 +36,6 @@ nodes:
       - control_cmd
 
   # ---------------------------------------------------------------
-  # 🧠 3. 动态路点领航脑 (Dynamic Waypoint Goal Provider)
-  # ---------------------------------------------------------------
-  - id: slow_brain_mapper
-    path: target/release/slow_brain_node
-    build: cargo build -p core-decision --release --bin slow_brain_node
-    env:
-      RUST_LOG: info
-    inputs:
-      odometry: isaac_sim_env/odometry
-    outputs:
-      - human_prior
-
-  # ---------------------------------------------------------------
   # 🗃️ 4. 黑匣子数据记录仪 (Expert Data Logger)
   # ---------------------------------------------------------------
   - id: expert_data_logger
@@ -58,23 +44,23 @@ nodes:
     inputs:
       # 监听物理世界状态
       odometry: isaac_sim_env/odometry
-      # 🎯 SOTA 级并网重構：动态订阅慢脑 Goal，彻底掐断记录仪硬编码，实现 100% 数据空间自洽！
-      human_prior: slow_brain_mapper/human_prior
+      # 🎯 动态订阅 Isaac 西向补采 Goal，用于补齐 W/SW/NW 数据缺口。
+      human_prior: isaac_sim_env/human_prior
+      # 记录低维障碍物近场特征，便于后续训练带避障观测的教练模型。
+      bev_grid: isaac_sim_env/bev_grid
       # 监听人类下发的动作指令 (作为未来目标 Label)
       control_cmd: keyboard_teleop/control_cmd
 
   # ---------------------------------------------------------------
-  # 📊 5. 旁路探针：NEXUS 可视化遥测大屏 (让你看着大屏开车)
+  # 🧭 5. 采集导航 HUD：显示目标方位和距离
   # ---------------------------------------------------------------
-  - id: telemetry_dashboard
+  - id: goal_hud
     path: uv
-    args: run --cache-dir /home/zhz/.cache/uv_clean showcase/src/bin/telemetry_dashboard.py
+    args: run --cache-dir /home/zhz/.cache/uv_clean simulation-env/goal_hud_node.py
     env:
       DISPLAY: ${DISPLAY}
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
     inputs:
       odometry: isaac_sim_env/odometry
-      obstacle_force: isaac_sim_env/obstacle_force
-      control_cmd: keyboard_teleop/control_cmd
-      jpeg_image: isaac_sim_env/jpeg_image
-      bev_grid: isaac_sim_env/bev_grid
+      human_prior: isaac_sim_env/human_prior

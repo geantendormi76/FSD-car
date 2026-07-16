@@ -27,7 +27,7 @@ def main():
     current_w = 0.0  
     
     # 🏎️ Spiced 2026 级全包线极限标定参数
-    max_v = 1.00  
+    max_v = 0.80
     min_v = 0.00 
     max_w = 1.00  
     acc_step = 0.08 

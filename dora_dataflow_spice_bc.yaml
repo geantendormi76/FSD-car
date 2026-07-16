@@ -1,0 +1,40 @@
+# =================================================================
+# FSD-car: Spice BC Coach closed-loop validation topology
+# Purpose: validate model/spiced_brain.onnx drives Isaac Sim goals.
+# =================================================================
+nodes:
+  - id: isaac_sim_env
+    path: /home/zhz/isaacsim/python.sh
+    args: simulation-env/isaac_dora_node.py
+    env:
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
+      LD_LIBRARY_PATH: /home/zhz/isaacsim/kit/python/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/cuda-13.1/lib64
+    inputs:
+      control_cmd: bc_brain/control_cmd
+    outputs:
+      - human_prior
+      - odometry
+      - jpeg_image
+      - bev_grid
+
+  - id: bc_brain
+    path: /home/zhz/isaacsim/python.sh
+    args: simulation-env/ppo_brain_node.py
+    inputs:
+      odometry: isaac_sim_env/odometry
+      human_prior: isaac_sim_env/human_prior
+    outputs:
+      - control_cmd
+
+  - id: goal_hud
+    path: uv
+    args: run --cache-dir /home/zhz/.cache/uv_clean simulation-env/goal_hud_node.py
+    env:
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_SESSION_TYPE: ${XDG_SESSION_TYPE}
+    inputs:
+      odometry: isaac_sim_env/odometry
+      human_prior: isaac_sim_env/human_prior
